@@ -9,4 +9,4 @@ runner = "probe-rs-cli run --chip nrf5340 --allow-erase-all"
 target = "thumbv8m.main-none-eabi"
 
 [env]
-DEFMT_LOG = "info"
+DEFMT_LOG = "info,nrf70=trace"
