@@ -1,0 +1,7 @@
+{
+    "rust-analyzer.cargo.buildScripts.enable": true,
+    "rust-analyzer.cargo.target": "thumbv8m.main-none-eabi",
+    "rust-analyzer.check.allTargets": false,
+    "rust-analyzer.cargo.noDefaultFeatures": true,
+    "rust-analyzer.check.noDefaultFeatures": true,
+}
