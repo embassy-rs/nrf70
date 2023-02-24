@@ -21,21 +21,21 @@ embedded-hal-bus = "0.1.0-alpha.1"
 embedded-hal-async = "0.2.0-alpha.0"
 
 [patch.crates-io]
-#embassy-embedded-hal = { git = "https://github.com/embassy-rs/embassy", rev="2209bef4f22bf77d9d52cda0a0ea40485cc2747a"}
-#embassy-executor = { git = "https://github.com/embassy-rs/embassy", rev="2209bef4f22bf77d9d52cda0a0ea40485cc2747a"}
-#embassy-time = { git = "https://github.com/embassy-rs/embassy", rev="2209bef4f22bf77d9d52cda0a0ea40485cc2747a"}
-#embassy-sync = { git = "https://github.com/embassy-rs/embassy", rev="2209bef4f22bf77d9d52cda0a0ea40485cc2747a"}
-#embassy-futures = { git = "https://github.com/embassy-rs/embassy", rev="2209bef4f22bf77d9d52cda0a0ea40485cc2747a"}
-#embassy-nrf = { git = "https://github.com/embassy-rs/embassy", rev="2209bef4f22bf77d9d52cda0a0ea40485cc2747a"}
-#embassy-macros = { git = "https://github.com/embassy-rs/embassy", rev="2209bef4f22bf77d9d52cda0a0ea40485cc2747a"}
+embassy-embedded-hal = { git = "https://github.com/embassy-rs/embassy", rev="ee5324aab47f9d6120be1b7bf8c77115121fab8c"}
+embassy-executor = { git = "https://github.com/embassy-rs/embassy", rev="ee5324aab47f9d6120be1b7bf8c77115121fab8c"}
+embassy-time = { git = "https://github.com/embassy-rs/embassy", rev="ee5324aab47f9d6120be1b7bf8c77115121fab8c"}
+embassy-sync = { git = "https://github.com/embassy-rs/embassy", rev="ee5324aab47f9d6120be1b7bf8c77115121fab8c"}
+embassy-futures = { git = "https://github.com/embassy-rs/embassy", rev="ee5324aab47f9d6120be1b7bf8c77115121fab8c"}
+embassy-nrf = { git = "https://github.com/embassy-rs/embassy", rev="ee5324aab47f9d6120be1b7bf8c77115121fab8c"}
+embassy-macros = { git = "https://github.com/embassy-rs/embassy", rev="ee5324aab47f9d6120be1b7bf8c77115121fab8c"}
 
-embassy-embedded-hal = { path = "/home/dirbaio/embassy/embassy/embassy-embedded-hal" }
-embassy-executor = { path = "/home/dirbaio/embassy/embassy/embassy-executor" }
-embassy-time = { path = "/home/dirbaio/embassy/embassy/embassy-time" }
-embassy-sync = { path = "/home/dirbaio/embassy/embassy/embassy-sync" }
-embassy-futures = { path = "/home/dirbaio/embassy/embassy/embassy-futures" }
-embassy-nrf = { path = "/home/dirbaio/embassy/embassy/embassy-nrf" }
-embassy-macros = { path = "/home/dirbaio/embassy/embassy/embassy-macros" }
+# embassy-embedded-hal = { path = "/home/dirbaio/embassy/embassy/embassy-embedded-hal" }
+# embassy-executor = { path = "/home/dirbaio/embassy/embassy/embassy-executor" }
+# embassy-time = { path = "/home/dirbaio/embassy/embassy/embassy-time" }
+# embassy-sync = { path = "/home/dirbaio/embassy/embassy/embassy-sync" }
+# embassy-futures = { path = "/home/dirbaio/embassy/embassy/embassy-futures" }
+# embassy-nrf = { path = "/home/dirbaio/embassy/embassy/embassy-nrf" }
+# embassy-macros = { path = "/home/dirbaio/embassy/embassy/embassy-macros" }
 
 [profile.dev]
 debug = 2
