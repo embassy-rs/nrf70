@@ -2,18 +2,23 @@
 #![no_main]
 #![feature(type_alias_impl_trait)]
 #![deny(unused_must_use)]
+#![feature(async_fn_in_trait)]
+#![feature(impl_trait_projections)]
 
 use core::slice;
 
-use defmt::{assert, assert_eq, info, panic, *};
+use defmt::{assert, assert_eq, info, panic, todo, *};
 use defmt_rtt as _; // global logger
 use embassy_executor::Spawner;
 use embassy_nrf::config::Config;
 use embassy_nrf::gpio::{AnyPin, Input, Level, Output, OutputDrive, Pin, Pull};
 use embassy_nrf::peripherals::QSPI;
 use embassy_nrf::qspi::Qspi;
-use embassy_nrf::{interrupt, qspi};
+use embassy_nrf::spim::Spim;
+use embassy_nrf::{interrupt, qspi, spim};
 use embassy_time::{Duration, Timer};
+use embedded_hal_async::spi::{ExclusiveDevice, SpiBus as _, SpiBusRead as _, SpiBusWrite as _, SpiDevice};
+use embedded_hal_async::spi_transaction;
 use {embassy_nrf as _, panic_probe as _};
 
 #[embassy_executor::task]
@@ -34,6 +39,29 @@ async fn main(spawner: Spawner) {
     let p = embassy_nrf::init(config);
     spawner.spawn(blink_task(p.P1_06.degrade())).unwrap();
 
+    let sck = p.P0_17;
+    let csn = p.P0_18;
+    let dio0 = p.P0_13;
+    let dio1 = p.P0_14;
+    let dio2 = p.P0_15;
+    let dio3 = p.P0_16;
+    //let coex_req = Output::new(p.P0_28, Level::High, OutputDrive::Standard);
+    //let coex_status0 = Output::new(p.P0_30, Level::High, OutputDrive::Standard);
+    //let coex_status1 = Output::new(p.P0_29, Level::High, OutputDrive::Standard);
+    //let coex_grant = Output::new(p.P0_24, Level::High, OutputDrive::Standard);
+    let mut bucken = Output::new(p.P0_12.degrade(), Level::Low, OutputDrive::HighDrive);
+    let mut iovdd_ctl = Output::new(p.P0_31.degrade(), Level::Low, OutputDrive::Standard);
+    let host_irq = Input::new(p.P0_23.degrade(), Pull::None);
+
+    let mut config = spim::Config::default();
+    config.frequency = spim::Frequency::M8;
+    let spim = Spim::new(p.SERIAL0, interrupt::take!(SERIAL0), sck, dio1, dio0, config);
+    let csn = Output::new(csn, Level::High, OutputDrive::HighDrive);
+    let spi = ExclusiveDevice::new(spim, csn);
+    let bus = SpiBus { spi };
+
+    /*
+    // QSPI is not working well yet.
     let mut config = qspi::Config::default();
     config.read_opcode = qspi::ReadOpcode::READ4IO;
     config.write_opcode = qspi::WriteOpcode::PP4IO;
@@ -41,27 +69,18 @@ async fn main(spawner: Spawner) {
     config.frequency = qspi::Frequency::M8; // NOTE: Waking RPU works reliably only with lowest frequency (8MHz)
 
     let irq = interrupt::take!(QSPI);
-    let qspi: qspi::Qspi<_> = qspi::Qspi::new(
-        p.QSPI, irq, p.P0_17, p.P0_18, p.P0_13, p.P0_14, p.P0_15, p.P0_16, config,
-    );
-
-    let mut bucken = Output::new(p.P0_12.degrade(), Level::Low, OutputDrive::HighDrive);
-    let mut iovdd_ctl = Output::new(p.P0_31.degrade(), Level::Low, OutputDrive::Standard);
-    let host_irq = Input::new(p.P0_23.degrade(), Pull::None);
+    let qspi: qspi::Qspi<_> = qspi::Qspi::new(p.QSPI, irq, sck, csn, dio0, dio1, dio2, dio3, config);
+    let bus = QspiBus { qspi };
+    */
 
     let mut nrf70 = Nrf70 {
         bucken,
         iovdd_ctl,
         host_irq,
-        qspi,
+        bus,
     };
 
     nrf70.run().await;
-
-    //let coex_req = Output::new(p.P0_28, Level::High, OutputDrive::Standard);
-    //let coex_status0 = Output::new(p.P0_30, Level::High, OutputDrive::Standard);
-    //let coex_status1 = Output::new(p.P0_29, Level::High, OutputDrive::Standard);
-    //let coex_grant = Output::new(p.P0_24, Level::High, OutputDrive::Standard);
 }
 
 fn slice8(x: &[u32]) -> &[u8] {
@@ -105,43 +124,35 @@ const SR1_RPU_READY: u8 = 0x04;
 
 const SR2_RPU_WAKEUP_REQ: u8 = 0x01;
 
-struct Nrf70<'a> {
-    qspi: Qspi<'a, QSPI>,
+struct Nrf70<'a, B: Bus> {
+    bus: B,
     bucken: Output<'a, AnyPin>,
     iovdd_ctl: Output<'a, AnyPin>,
     host_irq: Input<'a, AnyPin>,
 }
 
-impl<'a> Nrf70<'a> {
+impl<'a, B: Bus> Nrf70<'a, B> {
     pub async fn run(&mut self) {
-        // Power on
+        info!("power on...");
         Timer::after(Duration::from_millis(10)).await;
         self.bucken.set_high();
         Timer::after(Duration::from_millis(10)).await;
         self.iovdd_ctl.set_high();
         Timer::after(Duration::from_millis(10)).await;
 
-        // Wakeup
+        info!("wakeup...");
         self.rpu_wakeup().await;
 
-        info!("status reg 0: {:?}", self.read_sr0().await);
-        info!("status reg 1: {:?}", self.read_sr1().await);
-        info!("status reg 2: {:?}", self.read_sr2().await);
-
-        // buf[0] = 0x42424242;
-        // q.write(0, slice8_mut(&mut buf)).await.unwrap();
-        //
-        // q.read(0, slice8_mut(&mut buf)).await.unwrap();
-        // info!("value: {:08x}", buf[0]);
+        info!("done!");
     }
 
     async fn rpu_wait_until_write_done(&mut self) {
-        while self.read_sr0().await & SR0_WRITE_IN_PROGRESS != 0 {}
+        while self.bus.read_sr0().await & SR0_WRITE_IN_PROGRESS != 0 {}
     }
 
     async fn rpu_wait_until_awake(&mut self) {
         for _ in 0..10 {
-            if self.read_sr1().await & SR1_RPU_AWAKE != 0 {
+            if self.bus.read_sr1().await & SR1_RPU_AWAKE != 0 {
                 return;
             }
             Timer::after(Duration::from_millis(1)).await;
@@ -151,7 +162,7 @@ impl<'a> Nrf70<'a> {
 
     async fn rpu_wait_until_ready(&mut self) {
         for _ in 0..10 {
-            if self.read_sr1().await == SR1_RPU_AWAKE | SR1_RPU_READY {
+            if self.bus.read_sr1().await == SR1_RPU_AWAKE | SR1_RPU_READY {
                 return;
             }
             Timer::after(Duration::from_millis(1)).await;
@@ -161,7 +172,7 @@ impl<'a> Nrf70<'a> {
 
     async fn rpu_wait_until_wakeup_req(&mut self) {
         for _ in 0..10 {
-            if self.read_sr2().await == SR2_RPU_WAKEUP_REQ {
+            if self.bus.read_sr2().await == SR2_RPU_WAKEUP_REQ {
                 return;
             }
             Timer::after(Duration::from_millis(1)).await;
@@ -170,28 +181,25 @@ impl<'a> Nrf70<'a> {
     }
 
     async fn rpu_wakeup(&mut self) {
-        self.write_sr2(SR2_RPU_WAKEUP_REQ).await;
+        self.bus.write_sr2(SR2_RPU_WAKEUP_REQ).await;
         self.rpu_wait_until_wakeup_req().await;
         self.rpu_wait_until_awake().await;
     }
 
     async fn rpu_sleep(&mut self) {
-        self.write_sr2(0).await;
+        self.bus.write_sr2(0).await;
     }
 
     async fn rpu_sleep_status(&mut self) -> u8 {
-        self.read_sr1().await
+        self.bus.read_sr1().await
     }
 
     async fn rpu_read_word(&mut self, mem: &MemoryRegion, offs: u32) -> u32 {
         assert!(mem.start + offs + 4 <= mem.end);
         let lat = mem.latency as usize;
 
-        let mut buf = [0u32; 4];
-        self.qspi
-            .read(mem.start + offs, slice8_mut(&mut buf[..lat + 1]))
-            .await
-            .unwrap();
+        let mut buf = [0u32; 3];
+        self.bus.read(mem.start + offs, &mut buf[..lat + 1]).await;
 
         buf[lat]
     }
@@ -201,7 +209,7 @@ impl<'a> Nrf70<'a> {
 
         if mem.latency == 0 {
             // No latency, we can do a big read directly.
-            self.qspi.read(mem.start + offs, slice8_mut(buf)).await.unwrap();
+            self.bus.read(mem.start + offs, buf).await;
         } else {
             // Otherwise, read word by word.
             for (i, val) in buf.iter_mut().enumerate() {
@@ -212,26 +220,133 @@ impl<'a> Nrf70<'a> {
 
     async fn rpu_write(&mut self, mem: &MemoryRegion, offs: u32, buf: &[u32]) {
         assert!(mem.start + offs + (buf.len() as u32 * 4) <= mem.end);
-        self.qspi.write(mem.start + offs, slice8(buf)).await.unwrap();
+        self.bus.write(mem.start + offs, buf).await;
+    }
+}
+
+pub trait Bus {
+    async fn read(&mut self, addr: u32, buf: &mut [u32]);
+    async fn write(&mut self, addr: u32, buf: &[u32]);
+    async fn read_sr0(&mut self) -> u8;
+    async fn read_sr1(&mut self) -> u8;
+    async fn read_sr2(&mut self) -> u8;
+    async fn write_sr2(&mut self, val: u8);
+}
+
+struct SpiBus<T> {
+    spi: T,
+}
+
+impl<T: SpiDevice> Bus for SpiBus<T>
+where
+    T::Bus: embedded_hal_async::spi::SpiBus,
+{
+    async fn read(&mut self, addr: u32, buf: &mut [u32]) {
+        todo!()
+    }
+
+    async fn write(&mut self, addr: u32, buf: &[u32]) {
+        todo!()
+    }
+
+    async fn read_sr0(&mut self) -> u8 {
+        let val = self
+            .spi
+            .transaction(move |bus| {
+                let bus = unsafe { &mut *bus };
+                async move {
+                    let mut buf = [0; 2];
+                    bus.transfer(&mut buf, &[0x05]).await?;
+                    Ok(buf[1])
+                }
+            })
+            .await
+            .unwrap();
+        trace!("read sr0 = {:02x}", val);
+        val
+    }
+
+    async fn read_sr1(&mut self) -> u8 {
+        let val = self
+            .spi
+            .transaction(move |bus| {
+                let bus = unsafe { &mut *bus };
+                async move {
+                    let mut buf = [0; 2];
+                    bus.transfer(&mut buf, &[0x1f]).await?;
+                    Ok(buf[1])
+                }
+            })
+            .await
+            .unwrap();
+        trace!("read sr1 = {:02x}", val);
+        val
+    }
+
+    async fn read_sr2(&mut self) -> u8 {
+        let val = self
+            .spi
+            .transaction(move |bus| {
+                let bus = unsafe { &mut *bus };
+                async move {
+                    let mut buf = [0; 2];
+                    bus.transfer(&mut buf, &[0x2f]).await?;
+                    Ok(buf[1])
+                }
+            })
+            .await
+            .unwrap();
+        trace!("read sr2 = {:02x}", val);
+        val
+    }
+
+    async fn write_sr2(&mut self, val: u8) {
+        trace!("write sr2 = {:02x}", val);
+        self.spi
+            .transaction(move |bus| {
+                let bus = unsafe { &mut *bus };
+                async move {
+                    bus.write(&[0x3f, val]).await?;
+                    Ok(())
+                }
+            })
+            .await
+            .unwrap()
+    }
+}
+
+struct QspiBus<'a> {
+    qspi: Qspi<'a, QSPI>,
+}
+
+impl<'a> QspiBus<'a> {}
+
+impl<'a> Bus for QspiBus<'a> {
+    async fn read(&mut self, addr: u32, buf: &mut [u32]) {
+        self.qspi.read(addr, slice8_mut(buf)).await.unwrap();
+    }
+
+    async fn write(&mut self, addr: u32, buf: &[u32]) {
+        self.qspi.write(addr, slice8(buf)).await.unwrap();
     }
 
     async fn read_sr0(&mut self) -> u8 {
         let mut status = [4; 1];
-        unwrap!(self.qspi.custom_instruction(0x05, &[], &mut status).await);
+        unwrap!(self.qspi.custom_instruction(0x05, &[0x00], &mut status).await);
         trace!("read sr0 = {:02x}", status[0]);
         status[0]
     }
 
     async fn read_sr1(&mut self) -> u8 {
         let mut status = [4; 1];
-        unwrap!(self.qspi.custom_instruction(0x1f, &[], &mut status).await);
+        unwrap!(self.qspi.custom_instruction(0x1f, &[0x00], &mut status).await);
         trace!("read sr1 = {:02x}", status[0]);
         status[0]
     }
 
     async fn read_sr2(&mut self) -> u8 {
         let mut status = [4; 1];
-        unwrap!(self.qspi.custom_instruction(0x2f, &[], &mut status).await);
+        unwrap!(self.qspi.custom_instruction(0x2f, &[0x00], &mut status).await);
         trace!("read sr2 = {:02x}", status[0]);
         status[0]
     }

@@ -17,6 +17,8 @@ embedded-hal = "1.0.0-alpha.9"
 futures = { version = "0.3.5", default-features = false }
 heapless = "0.7.1"
 static_cell = "1.0.0"
+embedded-hal-bus = "0.1.0-alpha.1"
+embedded-hal-async = "0.2.0-alpha.0"
 
 [patch.crates-io]
 #embassy-embedded-hal = { git = "https://github.com/embassy-rs/embassy", rev="2209bef4f22bf77d9d52cda0a0ea40485cc2747a"}

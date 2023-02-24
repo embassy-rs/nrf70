@@ -337,6 +337,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "embedded-hal-bus"
+version = "0.1.0-alpha.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5cca80f84292bfd59899b8f1ed2d557ab2f02ea7dc7d0c0f373f47352b715d4c"
+dependencies = [
+ "embedded-hal 1.0.0-alpha.9",
+]
+
+[[package]]
 name = "embedded-io"
 version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -525,6 +534,8 @@ dependencies = [
  "embassy-sync",
  "embassy-time",
  "embedded-hal 1.0.0-alpha.9",
+ "embedded-hal-async",
+ "embedded-hal-bus",
  "futures",
  "heapless",
  "panic-probe",
