@@ -93,6 +93,13 @@ fn slice8_mut(x: &mut [u32]) -> &mut [u8] {
     unsafe { slice::from_raw_parts_mut(x.as_mut_ptr() as _, len) }
 }
 
+fn slice32(x: &[u8]) -> &[u32] {
+    assert!(x.len() % 4 == 0);
+    assert!(x.as_ptr() as usize % 4 == 0);
+    let len = x.len() / 4;
+    unsafe { slice::from_raw_parts(x.as_ptr() as _, len) }
+}
+
 #[derive(Copy, Clone, Debug, defmt::Format)]
 struct MemoryRegion {
     start: u32,
@@ -103,19 +110,26 @@ struct MemoryRegion {
 }
 
 #[rustfmt::skip]
-impl MemoryRegion {
-	const SYSBUS       : Self = Self{ start: 0x000000, end: 0x008FFF, latency: 1 }; // 0xA4xxxxxx
-	const EXT_SYS_BUS  : Self = Self{ start: 0x009000, end: 0x03FFFF, latency: 2 };
-	const PBUS         : Self = Self{ start: 0x040000, end: 0x07FFFF, latency: 1 }; // 0xA5xxxxxx
-	const PKTRAM       : Self = Self{ start: 0x0C0000, end: 0x0F0FFF, latency: 0 }; // 0xB0xxxxxx
-	const GRAM         : Self = Self{ start: 0x080000, end: 0x092000, latency: 1 }; // 0xB7xxxxxx
-	const LMAC_ROM     : Self = Self{ start: 0x100000, end: 0x134000, latency: 1 }; // 0x80000000 - 0x80033FFF - ROM
-	const LMAC_RET_RAM : Self = Self{ start: 0x140000, end: 0x14C000, latency: 1 }; // 0x80040000 - 0x8004BFFF - retained RAM
-	const LMAC_SRC_RAM : Self = Self{ start: 0x180000, end: 0x190000, latency: 1 }; // 0x80080000 - 0x8008FFFF - scratch RAM
-	const UMAC_ROM     : Self = Self{ start: 0x200000, end: 0x261800, latency: 1 }; // 0x80000000 - 0x800617FF - ROM
-	const UMAC_RET_RAM : Self = Self{ start: 0x280000, end: 0x2A4000, latency: 1 }; // 0x80080000 - 0x800A3FFF - retained RAM
-	const UMAC_SRC_RAM : Self = Self{ start: 0x300000, end: 0x338000, latency: 1 }; // 0x80100000 - 0x80137FFF - scratch RAM
+mod regions {
+    use super::*;
+	pub(crate) const SYSBUS       : &MemoryRegion = &MemoryRegion{ start: 0x000000, end: 0x008FFF, latency: 1 }; // 0xA4xxxxxx
+	pub(crate) const EXT_SYS_BUS  : &MemoryRegion = &MemoryRegion{ start: 0x009000, end: 0x03FFFF, latency: 2 };
+	pub(crate) const PBUS         : &MemoryRegion = &MemoryRegion{ start: 0x040000, end: 0x07FFFF, latency: 1 }; // 0xA5xxxxxx
+	pub(crate) const PKTRAM       : &MemoryRegion = &MemoryRegion{ start: 0x0C0000, end: 0x0F0FFF, latency: 0 }; // 0xB0xxxxxx
+	pub(crate) const GRAM         : &MemoryRegion = &MemoryRegion{ start: 0x080000, end: 0x092000, latency: 1 }; // 0xB7xxxxxx
+	pub(crate) const LMAC_ROM     : &MemoryRegion = &MemoryRegion{ start: 0x100000, end: 0x134000, latency: 1 }; // 0x80000000 - 0x80033FFF - ROM
+	pub(crate) const LMAC_RET_RAM : &MemoryRegion = &MemoryRegion{ start: 0x140000, end: 0x14C000, latency: 1 }; // 0x80040000 - 0x8004BFFF - retained RAM
+	pub(crate) const LMAC_SRC_RAM : &MemoryRegion = &MemoryRegion{ start: 0x180000, end: 0x190000, latency: 1 }; // 0x80080000 - 0x8008FFFF - scratch RAM
+	pub(crate) const UMAC_ROM     : &MemoryRegion = &MemoryRegion{ start: 0x200000, end: 0x261800, latency: 1 }; // 0x80000000 - 0x800617FF - ROM
+	pub(crate) const UMAC_RET_RAM : &MemoryRegion = &MemoryRegion{ start: 0x280000, end: 0x2A4000, latency: 1 }; // 0x80080000 - 0x800A3FFF - retained RAM
+	pub(crate) const UMAC_SRC_RAM : &MemoryRegion = &MemoryRegion{ start: 0x300000, end: 0x338000, latency: 1 }; // 0x80100000 - 0x80137FFF - scratch RAM
 }
+use regions::*;
+
+static FW_LMAC_PATCH_PRI: &[u8] = include_bytes!("../fw/lmac_patch_pri.bin");
+static FW_LMAC_PATCH_SEC: &[u8] = include_bytes!("../fw/lmac_patch_sec.bin");
+static FW_UMAC_PATCH_PRI: &[u8] = include_bytes!("../fw/umac_patch_pri.bin");
+static FW_UMAC_PATCH_SEC: &[u8] = include_bytes!("../fw/umac_patch_sec.bin");
 
 const SR0_WRITE_IN_PROGRESS: u8 = 0x01;
 
@@ -144,27 +158,62 @@ impl<'a, B: Bus> Nrf70<'a, B> {
         self.rpu_wakeup().await;
 
         info!("enable clocks...");
-        self.rpu_write32(&MemoryRegion::PBUS, 0x8C20, 0x0100).await;
+        self.rpu_write32(PBUS, 0x8C20, 0x0100).await;
 
-        // test reading/writing.
-        self.rpu_write32(&MemoryRegion::PKTRAM, 0, 0x12345678).await;
-        self.rpu_write32(&MemoryRegion::PKTRAM, 4, 0xf0f0f0f0).await;
-        let val = self.rpu_read32(&MemoryRegion::PKTRAM, 0).await;
-        info!("val: {:08x}", val);
-        let val = self.rpu_read32(&MemoryRegion::PKTRAM, 4).await;
-        info!("val: {:08x}", val);
-        self.rpu_write32(&MemoryRegion::UMAC_RET_RAM, 0, 0xaaaa).await;
-        self.rpu_write32(&MemoryRegion::UMAC_RET_RAM, 4, 0xccccc).await;
-        let val = self.rpu_read32(&MemoryRegion::UMAC_RET_RAM, 0).await;
-        info!("val: {:08x}", val);
-        let val = self.rpu_read32(&MemoryRegion::UMAC_RET_RAM, 4).await;
-        info!("val: {:08x}", val);
-        let val = self.rpu_read32(&MemoryRegion::PKTRAM, 0).await;
-        info!("val: {:08x}", val);
-        let val = self.rpu_read32(&MemoryRegion::PKTRAM, 4).await;
-        info!("val: {:08x}", val);
+        info!("enable interrupt...");
+        // First enable the blockwise interrupt for the relevant block in the master register
+        let mut val = self.rpu_read32(SYSBUS, 0x400).await;
+        val |= 1 << 17;
+        self.rpu_write32(SYSBUS, 0x400, val).await;
+
+        // Now enable the relevant MCU interrupt line
+        self.rpu_write32(SYSBUS, 0x494, 1 << 31).await;
+
+        info!("load LMAC firmware patches...");
+        self.rpu_write32(SYSBUS, 0x000, 0x01).await; // reset
+        while self.rpu_read32(SYSBUS, 0x0000).await & 0x01 != 0 {}
+        while self.rpu_read32(SYSBUS, 0x0018).await & 0x01 != 1 {}
+        self.load_fw(LMAC_RET_RAM, 0x9000, FW_LMAC_PATCH_PRI).await;
+        self.load_fw(LMAC_RET_RAM, 0x4000, FW_LMAC_PATCH_SEC).await;
+
+        self.rpu_write32(GRAM, 0xD50, 0).await;
+        self.rpu_write32(SYSBUS, 0x50, 0x3c1a8000).await;
+        self.rpu_write32(SYSBUS, 0x54, 0x275a0000).await;
+        self.rpu_write32(SYSBUS, 0x58, 0x03400008).await;
+        self.rpu_write32(SYSBUS, 0x5c, 0x00000000).await;
+        self.rpu_write32(SYSBUS, 0x2C2c, 0x9000).await;
+
+        info!("booting LMAC...");
+        self.rpu_write32(SYSBUS, 0x000, 0x01).await; // reset
+        while self.rpu_read32(GRAM, 0xD50).await != 0x5A5A5A5A {}
+
+        info!("load UMAC firmware patches...");
+        self.rpu_write32(SYSBUS, 0x100, 0x01).await; // reset
+        while self.rpu_read32(SYSBUS, 0x0100).await & 0x01 != 0 {}
+        while self.rpu_read32(SYSBUS, 0x0118).await & 0x01 != 1 {}
+        self.load_fw(UMAC_RET_RAM, 0x14400, FW_UMAC_PATCH_PRI).await;
+        self.load_fw(UMAC_RET_RAM, 0xC000, FW_UMAC_PATCH_SEC).await;
+
+        self.rpu_write32(PKTRAM, 0, 0).await;
+        self.rpu_write32(SYSBUS, 0x150, 0x3c1a8000).await;
+        self.rpu_write32(SYSBUS, 0x154, 0x275a0000).await;
+        self.rpu_write32(SYSBUS, 0x158, 0x03400008).await;
+        self.rpu_write32(SYSBUS, 0x15c, 0x00000000).await;
+        self.rpu_write32(SYSBUS, 0x2C30, 0x14400).await;
+
+        info!("booting UMAC...");
+        self.rpu_write32(SYSBUS, 0x100, 0x01).await; // reset
+        while self.rpu_read32(PKTRAM, 0).await != 0x5A5A5A5A {}
 
         info!("done!");
+    }
+
+    async fn load_fw(&mut self, mem: &MemoryRegion, addr: u32, fw: &[u8]) {
+        const FW_CHUNK_SIZE: usize = 1024;
+        for (i, chunk) in fw.chunks(FW_CHUNK_SIZE).enumerate() {
+            let offs = addr + (FW_CHUNK_SIZE * i) as u32;
+            self.rpu_write(mem, offs, slice32(chunk)).await;
+        }
     }
 
     async fn rpu_wait_until_write_done(&mut self) {
