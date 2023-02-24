@@ -104,17 +104,17 @@ struct MemoryRegion {
 
 #[rustfmt::skip]
 impl MemoryRegion {
-	const SYSBUS       : Self = Self{ start: 0x000000, end: 0x008FFF, latency: 1 };
+	const SYSBUS       : Self = Self{ start: 0x000000, end: 0x008FFF, latency: 1 }; // 0xA4xxxxxx
 	const EXT_SYS_BUS  : Self = Self{ start: 0x009000, end: 0x03FFFF, latency: 2 };
-	const PBUS         : Self = Self{ start: 0x040000, end: 0x07FFFF, latency: 1 };
-	const PKTRAM       : Self = Self{ start: 0x0C0000, end: 0x0F0FFF, latency: 0 };
-	const GRAM         : Self = Self{ start: 0x080000, end: 0x092000, latency: 1 };
-	const LMAC_ROM     : Self = Self{ start: 0x100000, end: 0x134000, latency: 1 };
-	const LMAC_RET_RAM : Self = Self{ start: 0x140000, end: 0x14C000, latency: 1 };
-	const LMAC_SRC_RAM : Self = Self{ start: 0x180000, end: 0x190000, latency: 1 };
-	const UMAC_ROM     : Self = Self{ start: 0x200000, end: 0x261800, latency: 1 };
-	const UMAC_RET_RAM : Self = Self{ start: 0x280000, end: 0x2A4000, latency: 1 };
-	const UMAC_SRC_RAM : Self = Self{ start: 0x300000, end: 0x338000, latency: 1 };
+	const PBUS         : Self = Self{ start: 0x040000, end: 0x07FFFF, latency: 1 }; // 0xA5xxxxxx
+	const PKTRAM       : Self = Self{ start: 0x0C0000, end: 0x0F0FFF, latency: 0 }; // 0xB0xxxxxx
+	const GRAM         : Self = Self{ start: 0x080000, end: 0x092000, latency: 1 }; // 0xB7xxxxxx
+	const LMAC_ROM     : Self = Self{ start: 0x100000, end: 0x134000, latency: 1 }; // 0x80000000 - 0x80033FFF - ROM
+	const LMAC_RET_RAM : Self = Self{ start: 0x140000, end: 0x14C000, latency: 1 }; // 0x80040000 - 0x8004BFFF - retained RAM
+	const LMAC_SRC_RAM : Self = Self{ start: 0x180000, end: 0x190000, latency: 1 }; // 0x80080000 - 0x8008FFFF - scratch RAM
+	const UMAC_ROM     : Self = Self{ start: 0x200000, end: 0x261800, latency: 1 }; // 0x80000000 - 0x800617FF - ROM
+	const UMAC_RET_RAM : Self = Self{ start: 0x280000, end: 0x2A4000, latency: 1 }; // 0x80080000 - 0x800A3FFF - retained RAM
+	const UMAC_SRC_RAM : Self = Self{ start: 0x300000, end: 0x338000, latency: 1 }; // 0x80100000 - 0x80137FFF - scratch RAM
 }
 
 const SR0_WRITE_IN_PROGRESS: u8 = 0x01;
@@ -142,6 +142,27 @@ impl<'a, B: Bus> Nrf70<'a, B> {
 
         info!("wakeup...");
         self.rpu_wakeup().await;
+
+        info!("enable clocks...");
+        self.rpu_write32(&MemoryRegion::PBUS, 0x8C20, 0x0100).await;
+
+        // test reading/writing.
+        self.rpu_write32(&MemoryRegion::PKTRAM, 0, 0x12345678).await;
+        self.rpu_write32(&MemoryRegion::PKTRAM, 4, 0xf0f0f0f0).await;
+        let val = self.rpu_read32(&MemoryRegion::PKTRAM, 0).await;
+        info!("val: {:08x}", val);
+        let val = self.rpu_read32(&MemoryRegion::PKTRAM, 4).await;
+        info!("val: {:08x}", val);
+        self.rpu_write32(&MemoryRegion::UMAC_RET_RAM, 0, 0xaaaa).await;
+        self.rpu_write32(&MemoryRegion::UMAC_RET_RAM, 4, 0xccccc).await;
+        let val = self.rpu_read32(&MemoryRegion::UMAC_RET_RAM, 0).await;
+        info!("val: {:08x}", val);
+        let val = self.rpu_read32(&MemoryRegion::UMAC_RET_RAM, 4).await;
+        info!("val: {:08x}", val);
+        let val = self.rpu_read32(&MemoryRegion::PKTRAM, 0).await;
+        info!("val: {:08x}", val);
+        let val = self.rpu_read32(&MemoryRegion::PKTRAM, 4).await;
+        info!("val: {:08x}", val);
 
         info!("done!");
     }
@@ -194,13 +215,12 @@ impl<'a, B: Bus> Nrf70<'a, B> {
         self.bus.read_sr1().await
     }
 
-    async fn rpu_read_word(&mut self, mem: &MemoryRegion, offs: u32) -> u32 {
+    async fn rpu_read32(&mut self, mem: &MemoryRegion, offs: u32) -> u32 {
         assert!(mem.start + offs + 4 <= mem.end);
         let lat = mem.latency as usize;
 
         let mut buf = [0u32; 3];
         self.bus.read(mem.start + offs, &mut buf[..lat + 1]).await;
-
         buf[lat]
     }
 
@@ -213,9 +233,12 @@ impl<'a, B: Bus> Nrf70<'a, B> {
         } else {
             // Otherwise, read word by word.
             for (i, val) in buf.iter_mut().enumerate() {
-                *val = self.rpu_read_word(mem, offs + i as u32 * 4).await;
+                *val = self.rpu_read32(mem, offs + i as u32 * 4).await;
             }
         }
+    }
+    async fn rpu_write32(&mut self, mem: &MemoryRegion, offs: u32, val: u32) {
+        self.rpu_write(mem, offs, &[val]).await
     }
 
     async fn rpu_write(&mut self, mem: &MemoryRegion, offs: u32, buf: &[u32]) {
@@ -242,11 +265,33 @@ where
     T::Bus: embedded_hal_async::spi::SpiBus,
 {
     async fn read(&mut self, addr: u32, buf: &mut [u32]) {
-        todo!()
+        self.spi
+            .transaction(move |bus| {
+                let bus = unsafe { &mut *bus };
+                async move {
+                    bus.write(&[0x0B, (addr >> 16) as u8, (addr >> 8) as u8, addr as u8, 0x00])
+                        .await?;
+                    bus.read(slice8_mut(buf)).await?;
+                    Ok(())
+                }
+            })
+            .await
+            .unwrap()
     }
 
     async fn write(&mut self, addr: u32, buf: &[u32]) {
-        todo!()
+        self.spi
+            .transaction(move |bus| {
+                let bus = unsafe { &mut *bus };
+                async move {
+                    bus.write(&[0x02, (addr >> 16) as u8 | 0x80, (addr >> 8) as u8, addr as u8])
+                        .await?;
+                    bus.write(slice8(buf)).await?;
+                    Ok(())
+                }
+            })
+            .await
+            .unwrap()
     }
 
     async fn read_sr0(&mut self) -> u8 {
