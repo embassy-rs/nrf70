@@ -9,7 +9,7 @@ use core::future::Future;
 use core::mem::size_of;
 use core::slice;
 
-use defmt::{assert, info, panic, *};
+use align_data::{include_aligned, Align16};
 use defmt_rtt as _; // global logger
 use embassy_executor::Spawner;
 use embassy_nrf::config::Config;
@@ -174,10 +174,10 @@ pub(crate) enum Processor {
     UMAC,
 }
 
-static FW_LMAC_PATCH_PRI: &[u8] = include_bytes!("../fw/lmac_patch_pri.bin");
-static FW_LMAC_PATCH_SEC: &[u8] = include_bytes!("../fw/lmac_patch_sec.bin");
-static FW_UMAC_PATCH_PRI: &[u8] = include_bytes!("../fw/umac_patch_pri.bin");
-static FW_UMAC_PATCH_SEC: &[u8] = include_bytes!("../fw/umac_patch_sec.bin");
+static FW_LMAC_PATCH_PRI: &[u8] = include_aligned!(Align16, "../fw/lmac_patch_pri.bin");
+static FW_LMAC_PATCH_SEC: &[u8] = include_aligned!(Align16, "../fw/lmac_patch_sec.bin");
+static FW_UMAC_PATCH_PRI: &[u8] = include_aligned!(Align16, "../fw/umac_patch_pri.bin");
+static FW_UMAC_PATCH_SEC: &[u8] = include_aligned!(Align16, "../fw/umac_patch_sec.bin");
 
 const SR0_WRITE_IN_PROGRESS: u8 = 0x01;
 
