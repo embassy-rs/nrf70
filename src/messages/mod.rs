@@ -28,7 +28,7 @@ impl<M: Message> RpuMessage<M> {
     pub const fn new(message: M) -> Self {
         Self {
             header: RpuMessageHeader {
-                length: size_of::<M>() as u32,
+                length: size_of::<Self>() as u32,
                 resubmit: 0,
             },
             message_type: M::MESSAGE_TYPE,
