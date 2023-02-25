@@ -188,6 +188,8 @@ const SR1_RPU_READY: u8 = 0x04;
 
 const SR2_RPU_WAKEUP_REQ: u8 = 0x01;
 
+const MAX_EVENT_POOL_LEN: usize = 1000;
+
 struct Nrf70<'a, B: Bus> {
     bus: B,
     bucken: Output<'a, AnyPin>,
@@ -343,7 +345,7 @@ impl<'a, B: Bus> Nrf70<'a, B> {
     /// Must be called when the interrupt pin is triggered
     pub async fn rpu_irq_process<F, FR>(&mut self, mut callback: F)
     where
-        F: FnMut(Vec<u8, 512>) -> FR,
+        F: FnMut(Vec<u8, MAX_EVENT_POOL_LEN>) -> FR,
         FR: Future,
     {
         let event_count = self.rpu_event_process_all(&mut callback).await;
@@ -359,7 +361,7 @@ impl<'a, B: Bus> Nrf70<'a, B> {
     /// The total amount of events that were processed is returned.
     async fn rpu_event_process_all<F, FR>(&mut self, mut callback: F) -> u32
     where
-        F: FnMut(Vec<u8, 512>) -> FR,
+        F: FnMut(Vec<u8, MAX_EVENT_POOL_LEN>) -> FR,
         FR: Future,
     {
         let mut event_count = 0;
@@ -389,7 +391,7 @@ impl<'a, B: Bus> Nrf70<'a, B> {
 
     async fn rpu_event_process<F, FR>(&mut self, event_address: u32, callback: &mut F)
     where
-        F: FnMut(Vec<u8, 512>) -> FR,
+        F: FnMut(Vec<u8, MAX_EVENT_POOL_LEN>) -> FR,
         FR: Future,
     {
         const RPU_EVENT_COMMON_SIZE_MAX: usize = 128;
@@ -405,12 +407,14 @@ impl<'a, B: Bus> Nrf70<'a, B> {
 
         if message_header.length <= RPU_EVENT_COMMON_SIZE_MAX as u32 {
             event_data.truncate(message_header.length as usize);
-        } else {
+        } else if message_header.length as usize <= MAX_EVENT_POOL_LEN {
             // This is a longer than usual event. We gotta read it again
             let Ok(_) = event_data.resize_default(message_header.length as usize) else {
                 defmt::panic!("Event is too big ({} bytes)! Either the buffer has to be increased or we need to implement fragmented event reading which is something the C lib does", message_header.length);
             };
             self.rpu_read(mem, offs, slice32_mut(&mut event_data)).await;
+        } else {
+            todo!("Fragmented event read is not yet implemented");
         }
 
         callback(event_data).await;
@@ -426,27 +430,33 @@ impl<'a, B: Bus> Nrf70<'a, B> {
     }
 
     pub async fn rpu_cmd_ctrl_write(&mut self, message: &[u8]) {
-        // Wait until we get an address to write to
-        // This queue might already be full with other messages, so we'll just have to wait a bit
-        let message_address = loop {
-            if let Some(message_address) = self
-                .rpu_hpq_dequeue(self.rpu_info.as_ref().unwrap().hpqm_info.cmd_avl_queue)
-                .await
-            {
-                break message_address;
-            }
-        };
+        const MAX_NRF_WIFI_UMAC_CMD_SIZE: usize = 400;
 
-        // Write the message to the suggested address
-        let (mem, offs) = remap_global_addr_to_region_and_offset(message_address, None);
-        self.rpu_write(mem, offs, slice32(message)).await;
+        if message.len() > MAX_NRF_WIFI_UMAC_CMD_SIZE {
+            todo!("Fragmenting commands is not yet implemented");
+        } else {
+            // Wait until we get an address to write to
+            // This queue might already be full with other messages, so we'll just have to wait a bit
+            let message_address = loop {
+                if let Some(message_address) = self
+                    .rpu_hpq_dequeue(self.rpu_info.as_ref().unwrap().hpqm_info.cmd_avl_queue)
+                    .await
+                {
+                    break message_address;
+                }
+            };
 
-        // Post the updated information to the RPU
-        self.rpu_hpq_enqueue(
-            self.rpu_info.as_ref().unwrap().hpqm_info.cmd_busy_queue,
-            message_address,
-        )
-        .await;
+            // Write the message to the suggested address
+            let (mem, offs) = remap_global_addr_to_region_and_offset(message_address, None);
+            self.rpu_write(mem, offs, slice32(message)).await;
+
+            // Post the updated information to the RPU
+            self.rpu_hpq_enqueue(
+                self.rpu_info.as_ref().unwrap().hpqm_info.cmd_busy_queue,
+                message_address,
+            )
+            .await;
+        }
     }
 
     async fn rpu_hpq_enqueue(&mut self, hpq: HostRpuHPQ, value: u32) {

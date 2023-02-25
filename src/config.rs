@@ -1,6 +1,9 @@
 pub struct Config {
     pub(crate) rx_buf_pools: [RxBufPoolParams; 3],
     pub(crate) data_config: DataConfigParams,
+    pub(crate) num_tx_tokens: u16,
+    pub(crate) num_tx_tokens_per_ac: u16,
+    pub(crate) num_tx_tokens_spare: u16,
 }
 
 impl Config {
@@ -11,6 +14,9 @@ impl Config {
                 num_bufs: 1000,
             }; 3],
             data_config: DataConfigParams::default(),
+            num_tx_tokens: 0,
+            num_tx_tokens_per_ac: 0,
+            num_tx_tokens_spare: 0,
         }
     }
 
@@ -40,6 +46,8 @@ impl Config {
             "Packet RAM overflow in Sheliak"
         );
 
+        const WIFI_NRF_FMAC_AC_MAX: u16 = 5;
+
         Self {
             rx_buf_pools: [RxBufPoolParams {
                 buf_sz: rx_max_data_size,
@@ -55,6 +63,9 @@ impl Config {
                 reorder_buf_size: 64,
                 max_rxampdu_size: 3,
             },
+            num_tx_tokens: max_tx_tokens,
+            num_tx_tokens_per_ac: max_tx_tokens / WIFI_NRF_FMAC_AC_MAX,
+            num_tx_tokens_spare: max_tx_tokens % WIFI_NRF_FMAC_AC_MAX,
         }
     }
 }
