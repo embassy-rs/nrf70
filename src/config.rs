@@ -1,45 +1,77 @@
-pub struct Config {
+use crate::{MemoryRegion, MAX_NUM_OF_RX_QUEUES};
+
+pub(crate) const RX_BUF_HEADROOM: usize = 4;
+pub(crate) const TX_BUF_HEADROOM: usize = 52;
+
+pub struct Config<
+    const TX_BUFFERS: usize,
+    const TX_BUFFER_SIZE_MAX: usize,
+    const RX_BUFFERS: usize,
+    const RX_BUFFER_SIZE_MAX: usize,
+> {
     pub(crate) rx_buf_pools: [RxBufPoolParams; 3],
+    pub(crate) rx_desc: [u32; MAX_NUM_OF_RX_QUEUES],
     pub(crate) data_config: DataConfigParams,
     pub(crate) num_tx_tokens: u16,
     pub(crate) num_tx_tokens_per_ac: u16,
     pub(crate) num_tx_tokens_spare: u16,
+
+    pub(crate) rpu_tx_buffer_base: (&'static MemoryRegion, u32),
+    pub(crate) rpu_rx_buffer_base: [(&'static MemoryRegion, u32); MAX_NUM_OF_RX_QUEUES],
 }
 
-impl Config {
+impl Config<0, 0, 3000, 8> {
     pub fn new_only_scan() -> Self {
         Self {
             rx_buf_pools: [RxBufPoolParams {
                 buf_sz: 2,
                 num_bufs: 1000,
             }; 3],
+            rx_desc: [0, 1000, 2000],
             data_config: DataConfigParams::default(),
             num_tx_tokens: 0,
             num_tx_tokens_per_ac: 0,
             num_tx_tokens_spare: 0,
+            rpu_tx_buffer_base: (crate::regions::PKTRAM, 0x5000),
+            rpu_rx_buffer_base: [
+                (crate::regions::PKTRAM, 0x5000 + 2000 * 0),
+                (crate::regions::PKTRAM, 0x5000 + 2000 * 1),
+                (crate::regions::PKTRAM, 0x5000 + 2000 * 2),
+            ],
         }
     }
+}
 
-    pub const fn new_with_tx(
-        max_tx_tokens: u16,
-        max_tx_aggregation: u8,
-        tx_max_data_size: u16,
-        rx_num_bufs: u16,
-        rx_max_data_size: u16,
-    ) -> Self {
-        const RPU_PKTRAM_SIZE: u32 = 0x2C000;
+impl<
+        const TX_BUFFERS: usize,
+        const TX_BUFFER_SIZE_MAX: usize,
+        const RX_BUFFERS: usize,
+        const RX_BUFFER_SIZE_MAX: usize,
+    > Config<TX_BUFFERS, TX_BUFFER_SIZE_MAX, RX_BUFFERS, RX_BUFFER_SIZE_MAX>
+{
+    pub const fn new_with_tx(max_tx_aggregation: u8) -> Self {
+        const RPU_PKTRAM_SIZE: usize = 0x2C000;
 
-        assert!(max_tx_tokens >= 1, "At least one TX token is required");
+        let max_tx_tokens = TX_BUFFERS / max_tx_aggregation as usize;
+        assert!(
+            TX_BUFFERS as u16 % max_tx_aggregation as u16 == 0,
+            "TX_BUFFERS must be a multiple of max_tx_aggregation"
+        );
+
         assert!(max_tx_aggregation <= 16, "Max TX aggregation is 16");
-        assert!(rx_num_bufs >= 1, "At least one RX buffer is required");
+        assert!(RX_BUFFERS >= 1, "At least one RX buffer is required");
+        assert!(
+            RX_BUFFERS % MAX_NUM_OF_RX_QUEUES == 0,
+            "RX_BUFFERS must be a multiple of 3"
+        );
 
-        const MAX_RX_QUEUES: u16 = 3;
-        const TX_BUF_HEADROOM: u32 = 52;
+        assert!(TX_BUFFER_SIZE_MAX > TX_BUF_HEADROOM);
+        assert!(RX_BUFFER_SIZE_MAX > RX_BUF_HEADROOM);
 
-        let total_tx_frames = max_tx_tokens as u32 * max_tx_aggregation as u32;
-        let max_tx_frame_size = tx_max_data_size as u32 * TX_BUF_HEADROOM;
-        let total_tx_size = total_tx_frames * max_tx_frame_size;
-        let total_rx_size = rx_num_bufs as u32 * rx_max_data_size as u32;
+        const MAX_RX_QUEUES: usize = 3;
+
+        let total_tx_size = TX_BUFFERS * TX_BUFFER_SIZE_MAX;
+        let total_rx_size = RX_BUFFERS * RX_BUFFER_SIZE_MAX;
 
         assert!(
             (total_tx_size + total_rx_size) <= RPU_PKTRAM_SIZE,
@@ -50,9 +82,14 @@ impl Config {
 
         Self {
             rx_buf_pools: [RxBufPoolParams {
-                buf_sz: rx_max_data_size,
-                num_bufs: rx_num_bufs / MAX_RX_QUEUES,
+                buf_sz: (RX_BUFFER_SIZE_MAX - RX_BUF_HEADROOM) as u16,
+                num_bufs: (RX_BUFFERS / MAX_RX_QUEUES) as u16,
             }; 3],
+            rx_desc: [
+                0,
+                (RX_BUFFERS / MAX_RX_QUEUES) as u32,
+                (RX_BUFFERS / MAX_RX_QUEUES) as u32 * 2,
+            ],
             data_config: DataConfigParams {
                 rate_protection_type: 0,
                 aggregation: 1,
@@ -63,9 +100,30 @@ impl Config {
                 reorder_buf_size: 64,
                 max_rxampdu_size: 3,
             },
-            num_tx_tokens: max_tx_tokens,
-            num_tx_tokens_per_ac: max_tx_tokens / WIFI_NRF_FMAC_AC_MAX,
-            num_tx_tokens_spare: max_tx_tokens % WIFI_NRF_FMAC_AC_MAX,
+            num_tx_tokens: max_tx_tokens as u16,
+            num_tx_tokens_per_ac: max_tx_tokens as u16 / WIFI_NRF_FMAC_AC_MAX,
+            num_tx_tokens_spare: max_tx_tokens as u16 % WIFI_NRF_FMAC_AC_MAX,
+            rpu_tx_buffer_base: (crate::regions::PKTRAM, 0x5000),
+            rpu_rx_buffer_base: [
+                (
+                    crate::regions::PKTRAM,
+                    0x5000
+                        + total_tx_size as u32
+                        + (RX_BUFFER_SIZE_MAX - RX_BUF_HEADROOM) as u32 * (RX_BUFFERS / MAX_RX_QUEUES) as u32 * 0,
+                ),
+                (
+                    crate::regions::PKTRAM,
+                    0x5000
+                        + total_tx_size as u32
+                        + (RX_BUFFER_SIZE_MAX - RX_BUF_HEADROOM) as u32 * (RX_BUFFERS / MAX_RX_QUEUES) as u32 * 1,
+                ),
+                (
+                    crate::regions::PKTRAM,
+                    0x5000
+                        + total_tx_size as u32
+                        + (RX_BUFFER_SIZE_MAX - RX_BUF_HEADROOM) as u32 * (RX_BUFFERS / MAX_RX_QUEUES) as u32 * 2,
+                ),
+            ],
         }
     }
 }
