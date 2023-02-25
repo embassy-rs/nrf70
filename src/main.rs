@@ -2,6 +2,7 @@
 #![no_main]
 #![feature(type_alias_impl_trait)]
 #![deny(unused_must_use)]
+#![allow(incomplete_features)]
 #![feature(async_fn_in_trait)]
 #![feature(impl_trait_projections)]
 
@@ -10,9 +11,10 @@ use core::mem::size_of;
 use core::slice;
 
 use align_data::{include_aligned, Align16};
+use config::Config;
+use defmt::{assert, info, panic, unwrap};
 use defmt_rtt as _; // global logger
 use embassy_executor::Spawner;
-use embassy_nrf::config::Config;
 use embassy_nrf::gpio::{AnyPin, Input, Level, Output, OutputDrive, Pin, Pull};
 use embassy_nrf::gpiote::{InputChannel, InputChannelPolarity};
 use embassy_nrf::peripherals::QSPI;
@@ -21,8 +23,10 @@ use embassy_nrf::spim::Spim;
 use embassy_nrf::{interrupt, spim};
 use embassy_time::{Duration, Timer};
 use embedded_hal_async::spi::{ExclusiveDevice, SpiBus as _, SpiBusRead as _, SpiBusWrite as _, SpiDevice};
-
 use {embassy_nrf as _, panic_probe as _};
+
+pub mod config;
+pub(crate) mod messages;
 
 #[embassy_executor::task]
 async fn blink_task(led: AnyPin) -> ! {
@@ -38,7 +42,7 @@ async fn blink_task(led: AnyPin) -> ! {
 #[embassy_executor::main]
 async fn main(spawner: Spawner) {
     info!("Hello World!");
-    let config: Config = Default::default();
+    let config: embassy_nrf::config::Config = Default::default();
     let p = embassy_nrf::init(config);
     spawner.spawn(blink_task(p.P1_06.degrade())).unwrap();
 
@@ -80,13 +84,7 @@ async fn main(spawner: Spawner) {
     let bus = QspiBus { qspi };
     */
 
-    let mut nrf70 = Nrf70 {
-        bucken,
-        iovdd_ctl,
-        bus,
-
-        rpu_info: None,
-    };
+    let mut nrf70 = Nrf70::new(bus, bucken, iovdd_ctl, Config::new_only_scan());
 
     nrf70.start().await;
 
@@ -166,7 +164,11 @@ mod regions {
     }
 }
 use heapless::Vec;
+use messages::{commands, RpuMessage};
 use regions::*;
+
+use crate::messages::commands::sys::structures::TempVbatConfig;
+use crate::messages::RpuMessageHeader;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, defmt::Format)]
 pub(crate) enum Processor {
@@ -191,10 +193,21 @@ struct Nrf70<'a, B: Bus> {
     bucken: Output<'a, AnyPin>,
     iovdd_ctl: Output<'a, AnyPin>,
 
+    config: Config,
     rpu_info: Option<RpuInfo>,
 }
 
 impl<'a, B: Bus> Nrf70<'a, B> {
+    fn new(bus: B, bucken: Output<'a, AnyPin>, iovdd_ctl: Output<'a, AnyPin>, config: Config) -> Self {
+        Self {
+            bus,
+            bucken,
+            iovdd_ctl,
+            config,
+            rpu_info: None,
+        }
+    }
+
     pub async fn start(&mut self) {
         info!("power on...");
         Timer::after(Duration::from_millis(10)).await;
@@ -256,6 +269,12 @@ impl<'a, B: Bus> Nrf70<'a, B> {
 
         info!("Initializing rpu info...");
         self.init_rpu_info().await;
+
+        // TODO: wifi_nrf_fmac_init_tx
+        // TODO: wifi_nrf_fmac_init_rx
+
+        info!("Initializing umac...");
+        self.init_umac().await;
 
         info!("Enabling interrupts...");
         self.rpu_irq_enable().await;
@@ -406,6 +425,30 @@ impl<'a, B: Bus> Nrf70<'a, B> {
             .await;
     }
 
+    pub async fn rpu_cmd_ctrl_write(&mut self, message: &[u8]) {
+        // Wait until we get an address to write to
+        // This queue might already be full with other messages, so we'll just have to wait a bit
+        let message_address = loop {
+            if let Some(message_address) = self
+                .rpu_hpq_dequeue(self.rpu_info.as_ref().unwrap().hpqm_info.cmd_avl_queue)
+                .await
+            {
+                break message_address;
+            }
+        };
+
+        // Write the message to the suggested address
+        let (mem, offs) = remap_global_addr_to_region_and_offset(message_address, None);
+        self.rpu_write(mem, offs, slice32(message)).await;
+
+        // Post the updated information to the RPU
+        self.rpu_hpq_enqueue(
+            self.rpu_info.as_ref().unwrap().hpqm_info.cmd_busy_queue,
+            message_address,
+        )
+        .await;
+    }
+
     async fn rpu_hpq_enqueue(&mut self, hpq: HostRpuHPQ, value: u32) {
         let (mem, offs) = remap_global_addr_to_region_and_offset(hpq.enqueue_addr, None);
         self.rpu_write32(mem, offs, value).await;
@@ -442,6 +485,60 @@ impl<'a, B: Bus> Nrf70<'a, B> {
             rx_cmd_base,
             tx_cmd_base: Self::RPU_MEM_TX_CMD_BASE,
         })
+    }
+
+    async fn init_umac(&mut self) {
+        const HW_DELAY: u32 = 7300;
+        const SW_DELAY: u32 = 5000;
+        const BCN_TIMEOUT: u32 = 40000;
+        const CALIB_SLEEP_CLOCK_ENABLE: u32 = 1;
+
+        const NRF_WIFI_DEF_PHY_CALIB: u32 = 196667;
+
+        const NRF_WIFI_TEMP_CALIB_ENABLE: u32 = 1;
+        const NRF_WIFI_DEF_PHY_TEMP_CALIB: u32 = 1 | 2 | 16 | 8 | 0 | 32;
+        const NRF_WIFI_DEF_PHY_VBAT_CALIB: u32 = 32;
+        const NRF_WIFI_TEMP_CALIB_PERIOD: u32 = 1024 * 1024;
+        const NRF_WIFI_VBAT_LOW: i32 = 6;
+        const NRF_WIFI_VBAT_HIGH: i32 = 12;
+        const NRF_WIFI_TEMP_CALIB_THRESHOLD: i32 = 40;
+
+        let umac_cmd = RpuMessage::new(commands::sys::SysCommand::new(commands::sys::Init {
+            wdev_id: 0,
+            sys_params: commands::sys::structures::SysParams {
+                sleep_enable: 0, // TODO for low power
+                hw_bringup_time: HW_DELAY,
+                sw_bringup_time: SW_DELAY,
+                bcn_time_out: BCN_TIMEOUT,
+                calib_sleep_clk: CALIB_SLEEP_CLOCK_ENABLE,
+                phy_calib: NRF_WIFI_DEF_PHY_CALIB,
+                mac_addr: [0; 6],
+                rf_params: [0; 200],
+                rf_params_valid: 0,
+            },
+            rx_buf_pools: self.config.rx_buf_pools,
+            data_config_params: self.config.data_config,
+            temp_vbat_config_params: TempVbatConfig {
+                temp_based_calib_en: NRF_WIFI_TEMP_CALIB_ENABLE,
+                temp_calib_bitmap: NRF_WIFI_DEF_PHY_TEMP_CALIB,
+                vbat_calibp_bitmap: NRF_WIFI_DEF_PHY_VBAT_CALIB,
+                temp_vbat_mon_period: NRF_WIFI_TEMP_CALIB_PERIOD,
+                vth_very_low: 0,
+                vth_low: NRF_WIFI_VBAT_LOW,
+                vth_hi: NRF_WIFI_VBAT_HIGH,
+                temp_threshold: NRF_WIFI_TEMP_CALIB_THRESHOLD,
+                vbat_threshold: 0,
+            },
+        }));
+
+        let cmd_bytes = unsafe {
+            core::slice::from_raw_parts(
+                &umac_cmd as *const RpuMessage<commands::sys::SysCommand<commands::sys::Init>> as *const u8,
+                size_of::<RpuMessage<commands::sys::SysCommand<commands::sys::Init>>>(),
+            )
+        };
+
+        unwrap!(embassy_time::with_timeout(Duration::from_secs(1), self.rpu_cmd_ctrl_write(cmd_bytes)).await);
     }
 
     async fn load_fw(&mut self, mem: &MemoryRegion, addr: u32, fw: &[u8]) {
@@ -592,7 +689,7 @@ where
             })
             .await
             .unwrap();
-        trace!("read sr0 = {:02x}", val);
+        defmt::trace!("read sr0 = {:02x}", val);
         val
     }
 
@@ -609,7 +706,7 @@ where
             })
             .await
             .unwrap();
-        trace!("read sr1 = {:02x}", val);
+        defmt::trace!("read sr1 = {:02x}", val);
         val
     }
 
@@ -626,12 +723,12 @@ where
             })
             .await
             .unwrap();
-        trace!("read sr2 = {:02x}", val);
+        defmt::trace!("read sr2 = {:02x}", val);
         val
     }
 
     async fn write_sr2(&mut self, val: u8) {
-        trace!("write sr2 = {:02x}", val);
+        defmt::trace!("write sr2 = {:02x}", val);
         self.spi
             .transaction(move |bus| {
                 let bus = unsafe { &mut *bus };
@@ -663,26 +760,26 @@ impl<'a> Bus for QspiBus<'a> {
     async fn read_sr0(&mut self) -> u8 {
         let mut status = [4; 1];
         unwrap!(self.qspi.custom_instruction(0x05, &[0x00], &mut status).await);
-        trace!("read sr0 = {:02x}", status[0]);
+        defmt::trace!("read sr0 = {:02x}", status[0]);
         status[0]
     }
 
     async fn read_sr1(&mut self) -> u8 {
         let mut status = [4; 1];
         unwrap!(self.qspi.custom_instruction(0x1f, &[0x00], &mut status).await);
-        trace!("read sr1 = {:02x}", status[0]);
+        defmt::trace!("read sr1 = {:02x}", status[0]);
         status[0]
     }
 
     async fn read_sr2(&mut self) -> u8 {
         let mut status = [4; 1];
         unwrap!(self.qspi.custom_instruction(0x2f, &[0x00], &mut status).await);
-        trace!("read sr2 = {:02x}", status[0]);
+        defmt::trace!("read sr2 = {:02x}", status[0]);
         status[0]
     }
 
     async fn write_sr2(&mut self, val: u8) {
-        trace!("write sr2 = {:02x}", val);
+        defmt::trace!("write sr2 = {:02x}", val);
         unwrap!(self.qspi.custom_instruction(0x3f, &[val], &mut []).await);
     }
 }
@@ -715,18 +812,6 @@ pub(crate) struct HostRpuHPQMInfo {
     /// Queue which RPU uses to inform host about command buffers which can be used to push commands to the RPU.
     cmd_avl_queue: HostRpuHPQ,
     rx_buf_busy_queue: [HostRpuHPQ; MAX_NUM_OF_RX_QUEUES],
-}
-
-/// This structure encapsulates the common information included at the start of
-/// each command/event exchanged with the RPU.
-#[repr(C)]
-#[derive(Debug, defmt::Format, Clone, Copy)]
-pub(crate) struct RpuMessageHeader {
-    /// Length of the message.
-    length: u32,
-    /// Flag to indicate whether the recipient is expected to resubmit
-    /// the cmd/event address back to the trasmitting entity.
-    resubmit: u32,
 }
 
 pub(crate) struct RpuInfo {
