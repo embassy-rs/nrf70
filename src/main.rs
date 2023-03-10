@@ -21,13 +21,17 @@ use embassy_nrf::gpiote::{InputChannel, InputChannelPolarity};
 use embassy_nrf::peripherals::QSPI;
 use embassy_nrf::qspi::Qspi;
 use embassy_nrf::spim::Spim;
-use embassy_nrf::{interrupt, spim};
+use embassy_nrf::{bind_interrupts, spim};
 use embassy_time::{Duration, Timer};
 use embedded_hal_async::spi::{ExclusiveDevice, SpiBus as _, SpiBusRead as _, SpiBusWrite as _, SpiDevice};
 use {embassy_nrf as _, panic_probe as _};
 
 pub mod config;
 pub(crate) mod messages;
+
+bind_interrupts!(struct Irqs {
+    SERIAL0 => spim::InterruptHandler<embassy_nrf::peripherals::SERIAL0>;
+});
 
 #[embassy_executor::task]
 async fn blink_task(led: AnyPin) -> ! {
@@ -67,7 +71,7 @@ async fn main(spawner: Spawner) {
 
     let mut config = spim::Config::default();
     config.frequency = spim::Frequency::M8;
-    let spim = Spim::new(p.SERIAL0, interrupt::take!(SERIAL0), sck, dio1, dio0, config);
+    let spim = Spim::new(p.SERIAL0, Irqs, sck, dio1, dio0, config);
     let csn = Output::new(csn, Level::High, OutputDrive::HighDrive);
     let spi = ExclusiveDevice::new(spim, csn);
     let bus = SpiBus { spi };
@@ -309,6 +313,9 @@ impl<
         info!("Initializing rpu info...");
         self.init_rpu_info().await;
 
+        info!("Enabling interrupts...");
+        self.rpu_irq_enable().await;
+
         info!("Initializing TX...");
         self.init_tx().await;
 
@@ -317,9 +324,6 @@ impl<
 
         info!("Initializing umac...");
         self.init_umac().await;
-
-        info!("Enabling interrupts...");
-        self.rpu_irq_enable().await;
 
         info!("done!");
     }
@@ -523,6 +527,8 @@ impl<
     const RPU_MEM_TX_CMD_BASE: u32 = 0xB00000B8;
 
     async fn init_rpu_info(&mut self) {
+        // Based on 'wifi_nrf_hal_dev_init'
+
         let mut hpqm_info = [0; size_of::<HostRpuHPQMInfo>()];
         let (mem, offs) = remap_global_addr_to_region_and_offset(Self::RPU_MEM_HPQ_INFO, None);
         self.rpu_read(mem, offs, slice32_mut(&mut hpqm_info)).await;
@@ -534,7 +540,7 @@ impl<
             hpqm_info: unsafe { core::mem::transmute_copy(&hpqm_info) },
             rx_cmd_base,
             tx_cmd_base: Self::RPU_MEM_TX_CMD_BASE,
-        })
+        });
     }
 
     async fn init_umac(&mut self) {
@@ -614,18 +620,15 @@ impl<
             initial_buffer[0] = desc_id as u32;
 
             // Reset the RPU buffer to 0
-            self.rpu_write(
-                pool_rpu_region,
-                bounce_buffer_address,
-                &initial_buffer,
-            )
-            .await;
+            self.rpu_write(pool_rpu_region, bounce_buffer_address, &initial_buffer)
+                .await;
 
             // Create host_rpu_rx_buf_info (it's just one word of the address)
             let command = [pool_rpu_region.rpu_mem_start + bounce_buffer_address + RX_BUF_HEADROOM as u32];
 
             // Call wifi_nrf_hal_data_cmd_send with the command
-            self.rpu_rx_cmd_send(&command, desc_id as u32, pool_info.pool_id as usize).await;
+            self.rpu_rx_cmd_send(&command, desc_id as u32, pool_info.pool_id as usize)
+                .await;
         }
     }
 
@@ -975,6 +978,7 @@ pub(crate) struct HostRpuHPQMInfo {
     rx_buf_busy_queue: [HostRpuHPQ; MAX_NUM_OF_RX_QUEUES],
 }
 
+#[derive(Debug, defmt::Format)]
 pub(crate) struct RpuInfo {
     hpqm_info: HostRpuHPQMInfo,
     /// The base address for posting RX commands.
