@@ -22,9 +22,17 @@ use embassy_nrf::peripherals::QSPI;
 use embassy_nrf::qspi::Qspi;
 use embassy_nrf::spim::Spim;
 use embassy_nrf::{bind_interrupts, spim};
-use embassy_time::{Duration, Timer};
-use embedded_hal_async::spi::{ExclusiveDevice, SpiBus as _, SpiBusRead as _, SpiBusWrite as _, SpiDevice};
+use embassy_time::{Delay, Duration, Timer};
+use embedded_hal::spi::Operation;
+use embedded_hal_async::spi::{ExclusiveDevice, SpiDevice};
+use heapless::Vec;
+use messages::{commands, RpuMessage};
+use regions::*;
 use {embassy_nrf as _, panic_probe as _};
+
+use crate::config::RX_BUF_HEADROOM;
+use crate::messages::commands::sys::structures::TempVbatConfig;
+use crate::messages::RpuMessageHeader;
 
 pub mod config;
 pub(crate) mod messages;
@@ -73,7 +81,7 @@ async fn main(spawner: Spawner) {
     config.frequency = spim::Frequency::M8;
     let spim = Spim::new(p.SERIAL0, Irqs, sck, dio1, dio0, config);
     let csn = Output::new(csn, Level::High, OutputDrive::HighDrive);
-    let spi = ExclusiveDevice::new(spim, csn);
+    let spi = ExclusiveDevice::new(spim, csn, Delay);
     let bus = SpiBus { spi };
 
     /*
@@ -170,13 +178,6 @@ pub(crate) mod regions {
         )
     }
 }
-use heapless::Vec;
-use messages::{commands, RpuMessage};
-use regions::*;
-
-use crate::config::RX_BUF_HEADROOM;
-use crate::messages::commands::sys::structures::TempVbatConfig;
-use crate::messages::RpuMessageHeader;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, defmt::Format)]
 pub(crate) enum Processor {
@@ -806,103 +807,54 @@ struct SpiBus<T> {
     spi: T,
 }
 
-impl<T: SpiDevice> Bus for SpiBus<T>
-where
-    T::Bus: embedded_hal_async::spi::SpiBus,
-{
+impl<T: SpiDevice> Bus for SpiBus<T> {
     async fn read(&mut self, addr: u32, buf: &mut [u32]) {
         self.spi
-            .transaction(move |bus| {
-                let bus = unsafe { &mut *bus };
-                async move {
-                    bus.write(&[0x0B, (addr >> 16) as u8, (addr >> 8) as u8, addr as u8, 0x00])
-                        .await?;
-                    bus.read(slice8_mut(buf)).await?;
-                    Ok(())
-                }
-            })
+            .transaction(&mut [
+                Operation::Write(&[0x0B, (addr >> 16) as u8, (addr >> 8) as u8, addr as u8, 0x00]),
+                Operation::Read(slice8_mut(buf)),
+            ])
             .await
             .unwrap()
     }
 
     async fn write(&mut self, addr: u32, buf: &[u32]) {
         self.spi
-            .transaction(move |bus| {
-                let bus = unsafe { &mut *bus };
-                async move {
-                    bus.write(&[0x02, (addr >> 16) as u8 | 0x80, (addr >> 8) as u8, addr as u8])
-                        .await?;
-                    bus.write(slice8(buf)).await?;
-                    Ok(())
-                }
-            })
+            .transaction(&mut [
+                Operation::Write(&[0x02, (addr >> 16) as u8 | 0x80, (addr >> 8) as u8, addr as u8]),
+                Operation::Write(slice8(buf)),
+            ])
             .await
             .unwrap()
     }
 
     async fn read_sr0(&mut self) -> u8 {
-        let val = self
-            .spi
-            .transaction(move |bus| {
-                let bus = unsafe { &mut *bus };
-                async move {
-                    let mut buf = [0; 2];
-                    bus.transfer(&mut buf, &[0x05]).await?;
-                    Ok(buf[1])
-                }
-            })
-            .await
-            .unwrap();
+        let mut buf = [0; 2];
+        self.spi.transfer(&mut buf, &[0x05]).await.unwrap();
+        let val = buf[1];
         defmt::trace!("read sr0 = {:02x}", val);
         val
     }
 
     async fn read_sr1(&mut self) -> u8 {
-        let val = self
-            .spi
-            .transaction(move |bus| {
-                let bus = unsafe { &mut *bus };
-                async move {
-                    let mut buf = [0; 2];
-                    bus.transfer(&mut buf, &[0x1f]).await?;
-                    Ok(buf[1])
-                }
-            })
-            .await
-            .unwrap();
+        let mut buf = [0; 2];
+        self.spi.transfer(&mut buf, &[0x1f]).await.unwrap();
+        let val = buf[1];
         defmt::trace!("read sr1 = {:02x}", val);
         val
     }
 
     async fn read_sr2(&mut self) -> u8 {
-        let val = self
-            .spi
-            .transaction(move |bus| {
-                let bus = unsafe { &mut *bus };
-                async move {
-                    let mut buf = [0; 2];
-                    bus.transfer(&mut buf, &[0x2f]).await?;
-                    Ok(buf[1])
-                }
-            })
-            .await
-            .unwrap();
+        let mut buf = [0; 2];
+        self.spi.transfer(&mut buf, &[0x2f]).await.unwrap();
+        let val = buf[1];
         defmt::trace!("read sr2 = {:02x}", val);
         val
     }
 
     async fn write_sr2(&mut self, val: u8) {
         defmt::trace!("write sr2 = {:02x}", val);
-        self.spi
-            .transaction(move |bus| {
-                let bus = unsafe { &mut *bus };
-                async move {
-                    bus.write(&[0x3f, val]).await?;
-                    Ok(())
-                }
-            })
-            .await
-            .unwrap()
+        self.spi.write(&[0x3f, val]).await.unwrap();
     }
 }
 
