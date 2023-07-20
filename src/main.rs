@@ -263,52 +263,52 @@ impl<
         self.rpu_wakeup().await;
 
         info!("enable clocks...");
-        self.rpu_write32(PBUS, 0x8C20, 0x0100).await;
+        self.raw_write32(PBUS, 0x8C20, 0x0100).await;
 
         info!("enable interrupt...");
         // First enable the blockwise interrupt for the relevant block in the master register
-        let mut val = self.rpu_read32(SYSBUS, 0x400).await;
+        let mut val = self.raw_read32(SYSBUS, 0x400).await;
         val |= 1 << 17;
-        self.rpu_write32(SYSBUS, 0x400, val).await;
+        self.raw_write32(SYSBUS, 0x400, val).await;
 
         // Now enable the relevant MCU interrupt line
-        self.rpu_write32(SYSBUS, 0x494, 1 << 31).await;
+        self.raw_write32(SYSBUS, 0x494, 1 << 31).await;
 
         info!("load LMAC firmware patches...");
-        self.rpu_write32(SYSBUS, 0x000, 0x01).await; // reset
-        while self.rpu_read32(SYSBUS, 0x0000).await & 0x01 != 0 {}
-        while self.rpu_read32(SYSBUS, 0x0018).await & 0x01 != 1 {}
+        self.raw_write32(SYSBUS, 0x000, 0x01).await; // reset
+        while self.raw_read32(SYSBUS, 0x0000).await & 0x01 != 0 {}
+        while self.raw_read32(SYSBUS, 0x0018).await & 0x01 != 1 {}
         self.load_fw(LMAC_RET_RAM, 0x9000, FW_LMAC_PATCH_PRI).await;
         self.load_fw(LMAC_RET_RAM, 0x4000, FW_LMAC_PATCH_SEC).await;
 
-        self.rpu_write32(GRAM, 0xD50, 0).await;
-        self.rpu_write32(SYSBUS, 0x50, 0x3c1a8000).await;
-        self.rpu_write32(SYSBUS, 0x54, 0x275a0000).await;
-        self.rpu_write32(SYSBUS, 0x58, 0x03400008).await;
-        self.rpu_write32(SYSBUS, 0x5c, 0x00000000).await;
-        self.rpu_write32(SYSBUS, 0x2C2c, 0x9000).await;
+        self.raw_write32(GRAM, 0xD50, 0).await;
+        self.raw_write32(SYSBUS, 0x50, 0x3c1a8000).await;
+        self.raw_write32(SYSBUS, 0x54, 0x275a0000).await;
+        self.raw_write32(SYSBUS, 0x58, 0x03400008).await;
+        self.raw_write32(SYSBUS, 0x5c, 0x00000000).await;
+        self.raw_write32(SYSBUS, 0x2C2c, 0x9000).await;
 
         info!("booting LMAC...");
-        self.rpu_write32(SYSBUS, 0x000, 0x01).await; // reset
-        while self.rpu_read32(GRAM, 0xD50).await != 0x5A5A5A5A {}
+        self.raw_write32(SYSBUS, 0x000, 0x01).await; // reset
+        while self.raw_read32(GRAM, 0xD50).await != 0x5A5A5A5A {}
 
         info!("load UMAC firmware patches...");
-        self.rpu_write32(SYSBUS, 0x100, 0x01).await; // reset
-        while self.rpu_read32(SYSBUS, 0x0100).await & 0x01 != 0 {}
-        while self.rpu_read32(SYSBUS, 0x0118).await & 0x01 != 1 {}
+        self.raw_write32(SYSBUS, 0x100, 0x01).await; // reset
+        while self.raw_read32(SYSBUS, 0x0100).await & 0x01 != 0 {}
+        while self.raw_read32(SYSBUS, 0x0118).await & 0x01 != 1 {}
         self.load_fw(UMAC_RET_RAM, 0x14400, FW_UMAC_PATCH_PRI).await;
         self.load_fw(UMAC_RET_RAM, 0xC000, FW_UMAC_PATCH_SEC).await;
 
-        self.rpu_write32(PKTRAM, 0, 0).await;
-        self.rpu_write32(SYSBUS, 0x150, 0x3c1a8000).await;
-        self.rpu_write32(SYSBUS, 0x154, 0x275a0000).await;
-        self.rpu_write32(SYSBUS, 0x158, 0x03400008).await;
-        self.rpu_write32(SYSBUS, 0x15c, 0x00000000).await;
-        self.rpu_write32(SYSBUS, 0x2C30, 0x14400).await;
+        self.raw_write32(PKTRAM, 0, 0).await;
+        self.raw_write32(SYSBUS, 0x150, 0x3c1a8000).await;
+        self.raw_write32(SYSBUS, 0x154, 0x275a0000).await;
+        self.raw_write32(SYSBUS, 0x158, 0x03400008).await;
+        self.raw_write32(SYSBUS, 0x15c, 0x00000000).await;
+        self.raw_write32(SYSBUS, 0x2C30, 0x14400).await;
 
         info!("booting UMAC...");
-        self.rpu_write32(SYSBUS, 0x100, 0x01).await; // reset
-        while self.rpu_read32(PKTRAM, 0).await != 0x5A5A5A5A {}
+        self.raw_write32(SYSBUS, 0x100, 0x01).await; // reset
+        while self.raw_read32(PKTRAM, 0).await != 0x5A5A5A5A {}
 
         info!("Initializing rpu info...");
         self.init_rpu_info().await;
@@ -340,50 +340,52 @@ impl<
 
     async fn rpu_irq_enable(&mut self) {
         // First enable the blockwise interrupt for the relevant block in the master register
-
-        let (mem, offs) = remap_global_addr_to_region_and_offset(Self::RPU_REG_INT_FROM_RPU_CTRL, None);
-        let mut val = self.rpu_read32(mem, offs).await;
+        let mut val = self.read32(Self::RPU_REG_INT_FROM_RPU_CTRL, None).await;
 
         val |= 1 << Self::RPU_REG_BIT_INT_FROM_RPU_CTRL;
 
-        self.rpu_write32(mem, offs, val).await;
+        self.write32(Self::RPU_REG_INT_FROM_RPU_CTRL, None, val).await;
 
         // Now enable the relevant MCU interrupt line
-        let (mem, offs) = remap_global_addr_to_region_and_offset(Self::RPU_REG_INT_FROM_MCU_CTRL, None);
-        self.rpu_write32(mem, offs, 1 << Self::RPU_REG_BIT_INT_FROM_MCU_CTRL)
-            .await;
+        self.write32(
+            Self::RPU_REG_INT_FROM_MCU_CTRL,
+            None,
+            1 << Self::RPU_REG_BIT_INT_FROM_MCU_CTRL,
+        )
+        .await;
     }
 
     async fn rpu_irq_disable(&mut self) {
-        let (mem, offs) = remap_global_addr_to_region_and_offset(Self::RPU_REG_INT_FROM_RPU_CTRL, None);
-        let mut val = self.rpu_read32(mem, offs).await;
-
+        let mut val = self.read32(Self::RPU_REG_INT_FROM_RPU_CTRL, None).await;
         val &= !(1 << Self::RPU_REG_BIT_INT_FROM_RPU_CTRL);
+        self.write32(Self::RPU_REG_INT_FROM_RPU_CTRL, None, val).await;
 
-        self.rpu_write32(mem, offs, val).await;
-
-        let (mem, offs) = remap_global_addr_to_region_and_offset(Self::RPU_REG_INT_FROM_MCU_CTRL, None);
-        self.rpu_write32(mem, offs, !(1 << Self::RPU_REG_BIT_INT_FROM_MCU_CTRL))
-            .await;
+        self.write32(
+            Self::RPU_REG_INT_FROM_MCU_CTRL,
+            None,
+            !(1 << Self::RPU_REG_BIT_INT_FROM_MCU_CTRL),
+        )
+        .await;
     }
 
     async fn rpu_irq_ack(&mut self) {
         // Guess: I think this clears the interrupt flag
-        let (mem, offs) = remap_global_addr_to_region_and_offset(Self::RPU_REG_INT_FROM_MCU_ACK, None);
-        self.rpu_write32(mem, offs, 1 << Self::RPU_REG_BIT_INT_FROM_MCU_ACK)
-            .await;
+        self.write32(
+            Self::RPU_REG_INT_FROM_MCU_ACK,
+            None,
+            1 << Self::RPU_REG_BIT_INT_FROM_MCU_ACK,
+        )
+        .await;
     }
 
     /// Checks if the watchdog was the source of the interrupt
     async fn rpu_irq_watchdog_check(&mut self) -> bool {
-        let (mem, offs) = remap_global_addr_to_region_and_offset(Self::RPU_REG_MIPS_MCU_UCCP_INT_STATUS, None);
-        let val = self.rpu_read32(mem, offs).await;
+        let val = self.read32(Self::RPU_REG_MIPS_MCU_UCCP_INT_STATUS, None).await;
         (val & (1 << Self::RPU_REG_BIT_MIPS_WATCHDOG_INT_STATUS)) > 0
     }
 
     async fn rpu_irq_watchdog_ack(&mut self) {
-        let (mem, offs) = remap_global_addr_to_region_and_offset(Self::RPU_REG_MIPS_MCU_TIMER_CONTROL, None);
-        self.rpu_write32(mem, offs, 0).await;
+        self.write32(Self::RPU_REG_MIPS_MCU_TIMER_CONTROL, None, 0).await;
     }
 
     /// Must be called when the interrupt pin is triggered
@@ -442,8 +444,7 @@ impl<
         let mut event_data = Vec::new();
         event_data.resize_default(RPU_EVENT_COMMON_SIZE_MAX).unwrap();
 
-        let (mem, offs) = remap_global_addr_to_region_and_offset(event_address, None);
-        self.rpu_read(mem, offs, slice32_mut(&mut event_data)).await;
+        self.read(event_address, None, slice32_mut(&mut event_data)).await;
 
         // Get the header from the front of the event data
         let message_header: RpuMessageHeader =
@@ -456,7 +457,7 @@ impl<
             let Ok(_) = event_data.resize_default(message_header.length as usize) else {
                 defmt::panic!("Event is too big ({} bytes)! Either the buffer has to be increased or we need to implement fragmented event reading which is something the C lib does", message_header.length);
             };
-            self.rpu_read(mem, offs, slice32_mut(&mut event_data)).await;
+            self.read(event_address, None, slice32_mut(&mut event_data)).await;
         } else {
             todo!("Fragmented event read is not yet implemented");
         }
@@ -491,8 +492,7 @@ impl<
             };
 
             // Write the message to the suggested address
-            let (mem, offs) = remap_global_addr_to_region_and_offset(message_address, None);
-            self.rpu_write(mem, offs, slice32(message)).await;
+            self.write(message_address, None, slice32(message)).await;
 
             // Post the updated information to the RPU
             self.rpu_hpq_enqueue(
@@ -504,18 +504,15 @@ impl<
     }
 
     async fn rpu_hpq_enqueue(&mut self, hpq: HostRpuHPQ, value: u32) {
-        let (mem, offs) = remap_global_addr_to_region_and_offset(hpq.enqueue_addr, None);
-        self.rpu_write32(mem, offs, value).await;
+        self.write32(hpq.enqueue_addr, None, value).await;
     }
 
     async fn rpu_hpq_dequeue(&mut self, hpq: HostRpuHPQ) -> Option<u32> {
-        let (mem, offs) = remap_global_addr_to_region_and_offset(hpq.dequeue_addr, None);
-        let value = self.rpu_read32(mem, offs).await;
+        let value = self.read32(hpq.dequeue_addr, None).await;
 
         // Pop element only if it is valid
         if value != 0 {
-            self.rpu_write32(mem, offs, value).await;
-
+            self.write32(hpq.dequeue_addr, None, value).await;
             Some(value)
         } else {
             None
@@ -530,11 +527,10 @@ impl<
         // Based on 'wifi_nrf_hal_dev_init'
 
         let mut hpqm_info = [0; size_of::<HostRpuHPQMInfo>()];
-        let (mem, offs) = remap_global_addr_to_region_and_offset(Self::RPU_MEM_HPQ_INFO, None);
-        self.rpu_read(mem, offs, slice32_mut(&mut hpqm_info)).await;
+        self.read(Self::RPU_MEM_HPQ_INFO, None, slice32_mut(&mut hpqm_info))
+            .await;
 
-        let (mem, offs) = remap_global_addr_to_region_and_offset(Self::RPU_MEM_RX_CMD_BASE, None);
-        let rx_cmd_base = self.rpu_read32(mem, offs).await;
+        let rx_cmd_base = self.read32(Self::RPU_MEM_RX_CMD_BASE, None).await;
 
         self.rpu_info = Some(RpuInfo {
             hpqm_info: unsafe { core::mem::transmute_copy(&hpqm_info) },
@@ -620,7 +616,7 @@ impl<
             initial_buffer[0] = desc_id as u32;
 
             // Reset the RPU buffer to 0
-            self.rpu_write(pool_rpu_region, bounce_buffer_address, &initial_buffer)
+            self.raw_write(pool_rpu_region, bounce_buffer_address, &initial_buffer)
                 .await;
 
             // Create host_rpu_rx_buf_info (it's just one word of the address)
@@ -656,9 +652,12 @@ impl<
         .await;
 
         // Indicate to the RPU that the information has been posted
-        let (mem, offs) =
-            regions::remap_global_addr_to_region_and_offset(Self::RPU_REG_INT_TO_MCU_CTRL, Some(Processor::UMAC));
-        self.rpu_write32(mem, offs, self.num_rx_commands | 0x7fff0000).await;
+        self.write32(
+            Self::RPU_REG_INT_TO_MCU_CTRL,
+            Some(Processor::UMAC),
+            self.num_rx_commands | 0x7fff0000,
+        )
+        .await;
         self.num_rx_commands = self.num_rx_commands.wrapping_add(1);
     }
 
@@ -681,7 +680,7 @@ impl<
         const FW_CHUNK_SIZE: usize = 1024;
         for (i, chunk) in fw.chunks(FW_CHUNK_SIZE).enumerate() {
             let offs = addr + (FW_CHUNK_SIZE * i) as u32;
-            self.rpu_write(mem, offs, slice32(chunk)).await;
+            self.raw_write(mem, offs, slice32(chunk)).await;
         }
     }
 
@@ -733,7 +732,7 @@ impl<
         self.bus.read_sr1().await
     }
 
-    async fn rpu_read32(&mut self, mem: &MemoryRegion, offs: u32) -> u32 {
+    async fn raw_read32(&mut self, mem: &MemoryRegion, offs: u32) -> u32 {
         assert!(mem.start + offs + 4 <= mem.end);
         let lat = mem.latency as usize;
 
@@ -742,7 +741,7 @@ impl<
         buf[lat]
     }
 
-    async fn rpu_read(&mut self, mem: &MemoryRegion, offs: u32, buf: &mut [u32]) {
+    async fn raw_read(&mut self, mem: &MemoryRegion, offs: u32, buf: &mut [u32]) {
         assert!(mem.start + offs + (buf.len() as u32 * 4) <= mem.end);
 
         if mem.latency == 0 {
@@ -751,17 +750,37 @@ impl<
         } else {
             // Otherwise, read word by word.
             for (i, val) in buf.iter_mut().enumerate() {
-                *val = self.rpu_read32(mem, offs + i as u32 * 4).await;
+                *val = self.raw_read32(mem, offs + i as u32 * 4).await;
             }
         }
     }
-    async fn rpu_write32(&mut self, mem: &MemoryRegion, offs: u32, val: u32) {
-        self.rpu_write(mem, offs, &[val]).await
+    async fn raw_write32(&mut self, mem: &MemoryRegion, offs: u32, val: u32) {
+        self.raw_write(mem, offs, &[val]).await
     }
 
-    async fn rpu_write(&mut self, mem: &MemoryRegion, offs: u32, buf: &[u32]) {
+    async fn raw_write(&mut self, mem: &MemoryRegion, offs: u32, buf: &[u32]) {
         assert!(mem.start + offs + (buf.len() as u32 * 4) <= mem.end);
         self.bus.write(mem.start + offs, buf).await;
+    }
+
+    async fn read32(&mut self, rpu_addr: u32, processor: Option<Processor>) -> u32 {
+        let (mem, offs) = regions::remap_global_addr_to_region_and_offset(rpu_addr, processor);
+        self.raw_read32(mem, offs).await
+    }
+
+    async fn read(&mut self, rpu_addr: u32, processor: Option<Processor>, buf: &mut [u32]) {
+        let (mem, offs) = regions::remap_global_addr_to_region_and_offset(rpu_addr, processor);
+        self.raw_read(mem, offs, buf).await
+    }
+
+    async fn write32(&mut self, rpu_addr: u32, processor: Option<Processor>, val: u32) {
+        let (mem, offs) = regions::remap_global_addr_to_region_and_offset(rpu_addr, processor);
+        self.raw_write32(mem, offs, val).await
+    }
+
+    async fn write(&mut self, rpu_addr: u32, processor: Option<Processor>, buf: &[u32]) {
+        let (mem, offs) = regions::remap_global_addr_to_region_and_offset(rpu_addr, processor);
+        self.raw_write(mem, offs, buf).await
     }
 
     async fn rpu_write_core(&mut self, core_address: u32, buf: &[u32], processor: Processor) {
@@ -782,13 +801,11 @@ impl<
         };
 
         // Write the processor address register
-        let (mem, offs) = regions::remap_global_addr_to_region_and_offset(addr_reg, Some(processor));
-        self.rpu_write32(mem, offs, addr).await;
+        self.write32(addr_reg, Some(processor), addr).await;
 
         // Write to the data register one by one
-        let (mem, offs) = regions::remap_global_addr_to_region_and_offset(data_reg, Some(processor));
         for data in buf {
-            self.rpu_write32(mem, offs, *data).await;
+            self.write32(data_reg, Some(processor), *data).await;
         }
     }
 }
