@@ -10,13 +10,10 @@ use core::mem::{size_of, size_of_val};
 use core::slice;
 
 use align_data::{include_aligned, Align16};
-use bbqueue::BBBuffer;
-use config::Config;
 use defmt::{assert, info, panic, unwrap};
 use defmt_rtt as _; // global logger
 use embassy_executor::Spawner;
 use embassy_nrf::gpio::{AnyPin, Input, Level, Output, OutputDrive, Pin, Pull};
-use embassy_nrf::gpiote::{InputChannel, InputChannelPolarity};
 use embassy_nrf::peripherals::QSPI;
 use embassy_nrf::qspi::Qspi;
 use embassy_nrf::spim::Spim;
@@ -29,11 +26,10 @@ use messages::{commands, RpuMessage};
 use regions::*;
 use {embassy_nrf as _, panic_probe as _};
 
-use crate::config::RX_BUF_HEADROOM;
-use crate::messages::commands::sys::structures::TempVbatConfig;
+use crate::messages::commands::sys::{DataConfigParams, RxBufPoolParams, TempVbatConfig};
 use crate::messages::RpuMessageHeader;
 
-pub mod config;
+//pub mod config;
 pub(crate) mod messages;
 
 bind_interrupts!(struct Irqs {
@@ -70,11 +66,7 @@ async fn main(spawner: Spawner) {
     //let coex_grant = Output::new(p.P0_24, Level::High, OutputDrive::Standard);
     let bucken = Output::new(p.P0_12.degrade(), Level::Low, OutputDrive::HighDrive);
     let iovdd_ctl = Output::new(p.P0_31.degrade(), Level::Low, OutputDrive::Standard);
-    let host_irq = InputChannel::new(
-        p.GPIOTE_CH0,
-        Input::new(p.P0_23, Pull::None),
-        InputChannelPolarity::LoToHi,
-    );
+    let mut host_irq = Input::new(p.P0_23, Pull::None);
 
     let mut config = spim::Config::default();
     config.frequency = spim::Frequency::M8;
@@ -96,14 +88,14 @@ async fn main(spawner: Spawner) {
     let bus = QspiBus { qspi };
     */
 
-    let mut nrf70 = Nrf70::new(bus, bucken, iovdd_ctl, Config::new_only_scan());
+    let mut nrf70 = Nrf70::new(bus, bucken, iovdd_ctl);
 
     info!("Size of nrf70: {}", size_of_val(&nrf70));
 
     nrf70.start().await;
 
     loop {
-        host_irq.wait().await;
+        host_irq.wait_for_high().await;
         nrf70
             .rpu_irq_process(|_data| async { defmt::info!("Received an event") })
             .await;
@@ -198,56 +190,82 @@ const SR2_RPU_WAKEUP_REQ: u8 = 0x01;
 
 const MAX_EVENT_POOL_LEN: usize = 1000;
 
-struct Nrf70<
-    'a,
-    B: Bus,
-    const TX_BUFFERS: usize,
-    const TX_BUFFER_SIZE_MAX: usize,
-    const RX_BUFFERS: usize,
-    const RX_BUFFER_SIZE_MAX: usize,
-> {
+// ========= config
+/*
+pktram: 0xB0000000 - 0xB0030FFF -- 196kb
+usable for mcu-rpu comms: 0xB0005000 - 0xB0030FFF -- 176kb
+
+First we allocate N tx buffers, which consist of
+- Header of 52 bytes
+- Data of N bytes
+
+Then we allocate rx buffers.
+- 3 queues of
+  - N buffers each, which consist of
+    - Header of 4 bytes
+    - Data of N bytes (default 1600)
+
+Each RX buffer has a "descriptor ID" which is assigned across all queues starting from 0
+- queue 0 is descriptors 0..N-1
+- queue 1 is descriptors N..2N-1
+- queue 2 is descriptors 2N..3N-1
+*/
+
+// configurable by user
+const MAX_TX_TOKENS: usize = 10;
+const MAX_TX_AGGREGATION: usize = 6;
+const TX_MAX_DATA_SIZE: usize = 1600;
+const RX_MAX_DATA_SIZE: usize = 1600;
+const RX_BUFS_PER_QUEUE: usize = 16;
+
+// fixed
+const RX_BUF_HEADROOM: usize = 4;
+const TX_BUF_HEADROOM: usize = 52;
+
+const TX_BUFS: usize = MAX_TX_TOKENS * MAX_TX_AGGREGATION;
+const TX_BUF_SIZE: usize = TX_BUF_HEADROOM + TX_MAX_DATA_SIZE;
+const TX_TOTAL_SIZE: usize = TX_BUFS * TX_BUF_SIZE;
+
+const MAX_RX_QUEUES: usize = 3;
+const RX_BUFS: usize = RX_BUFS_PER_QUEUE * MAX_RX_QUEUES;
+const RX_BUF_SIZE: usize = RX_BUF_HEADROOM + RX_MAX_DATA_SIZE;
+const RX_TOTAL_SIZE: usize = RX_BUFS * RX_BUF_SIZE;
+
+const RPU_MEM_PKT_BASE: u32 = 0xB0005000;
+const RPU_PKTRAM_SIZE: usize = 0x2C000;
+const WIFI_NRF_FMAC_AC_MAX: u16 = 5;
+
+const _: () = {
+    use core::assert;
+    assert!(MAX_TX_TOKENS >= 1, "At least one TX token is required");
+    assert!(MAX_TX_AGGREGATION <= 16, "Max TX aggregation is 16");
+    assert!(RX_BUFS_PER_QUEUE >= 1, "At least one RX buffer per queue is required");
+    assert!(
+        (TX_TOTAL_SIZE + RX_TOTAL_SIZE) <= RPU_PKTRAM_SIZE,
+        "Packet RAM overflow"
+    );
+};
+
+struct Nrf70<'a, B: Bus> {
     bus: B,
     bucken: Output<'a, AnyPin>,
     iovdd_ctl: Output<'a, AnyPin>,
 
-    config: Config<TX_BUFFERS, TX_BUFFER_SIZE_MAX, RX_BUFFERS, RX_BUFFER_SIZE_MAX>,
     rpu_info: Option<RpuInfo>,
 
-    tx_buffers: [BBBuffer<TX_BUFFER_SIZE_MAX>; TX_BUFFERS],
-    rx_buffers: [BBBuffer<RX_BUFFER_SIZE_MAX>; RX_BUFFERS],
-
-    num_rx_commands: u32,
+    num_commands: u32,
 }
 
-impl<
-        'a,
-        B: Bus,
-        const TX_BUFFERS: usize,
-        const TX_BUFFER_SIZE_MAX: usize,
-        const RX_BUFFERS: usize,
-        const RX_BUFFER_SIZE_MAX: usize,
-    > Nrf70<'a, B, TX_BUFFERS, TX_BUFFER_SIZE_MAX, RX_BUFFERS, RX_BUFFER_SIZE_MAX>
-{
-    const DEFAULT_TX_BBBUFFER: BBBuffer<{ TX_BUFFER_SIZE_MAX }> = BBBuffer::new();
-    const DEFAULT_RX_BBBUFFER: BBBuffer<{ RX_BUFFER_SIZE_MAX }> = BBBuffer::new();
-
+impl<'a, B: Bus> Nrf70<'a, B> {
     const RPU_CMD_START_MAGIC: u32 = 0xDEAD;
 
-    const fn new(
-        bus: B,
-        bucken: Output<'a, AnyPin>,
-        iovdd_ctl: Output<'a, AnyPin>,
-        config: Config<TX_BUFFERS, TX_BUFFER_SIZE_MAX, RX_BUFFERS, RX_BUFFER_SIZE_MAX>,
-    ) -> Self {
+    const fn new(bus: B, bucken: Output<'a, AnyPin>, iovdd_ctl: Output<'a, AnyPin>) -> Self {
         Self {
             bus,
             bucken,
             iovdd_ctl,
-            config,
             rpu_info: None,
-            tx_buffers: [Self::DEFAULT_TX_BBBUFFER; TX_BUFFERS],
-            rx_buffers: [Self::DEFAULT_RX_BBBUFFER; RX_BUFFERS],
-            num_rx_commands: Self::RPU_CMD_START_MAGIC,
+            num_commands: Self::RPU_CMD_START_MAGIC,
         }
     }
 
@@ -500,6 +518,8 @@ impl<
                 message_address,
             )
             .await;
+
+            self.rpu_msg_trigger().await;
         }
     }
 
@@ -557,7 +577,7 @@ impl<
 
         let umac_cmd = RpuMessage::new(commands::sys::SysCommand::new(commands::sys::Init {
             wdev_id: 0,
-            sys_params: commands::sys::structures::SysParams {
+            sys_params: commands::sys::SysParams {
                 sleep_enable: 0, // TODO for low power
                 hw_bringup_time: HW_DELAY,
                 sw_bringup_time: SW_DELAY,
@@ -568,8 +588,30 @@ impl<
                 rf_params: [0; 200],
                 rf_params_valid: 0,
             },
-            rx_buf_pools: self.config.rx_buf_pools,
-            data_config_params: self.config.data_config,
+            rx_buf_pools: [
+                RxBufPoolParams {
+                    buf_sz: RX_MAX_DATA_SIZE as _, // TODO is this including the header or not?
+                    num_bufs: RX_BUFS_PER_QUEUE as _,
+                },
+                RxBufPoolParams {
+                    buf_sz: RX_MAX_DATA_SIZE as _, // TODO is this including the header or not?
+                    num_bufs: RX_BUFS_PER_QUEUE as _,
+                },
+                RxBufPoolParams {
+                    buf_sz: RX_MAX_DATA_SIZE as _, // TODO is this including the header or not?
+                    num_bufs: RX_BUFS_PER_QUEUE as _,
+                },
+            ],
+            data_config_params: DataConfigParams {
+                rate_protection_type: 0,
+                aggregation: 1,
+                wmm: 1,
+                max_num_tx_agg_sessions: 4,
+                max_num_rx_agg_sessions: 8,
+                max_tx_aggregation: MAX_TX_AGGREGATION as _,
+                reorder_buf_size: 64,
+                max_rxampdu_size: 3,
+            },
             temp_vbat_config_params: TempVbatConfig {
                 temp_based_calib_en: NRF_WIFI_TEMP_CALIB_ENABLE,
                 temp_calib_bitmap: NRF_WIFI_DEF_PHY_TEMP_CALIB,
@@ -590,33 +632,42 @@ impl<
             )
         };
 
-        unwrap!(embassy_time::with_timeout(Duration::from_secs(1), self.rpu_cmd_ctrl_send(cmd_bytes)).await);
+        // pad to multiple of 4
+        let mut buf = [0u32; (size_of::<RpuMessage<commands::sys::SysCommand<commands::sys::Init>>>() + 3) / 4];
+        slice8_mut(&mut buf)[..cmd_bytes.len()].copy_from_slice(cmd_bytes);
+
+        unwrap!(embassy_time::with_timeout(Duration::from_secs(1), self.rpu_cmd_ctrl_send(slice8(&buf))).await);
     }
 
-    async fn init_tx(&mut self) {
-        if TX_BUFFERS == 0 {
-            return;
-        }
-
-        todo!("Implement `tx_init`");
-    }
+    async fn init_tx(&mut self) {}
 
     async fn init_rx(&mut self) {
         const WIFI_NRF_FMAC_RX_CMD_TYPE_INIT: u32 = 0;
 
-        for desc_id in 0..RX_BUFFERS {
+        for queue_id in 0..MAX_RX_QUEUES {
+            for buf_id in 0..RX_BUFS_PER_QUEUE {
+                let desc_id = queue_id * RX_BUFS_PER_QUEUE + buf_id;
+                let rpu_addr = RPU_MEM_PKT_BASE + (TX_TOTAL_SIZE + RX_BUF_SIZE * desc_id) as u32;
+
+                // write rx buffer header
+                self.write32(rpu_addr, None, desc_id as u32).await;
+
+                // Create host_rpu_rx_buf_info (it's just one word of the address)
+                let command = [rpu_addr + RX_BUF_HEADROOM as u32];
+
+                // Call wifi_nrf_hal_data_cmd_send with the command
+                self.rpu_rx_cmd_send(&command, desc_id as u32, queue_id).await;
+            }
+        }
+        /*
+        for desc_id in 0..RX_NUM_BUFS {
             let pool_info = self.map_desc_to_pool(desc_id as u32);
 
             let (pool_rpu_region, pool_rpu_base) = self.config.rpu_rx_buffer_base[pool_info.pool_id as usize];
-            let bounce_buffer_address = pool_rpu_base + pool_info.buf_id * RX_BUFFER_SIZE_MAX as u32;
-
-            let mut initial_buffer = [0; RX_BUFFER_SIZE_MAX];
-            let initial_buffer = slice32_mut(&mut initial_buffer);
-
-            initial_buffer[0] = desc_id as u32;
+            let bounce_buffer_address = pool_rpu_base + pool_info.buf_id * TX_MAX_DATA_SIZE as u32;
 
             // Reset the RPU buffer to 0
-            self.raw_write(pool_rpu_region, bounce_buffer_address, &initial_buffer)
+            self.raw_write(pool_rpu_region, bounce_buffer_address, &[desc_id as u32])
                 .await;
 
             // Create host_rpu_rx_buf_info (it's just one word of the address)
@@ -626,6 +677,7 @@ impl<
             self.rpu_rx_cmd_send(&command, desc_id as u32, pool_info.pool_id as usize)
                 .await;
         }
+        */
     }
 
     const RPU_ADDR_MASK_OFFSET: u32 = 0x00FFFFFF;
@@ -642,7 +694,7 @@ impl<
         let host_addr = addr & Self::RPU_ADDR_MASK_OFFSET | Self::RPU_MCU_CORE_INDIRECT_BASE;
 
         // Write the command to the core
-        self.rpu_write_core(host_addr, command, Processor::UMAC).await; // UMAC is a guess here
+        self.rpu_write_core(host_addr, command, Processor::LMAC).await; // LMAC is a guess here
 
         // Post the updated information to the RPU
         self.rpu_hpq_enqueue(
@@ -650,30 +702,17 @@ impl<
             addr,
         )
         .await;
+    }
 
+    async fn rpu_msg_trigger(&mut self) {
         // Indicate to the RPU that the information has been posted
         self.write32(
             Self::RPU_REG_INT_TO_MCU_CTRL,
             Some(Processor::UMAC),
-            self.num_rx_commands | 0x7fff0000,
+            self.num_commands | 0x7fff0000,
         )
         .await;
-        self.num_rx_commands = self.num_rx_commands.wrapping_add(1);
-    }
-
-    fn map_desc_to_pool(&mut self, desc_id: u32) -> RxPoolMapInfo {
-        for pool_id in 0..MAX_NUM_OF_RX_QUEUES {
-            if desc_id >= self.config.rx_desc[pool_id]
-                && desc_id < self.config.rx_desc[pool_id] + self.config.rx_buf_pools[pool_id].num_bufs as u32
-            {
-                return RxPoolMapInfo {
-                    pool_id: pool_id as u32,
-                    buf_id: desc_id - self.config.rx_desc[pool_id],
-                };
-            }
-        }
-
-        defmt::panic!("desc_id is too high: {}", desc_id);
+        self.num_commands = self.num_commands.wrapping_add(1);
     }
 
     async fn load_fw(&mut self, mem: &MemoryRegion, addr: u32, fw: &[u8]) {
@@ -732,7 +771,7 @@ impl<
         self.bus.read_sr1().await
     }
 
-    async fn raw_read32(&mut self, mem: &MemoryRegion, offs: u32) -> u32 {
+    async fn raw_read32_inner(&mut self, mem: &MemoryRegion, offs: u32) -> u32 {
         assert!(mem.start + offs + 4 <= mem.end);
         let lat = mem.latency as usize;
 
@@ -741,18 +780,31 @@ impl<
         buf[lat]
     }
 
+    async fn raw_read32(&mut self, mem: &MemoryRegion, offs: u32) -> u32 {
+        let res = self.raw_read32_inner(mem, offs).await;
+        info!("read32 {:08x} {:08x}", mem.start + offs, res);
+        res
+    }
+
     async fn raw_read(&mut self, mem: &MemoryRegion, offs: u32, buf: &mut [u32]) {
         assert!(mem.start + offs + (buf.len() as u32 * 4) <= mem.end);
 
-        if mem.latency == 0 {
+        // latency=0 optimization doesn't seem to be working, we read the first word repeatedly.
+        if mem.latency == 0 && false {
             // No latency, we can do a big read directly.
             self.bus.read(mem.start + offs, buf).await;
         } else {
             // Otherwise, read word by word.
             for (i, val) in buf.iter_mut().enumerate() {
-                *val = self.raw_read32(mem, offs + i as u32 * 4).await;
+                *val = self.raw_read32_inner(mem, offs + i as u32 * 4).await;
             }
         }
+        info!(
+            "read addr={:08x} len={:08x} buf={:02x}",
+            mem.start + offs,
+            buf.len() * 4,
+            slice8(buf)
+        );
     }
     async fn raw_write32(&mut self, mem: &MemoryRegion, offs: u32, val: u32) {
         self.raw_write(mem, offs, &[val]).await
@@ -760,6 +812,12 @@ impl<
 
     async fn raw_write(&mut self, mem: &MemoryRegion, offs: u32, buf: &[u32]) {
         assert!(mem.start + offs + (buf.len() as u32 * 4) <= mem.end);
+        info!(
+            "write addr={:08x} len={:08x} buf={:02x}",
+            mem.start + offs,
+            buf.len() * 4,
+            slice8(buf)
+        );
         self.bus.write(mem.start + offs, buf).await;
     }
 
@@ -928,8 +986,6 @@ pub(crate) struct HostRpuHPQ {
     dequeue_addr: u32,
 }
 
-const MAX_NUM_OF_RX_QUEUES: usize = 3;
-
 /// Hostport queue information passed by the RPU to the host, which the host can
 /// use, to communicate with the RPU.
 #[repr(C)]
@@ -943,7 +999,7 @@ pub(crate) struct HostRpuHPQMInfo {
     cmd_busy_queue: HostRpuHPQ,
     /// Queue which RPU uses to inform host about command buffers which can be used to push commands to the RPU.
     cmd_avl_queue: HostRpuHPQ,
-    rx_buf_busy_queue: [HostRpuHPQ; MAX_NUM_OF_RX_QUEUES],
+    rx_buf_busy_queue: [HostRpuHPQ; MAX_RX_QUEUES],
 }
 
 #[derive(Debug, defmt::Format)]

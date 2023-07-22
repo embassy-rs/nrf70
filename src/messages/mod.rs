@@ -18,6 +18,7 @@ pub(crate) struct RpuMessageHeader {
     pub resubmit: u32,
 }
 
+#[repr(C, packed)]
 pub(crate) struct RpuMessage<M: Message> {
     pub header: RpuMessageHeader,
     pub message_type: RpuMessageType,
