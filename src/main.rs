@@ -444,9 +444,8 @@ impl<'a, B: Bus> Nrf70<'a, B> {
         F: FnMut(Vec<u8, MAX_EVENT_POOL_LEN>) -> FR,
         FR: Future,
     {
-        const RPU_EVENT_COMMON_SIZE_MAX: usize = 128;
         let mut event_data = Vec::new();
-        event_data.resize_default(RPU_EVENT_COMMON_SIZE_MAX).unwrap();
+        event_data.resize_default(c::RPU_EVENT_COMMON_SIZE_MAX as _).unwrap();
 
         self.read(event_address, None, slice32_mut(&mut event_data)).await;
 
@@ -454,7 +453,7 @@ impl<'a, B: Bus> Nrf70<'a, B> {
         let message_header: RpuMessageHeader =
             unsafe { core::mem::transmute_copy(event_data.as_ptr().as_ref().unwrap()) };
 
-        if message_header.length <= RPU_EVENT_COMMON_SIZE_MAX as u32 {
+        if message_header.length <= c::RPU_EVENT_COMMON_SIZE_MAX {
             event_data.truncate(message_header.length as usize);
         } else if message_header.length as usize <= MAX_EVENT_POOL_LEN {
             // This is a longer than usual event. We gotta read it again
@@ -479,9 +478,7 @@ impl<'a, B: Bus> Nrf70<'a, B> {
     }
 
     pub async fn rpu_cmd_ctrl_send(&mut self, message: &[u8]) {
-        const MAX_NRF_WIFI_UMAC_CMD_SIZE: usize = 400;
-
-        if message.len() > MAX_NRF_WIFI_UMAC_CMD_SIZE {
+        if message.len() > c::MAX_NRF_WIFI_UMAC_CMD_SIZE as usize {
             todo!("Fragmenting commands is not yet implemented");
         } else {
             // Wait until we get an address to write to
@@ -541,30 +538,15 @@ impl<'a, B: Bus> Nrf70<'a, B> {
     }
 
     async fn init_umac(&mut self) {
-        const HW_DELAY: u32 = 7300;
-        const SW_DELAY: u32 = 5000;
-        const BCN_TIMEOUT: u32 = 40000;
-        const CALIB_SLEEP_CLOCK_ENABLE: u32 = 1;
-
-        const NRF_WIFI_DEF_PHY_CALIB: u32 = 196667;
-
-        const NRF_WIFI_TEMP_CALIB_ENABLE: u32 = 1;
-        const NRF_WIFI_DEF_PHY_TEMP_CALIB: u32 = 1 | 2 | 16 | 8 | 0 | 32;
-        const NRF_WIFI_DEF_PHY_VBAT_CALIB: u32 = 32;
-        const NRF_WIFI_TEMP_CALIB_PERIOD: u32 = 1024 * 1024;
-        const NRF_WIFI_VBAT_LOW: i32 = 6;
-        const NRF_WIFI_VBAT_HIGH: i32 = 12;
-        const NRF_WIFI_TEMP_CALIB_THRESHOLD: i32 = 40;
-
         let umac_cmd = RpuMessage::new(commands::sys::SysCommand::new(commands::sys::Init {
             wdev_id: 0,
             sys_params: commands::sys::SysParams {
                 sleep_enable: 0, // TODO for low power
-                hw_bringup_time: HW_DELAY,
-                sw_bringup_time: SW_DELAY,
-                bcn_time_out: BCN_TIMEOUT,
-                calib_sleep_clk: CALIB_SLEEP_CLOCK_ENABLE,
-                phy_calib: NRF_WIFI_DEF_PHY_CALIB,
+                hw_bringup_time: c::HW_DELAY,
+                sw_bringup_time: c::SW_DELAY,
+                bcn_time_out: c::BCN_TIMEOUT,
+                calib_sleep_clk: c::CALIB_SLEEP_CLOCK_ENABLE,
+                phy_calib: c::NRF_WIFI_DEF_PHY_CALIB,
                 mac_addr: [0; 6],
                 rf_params: [0; 200],
                 rf_params_valid: 0,
@@ -594,14 +576,14 @@ impl<'a, B: Bus> Nrf70<'a, B> {
                 max_rxampdu_size: 3,
             },
             temp_vbat_config_params: TempVbatConfig {
-                temp_based_calib_en: NRF_WIFI_TEMP_CALIB_ENABLE,
-                temp_calib_bitmap: NRF_WIFI_DEF_PHY_TEMP_CALIB,
-                vbat_calibp_bitmap: NRF_WIFI_DEF_PHY_VBAT_CALIB,
-                temp_vbat_mon_period: NRF_WIFI_TEMP_CALIB_PERIOD,
-                vth_very_low: 0,
-                vth_low: NRF_WIFI_VBAT_LOW,
-                vth_hi: NRF_WIFI_VBAT_HIGH,
-                temp_threshold: NRF_WIFI_TEMP_CALIB_THRESHOLD,
+                temp_based_calib_en: c::NRF_WIFI_TEMP_CALIB_ENABLE,
+                temp_calib_bitmap: c::NRF_WIFI_DEF_PHY_TEMP_CALIB,
+                vbat_calibp_bitmap: c::NRF_WIFI_DEF_PHY_VBAT_CALIB,
+                temp_vbat_mon_period: c::NRF_WIFI_TEMP_CALIB_PERIOD,
+                vth_very_low: c::NRF_WIFI_VBAT_VERYLOW as _,
+                vth_low: c::NRF_WIFI_VBAT_LOW as _,
+                vth_hi: c::NRF_WIFI_VBAT_HIGH as _,
+                temp_threshold: c::NRF_WIFI_TEMP_CALIB_THRESHOLD as _,
                 vbat_threshold: 0,
             },
         }));
@@ -641,10 +623,8 @@ impl<'a, B: Bus> Nrf70<'a, B> {
     }
 
     async fn rpu_rx_cmd_send(&mut self, command: &[u32], desc_id: u32, pool_id: usize) {
-        const RPU_DATA_CMD_SIZE_MAX_RX: u32 = 8;
-
         let addr_base = self.rpu_info.as_ref().unwrap().rx_cmd_base;
-        let max_cmd_size = RPU_DATA_CMD_SIZE_MAX_RX;
+        let max_cmd_size = c::RPU_DATA_CMD_SIZE_MAX_RX;
 
         let addr = addr_base + max_cmd_size * desc_id;
         let host_addr = addr & c::RPU_ADDR_MASK_OFFSET | c::RPU_MCU_CORE_INDIRECT_BASE;
@@ -801,16 +781,14 @@ impl<'a, B: Bus> Nrf70<'a, B> {
         // We receive the address as a byte address, while we need to write it as a word address
         let addr = (core_address & c::RPU_ADDR_MASK_OFFSET) / 4;
 
-        const RPU_REG_MIPS_MCU_SYS_CORE_MEM_CTRL: u32 = 0xA4000030;
-        const RPU_REG_MIPS_MCU_SYS_CORE_MEM_WDATA: u32 = 0xA4000034;
-        const RPU_REG_MIPS_MCU2_SYS_CORE_MEM_CTRL: u32 = 0xA4000130;
-        const RPU_REG_MIPS_MCU2_SYS_CORE_MEM_WDATA: u32 = 0xA4000134;
-
         let (addr_reg, data_reg) = match processor {
-            Processor::LMAC => (RPU_REG_MIPS_MCU_SYS_CORE_MEM_CTRL, RPU_REG_MIPS_MCU_SYS_CORE_MEM_WDATA),
+            Processor::LMAC => (
+                c::RPU_REG_MIPS_MCU_SYS_CORE_MEM_CTRL,
+                c::RPU_REG_MIPS_MCU_SYS_CORE_MEM_WDATA,
+            ),
             Processor::UMAC => (
-                RPU_REG_MIPS_MCU2_SYS_CORE_MEM_CTRL,
-                RPU_REG_MIPS_MCU2_SYS_CORE_MEM_WDATA,
+                c::RPU_REG_MIPS_MCU2_SYS_CORE_MEM_CTRL,
+                c::RPU_REG_MIPS_MCU2_SYS_CORE_MEM_WDATA,
             ),
         };
 
@@ -830,7 +808,7 @@ pub trait Bus {
     async fn read_sr0(&mut self) -> u8;
     async fn read_sr1(&mut self) -> u8;
     async fn read_sr2(&mut self) -> u8;
-    async fn write_sr2(&mut self, val: u8);
+    async fn write_sr2(&mut self, val: u8);c::
 }
 
 struct SpiBus<T> {
