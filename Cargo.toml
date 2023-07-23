@@ -39,7 +39,6 @@ static_cell = "1.2.0"
 embedded-hal-bus = "0.1.0-alpha.3"
 embedded-hal-async = "0.2.0-alpha.2"
 align-data = "0.1.0"
-bbqueue = "0.5.1"
 
 [patch.crates-io]
 embassy-embedded-hal = { git = "https://github.com/embassy-rs/embassy", rev = "4d1d125f4157084668a949f9bc24e4417628f9fe" }

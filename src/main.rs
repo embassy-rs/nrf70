@@ -32,6 +32,15 @@ use crate::messages::RpuMessageHeader;
 //pub mod config;
 pub(crate) mod messages;
 
+#[allow(unused)]
+#[allow(non_camel_case_types)]
+#[allow(non_snake_case)]
+mod c {
+    include!("../fw/bindings.rs");
+    pub const RPU_MCU_CORE_INDIRECT_BASE: u32 = 0xC0000000;
+    pub const RX_BUF_HEADROOM: u32 = 4;
+}
+
 bind_interrupts!(struct Irqs {
     SERIAL0 => spim::InterruptHandler<embassy_nrf::peripherals::SERIAL0>;
 });
@@ -176,10 +185,10 @@ pub(crate) enum Processor {
     UMAC,
 }
 
-static FW_LMAC_PATCH_PRI: &[u8] = include_aligned!(Align16, "../fw/lmac_patch_pri.bin");
-static FW_LMAC_PATCH_SEC: &[u8] = include_aligned!(Align16, "../fw/lmac_patch_sec.bin");
-static FW_UMAC_PATCH_PRI: &[u8] = include_aligned!(Align16, "../fw/umac_patch_pri.bin");
-static FW_UMAC_PATCH_SEC: &[u8] = include_aligned!(Align16, "../fw/umac_patch_sec.bin");
+static FW_LMAC_PATCH_PRI: &[u8] = include_aligned!(Align16, "../fw/lmac_patch_pri_bimg.bin");
+static FW_LMAC_PATCH_SEC: &[u8] = include_aligned!(Align16, "../fw/lmac_patch_sec_bin.bin");
+static FW_UMAC_PATCH_PRI: &[u8] = include_aligned!(Align16, "../fw/umac_patch_pri_bimg.bin");
+static FW_UMAC_PATCH_SEC: &[u8] = include_aligned!(Align16, "../fw/umac_patch_sec_bin.bin");
 
 const SR0_WRITE_IN_PROGRESS: u8 = 0x01;
 
@@ -219,21 +228,14 @@ const RX_MAX_DATA_SIZE: usize = 1600;
 const RX_BUFS_PER_QUEUE: usize = 16;
 
 // fixed
-const RX_BUF_HEADROOM: usize = 4;
-const TX_BUF_HEADROOM: usize = 52;
 
 const TX_BUFS: usize = MAX_TX_TOKENS * MAX_TX_AGGREGATION;
-const TX_BUF_SIZE: usize = TX_BUF_HEADROOM + TX_MAX_DATA_SIZE;
+const TX_BUF_SIZE: usize = c::TX_BUF_HEADROOM as usize + TX_MAX_DATA_SIZE;
 const TX_TOTAL_SIZE: usize = TX_BUFS * TX_BUF_SIZE;
 
-const MAX_RX_QUEUES: usize = 3;
-const RX_BUFS: usize = RX_BUFS_PER_QUEUE * MAX_RX_QUEUES;
-const RX_BUF_SIZE: usize = RX_BUF_HEADROOM + RX_MAX_DATA_SIZE;
+const RX_BUFS: usize = RX_BUFS_PER_QUEUE * c::MAX_NUM_OF_RX_QUEUES as usize;
+const RX_BUF_SIZE: usize = c::RX_BUF_HEADROOM as usize + RX_MAX_DATA_SIZE;
 const RX_TOTAL_SIZE: usize = RX_BUFS * RX_BUF_SIZE;
-
-const RPU_MEM_PKT_BASE: u32 = 0xB0005000;
-const RPU_PKTRAM_SIZE: usize = 0x2C000;
-const WIFI_NRF_FMAC_AC_MAX: u16 = 5;
 
 const _: () = {
     use core::assert;
@@ -241,7 +243,7 @@ const _: () = {
     assert!(MAX_TX_AGGREGATION <= 16, "Max TX aggregation is 16");
     assert!(RX_BUFS_PER_QUEUE >= 1, "At least one RX buffer per queue is required");
     assert!(
-        (TX_TOTAL_SIZE + RX_TOTAL_SIZE) <= RPU_PKTRAM_SIZE,
+        (TX_TOTAL_SIZE + RX_TOTAL_SIZE) as u32 <= c::RPU_PKTRAM_SIZE,
         "Packet RAM overflow"
     );
 };
@@ -257,15 +259,13 @@ struct Nrf70<'a, B: Bus> {
 }
 
 impl<'a, B: Bus> Nrf70<'a, B> {
-    const RPU_CMD_START_MAGIC: u32 = 0xDEAD;
-
     const fn new(bus: B, bucken: Output<'a, AnyPin>, iovdd_ctl: Output<'a, AnyPin>) -> Self {
         Self {
             bus,
             bucken,
             iovdd_ctl,
             rpu_info: None,
-            num_commands: Self::RPU_CMD_START_MAGIC,
+            num_commands: c::RPU_CMD_START_MAGIC,
         }
     }
 
@@ -346,64 +346,50 @@ impl<'a, B: Bus> Nrf70<'a, B> {
         info!("done!");
     }
 
-    const RPU_REG_INT_FROM_RPU_CTRL: u32 = 0xA4000400;
-    const RPU_REG_BIT_INT_FROM_RPU_CTRL: u32 = 17;
-    const RPU_REG_INT_FROM_MCU_CTRL: u32 = 0xA4000494;
-    const RPU_REG_BIT_INT_FROM_MCU_CTRL: u32 = 31;
-    const RPU_REG_INT_FROM_MCU_ACK: u32 = 0xA4000488;
-    const RPU_REG_BIT_INT_FROM_MCU_ACK: u32 = 31;
-    const RPU_REG_MIPS_MCU_UCCP_INT_STATUS: u32 = 0xA4000004;
-    const RPU_REG_BIT_MIPS_WATCHDOG_INT_STATUS: u32 = 1;
-    const RPU_REG_MIPS_MCU_TIMER_CONTROL: u32 = 0xA4000048;
-
     async fn rpu_irq_enable(&mut self) {
         // First enable the blockwise interrupt for the relevant block in the master register
-        let mut val = self.read32(Self::RPU_REG_INT_FROM_RPU_CTRL, None).await;
+        let mut val = self.read32(c::RPU_REG_INT_FROM_RPU_CTRL, None).await;
 
-        val |= 1 << Self::RPU_REG_BIT_INT_FROM_RPU_CTRL;
+        val |= 1 << c::RPU_REG_BIT_INT_FROM_RPU_CTRL;
 
-        self.write32(Self::RPU_REG_INT_FROM_RPU_CTRL, None, val).await;
+        self.write32(c::RPU_REG_INT_FROM_RPU_CTRL, None, val).await;
 
         // Now enable the relevant MCU interrupt line
         self.write32(
-            Self::RPU_REG_INT_FROM_MCU_CTRL,
+            c::RPU_REG_INT_FROM_MCU_CTRL,
             None,
-            1 << Self::RPU_REG_BIT_INT_FROM_MCU_CTRL,
+            1 << c::RPU_REG_BIT_INT_FROM_MCU_CTRL,
         )
         .await;
     }
 
     async fn rpu_irq_disable(&mut self) {
-        let mut val = self.read32(Self::RPU_REG_INT_FROM_RPU_CTRL, None).await;
-        val &= !(1 << Self::RPU_REG_BIT_INT_FROM_RPU_CTRL);
-        self.write32(Self::RPU_REG_INT_FROM_RPU_CTRL, None, val).await;
+        let mut val = self.read32(c::RPU_REG_INT_FROM_RPU_CTRL, None).await;
+        val &= !(1 << c::RPU_REG_BIT_INT_FROM_RPU_CTRL);
+        self.write32(c::RPU_REG_INT_FROM_RPU_CTRL, None, val).await;
 
         self.write32(
-            Self::RPU_REG_INT_FROM_MCU_CTRL,
+            c::RPU_REG_INT_FROM_MCU_CTRL,
             None,
-            !(1 << Self::RPU_REG_BIT_INT_FROM_MCU_CTRL),
+            !(1 << c::RPU_REG_BIT_INT_FROM_MCU_CTRL),
         )
         .await;
     }
 
     async fn rpu_irq_ack(&mut self) {
         // Guess: I think this clears the interrupt flag
-        self.write32(
-            Self::RPU_REG_INT_FROM_MCU_ACK,
-            None,
-            1 << Self::RPU_REG_BIT_INT_FROM_MCU_ACK,
-        )
-        .await;
+        self.write32(c::RPU_REG_INT_FROM_MCU_ACK, None, 1 << c::RPU_REG_BIT_INT_FROM_MCU_ACK)
+            .await;
     }
 
     /// Checks if the watchdog was the source of the interrupt
     async fn rpu_irq_watchdog_check(&mut self) -> bool {
-        let val = self.read32(Self::RPU_REG_MIPS_MCU_UCCP_INT_STATUS, None).await;
-        (val & (1 << Self::RPU_REG_BIT_MIPS_WATCHDOG_INT_STATUS)) > 0
+        let val = self.read32(c::RPU_REG_MIPS_MCU_UCCP_INT_STATUS, None).await;
+        (val & (1 << c::RPU_REG_BIT_MIPS_WATCHDOG_INT_STATUS)) > 0
     }
 
     async fn rpu_irq_watchdog_ack(&mut self) {
-        self.write32(Self::RPU_REG_MIPS_MCU_TIMER_CONTROL, None, 0).await;
+        self.write32(c::RPU_REG_MIPS_MCU_TIMER_CONTROL, None, 0).await;
     }
 
     /// Must be called when the interrupt pin is triggered
@@ -539,23 +525,18 @@ impl<'a, B: Bus> Nrf70<'a, B> {
         }
     }
 
-    const RPU_MEM_HPQ_INFO: u32 = 0xB0000024;
-    const RPU_MEM_RX_CMD_BASE: u32 = 0xB7000D58;
-    const RPU_MEM_TX_CMD_BASE: u32 = 0xB00000B8;
-
     async fn init_rpu_info(&mut self) {
         // Based on 'wifi_nrf_hal_dev_init'
 
         let mut hpqm_info = [0; size_of::<HostRpuHPQMInfo>()];
-        self.read(Self::RPU_MEM_HPQ_INFO, None, slice32_mut(&mut hpqm_info))
-            .await;
+        self.read(c::RPU_MEM_HPQ_INFO, None, slice32_mut(&mut hpqm_info)).await;
 
-        let rx_cmd_base = self.read32(Self::RPU_MEM_RX_CMD_BASE, None).await;
+        let rx_cmd_base = self.read32(c::RPU_MEM_RX_CMD_BASE, None).await;
 
         self.rpu_info = Some(RpuInfo {
             hpqm_info: unsafe { core::mem::transmute_copy(&hpqm_info) },
             rx_cmd_base,
-            tx_cmd_base: Self::RPU_MEM_TX_CMD_BASE,
+            tx_cmd_base: c::RPU_MEM_TX_CMD_BASE,
         });
     }
 
@@ -642,47 +623,22 @@ impl<'a, B: Bus> Nrf70<'a, B> {
     async fn init_tx(&mut self) {}
 
     async fn init_rx(&mut self) {
-        const WIFI_NRF_FMAC_RX_CMD_TYPE_INIT: u32 = 0;
-
-        for queue_id in 0..MAX_RX_QUEUES {
+        for queue_id in 0..(c::MAX_NUM_OF_RX_QUEUES as usize) {
             for buf_id in 0..RX_BUFS_PER_QUEUE {
                 let desc_id = queue_id * RX_BUFS_PER_QUEUE + buf_id;
-                let rpu_addr = RPU_MEM_PKT_BASE + (TX_TOTAL_SIZE + RX_BUF_SIZE * desc_id) as u32;
+                let rpu_addr = c::RPU_MEM_PKT_BASE + (TX_TOTAL_SIZE + RX_BUF_SIZE * desc_id) as u32;
 
                 // write rx buffer header
                 self.write32(rpu_addr, None, desc_id as u32).await;
 
                 // Create host_rpu_rx_buf_info (it's just one word of the address)
-                let command = [rpu_addr + RX_BUF_HEADROOM as u32];
+                let command = [rpu_addr + c::RX_BUF_HEADROOM as u32];
 
                 // Call wifi_nrf_hal_data_cmd_send with the command
                 self.rpu_rx_cmd_send(&command, desc_id as u32, queue_id).await;
             }
         }
-        /*
-        for desc_id in 0..RX_NUM_BUFS {
-            let pool_info = self.map_desc_to_pool(desc_id as u32);
-
-            let (pool_rpu_region, pool_rpu_base) = self.config.rpu_rx_buffer_base[pool_info.pool_id as usize];
-            let bounce_buffer_address = pool_rpu_base + pool_info.buf_id * TX_MAX_DATA_SIZE as u32;
-
-            // Reset the RPU buffer to 0
-            self.raw_write(pool_rpu_region, bounce_buffer_address, &[desc_id as u32])
-                .await;
-
-            // Create host_rpu_rx_buf_info (it's just one word of the address)
-            let command = [pool_rpu_region.rpu_mem_start + bounce_buffer_address + RX_BUF_HEADROOM as u32];
-
-            // Call wifi_nrf_hal_data_cmd_send with the command
-            self.rpu_rx_cmd_send(&command, desc_id as u32, pool_info.pool_id as usize)
-                .await;
-        }
-        */
     }
-
-    const RPU_ADDR_MASK_OFFSET: u32 = 0x00FFFFFF;
-    const RPU_MCU_CORE_INDIRECT_BASE: u32 = 0xC0000000;
-    const RPU_REG_INT_TO_MCU_CTRL: u32 = 0xA4000480;
 
     async fn rpu_rx_cmd_send(&mut self, command: &[u32], desc_id: u32, pool_id: usize) {
         const RPU_DATA_CMD_SIZE_MAX_RX: u32 = 8;
@@ -691,7 +647,7 @@ impl<'a, B: Bus> Nrf70<'a, B> {
         let max_cmd_size = RPU_DATA_CMD_SIZE_MAX_RX;
 
         let addr = addr_base + max_cmd_size * desc_id;
-        let host_addr = addr & Self::RPU_ADDR_MASK_OFFSET | Self::RPU_MCU_CORE_INDIRECT_BASE;
+        let host_addr = addr & c::RPU_ADDR_MASK_OFFSET | c::RPU_MCU_CORE_INDIRECT_BASE;
 
         // Write the command to the core
         self.rpu_write_core(host_addr, command, Processor::LMAC).await; // LMAC is a guess here
@@ -707,7 +663,7 @@ impl<'a, B: Bus> Nrf70<'a, B> {
     async fn rpu_msg_trigger(&mut self) {
         // Indicate to the RPU that the information has been posted
         self.write32(
-            Self::RPU_REG_INT_TO_MCU_CTRL,
+            c::RPU_REG_INT_TO_MCU_CTRL,
             Some(Processor::UMAC),
             self.num_commands | 0x7fff0000,
         )
@@ -843,7 +799,7 @@ impl<'a, B: Bus> Nrf70<'a, B> {
 
     async fn rpu_write_core(&mut self, core_address: u32, buf: &[u32], processor: Processor) {
         // We receive the address as a byte address, while we need to write it as a word address
-        let addr = (core_address & Self::RPU_ADDR_MASK_OFFSET) / 4;
+        let addr = (core_address & c::RPU_ADDR_MASK_OFFSET) / 4;
 
         const RPU_REG_MIPS_MCU_SYS_CORE_MEM_CTRL: u32 = 0xA4000030;
         const RPU_REG_MIPS_MCU_SYS_CORE_MEM_WDATA: u32 = 0xA4000034;
@@ -999,7 +955,7 @@ pub(crate) struct HostRpuHPQMInfo {
     cmd_busy_queue: HostRpuHPQ,
     /// Queue which RPU uses to inform host about command buffers which can be used to push commands to the RPU.
     cmd_avl_queue: HostRpuHPQ,
-    rx_buf_busy_queue: [HostRpuHPQ; MAX_RX_QUEUES],
+    rx_buf_busy_queue: [HostRpuHPQ; c::MAX_NUM_OF_RX_QUEUES as usize],
 }
 
 #[derive(Debug, defmt::Format)]
