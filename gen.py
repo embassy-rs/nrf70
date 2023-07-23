@@ -16,6 +16,7 @@ subprocess.run(
         "--ignore-functions",
         "--default-enum-style=rust",
         "--no-prepend-enum-name",
+        "--no-layout-tests",
         "--",
         "-I./sdk-nrf/drivers/wifi/nrf700x/osal/fw_if/umac_if/inc/fw/",
         "-I./sdk-nrf/drivers/wifi/nrf700x/osal/hw_if/hal/inc/fw/",
