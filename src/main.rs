@@ -5,12 +5,11 @@
 #![feature(async_fn_in_trait)]
 #![feature(impl_trait_projections)]
 
-use core::future::Future;
-use core::mem::{size_of, size_of_val, zeroed};
+use core::mem::{align_of, size_of, size_of_val, zeroed};
 use core::slice;
 
 use align_data::{include_aligned, Align16};
-use defmt::{assert, info, panic, unwrap};
+use defmt::{assert, panic, todo, unwrap, *};
 use defmt_rtt as _; // global logger
 use embassy_executor::Spawner;
 use embassy_nrf::gpio::{AnyPin, Input, Level, Output, OutputDrive, Pin, Pull};
@@ -21,7 +20,6 @@ use embassy_nrf::{bind_interrupts, spim};
 use embassy_time::{Delay, Duration, Timer};
 use embedded_hal::spi::Operation;
 use embedded_hal_async::spi::{ExclusiveDevice, SpiDevice};
-use heapless::Vec;
 use regions::*;
 use {embassy_nrf as _, panic_probe as _};
 
@@ -89,7 +87,7 @@ async fn main(spawner: Spawner) {
     //let coex_grant = Output::new(p.P0_24, Level::High, OutputDrive::Standard);
     let bucken = Output::new(p.P0_12.degrade(), Level::Low, OutputDrive::HighDrive);
     let iovdd_ctl = Output::new(p.P0_31.degrade(), Level::Low, OutputDrive::Standard);
-    let mut host_irq = Input::new(p.P0_23, Pull::None);
+    let host_irq = Input::new(p.P0_23.degrade(), Pull::None);
 
     let mut config = spim::Config::default();
     config.frequency = spim::Frequency::M8;
@@ -111,22 +109,29 @@ async fn main(spawner: Spawner) {
     let bus = QspiBus { qspi };
     */
 
-    let mut nrf70 = Nrf70::new(bus, bucken, iovdd_ctl);
+    let mut nrf70 = Nrf70::new(bus, bucken, iovdd_ctl, host_irq);
 
     info!("Size of nrf70: {}", size_of_val(&nrf70));
 
-    nrf70.start().await;
-
-    loop {
-        host_irq.wait_for_high().await;
-        nrf70
-            .rpu_irq_process(|_data| async { defmt::info!("Received an event") })
-            .await;
-    }
+    nrf70.run().await;
 }
 
 fn sliceit<T>(t: &T) -> &[u8] {
     unsafe { slice::from_raw_parts(t as *const _ as _, size_of::<T>()) }
+}
+
+fn unsliceit2<T>(t: &[u8]) -> (&T, &[u8]) {
+    assert!(t.len() > size_of::<T>());
+    assert!(t.as_ptr() as usize % align_of::<T>() == 0);
+    (unsafe { &*(t.as_ptr() as *const T) }, &t[size_of::<T>()..])
+}
+
+fn unsliceit<T>(t: &[u8]) -> &T {
+    unsliceit2(t).0
+}
+
+fn meh<T>(t: T) -> T {
+    t
 }
 
 fn slice8(x: &[u32]) -> &[u8] {
@@ -270,6 +275,7 @@ struct Nrf70<'a, B: Bus> {
     bus: B,
     bucken: Output<'a, AnyPin>,
     iovdd_ctl: Output<'a, AnyPin>,
+    host_irq: Input<'a, AnyPin>,
 
     rpu_info: Option<RpuInfo>,
 
@@ -277,17 +283,23 @@ struct Nrf70<'a, B: Bus> {
 }
 
 impl<'a, B: Bus> Nrf70<'a, B> {
-    const fn new(bus: B, bucken: Output<'a, AnyPin>, iovdd_ctl: Output<'a, AnyPin>) -> Self {
+    const fn new(
+        bus: B,
+        bucken: Output<'a, AnyPin>,
+        iovdd_ctl: Output<'a, AnyPin>,
+        host_irq: Input<'a, AnyPin>,
+    ) -> Self {
         Self {
             bus,
             bucken,
             iovdd_ctl,
+            host_irq,
             rpu_info: None,
             num_commands: c::RPU_CMD_START_MAGIC,
         }
     }
 
-    pub async fn start(&mut self) {
+    pub async fn run(&mut self) {
         info!("power on...");
         Timer::after(Duration::from_millis(10)).await;
         self.bucken.set_high();
@@ -361,7 +373,51 @@ impl<'a, B: Bus> Nrf70<'a, B> {
         info!("Initializing umac...");
         self.init_umac().await;
 
-        info!("done!");
+        info!("running...");
+
+        let mut buf = [0u32; MAX_EVENT_POOL_LEN / 4];
+
+        loop {
+            self.host_irq.wait_for_high().await;
+
+            let mut event_count = 0;
+
+            loop {
+                let event_address = self
+                    .rpu_hpq_dequeue(self.rpu_info.as_ref().unwrap().hpqm_info.event_busy_queue)
+                    .await;
+
+                let event_address = match event_address {
+                    // No more events to read. Sometimes when low power mode is enabled
+                    // we see a wrong address, but it work after a while, so, add a
+                    // check for that.
+                    None | Some(0xAAAAAAAA) => break,
+                    Some(event_address) => event_address,
+                };
+                event_count += 1;
+
+                self.rpu_event_read(event_address, &mut buf).await;
+
+                let buf = slice8(&buf);
+                let (msg, buf) = unsliceit2::<c::host_rpu_msg>(buf);
+                match c::host_rpu_msg_type::try_from(msg.type_ as u32) {
+                    Ok(c::host_rpu_msg_type::HOST_RPU_MSG_TYPE_SYSTEM) => {
+                        let msg: &c::sys_head = unsliceit(buf);
+                        match c::sys_events::try_from(msg.cmd_event) {
+                            Ok(c::sys_events::EVENT_INIT_DONE) => info!("======== INIT DONE!! =========="),
+                            _ => warn!("unknown sys event type {:08x}", meh(msg.cmd_event)),
+                        }
+                    }
+                    _ => warn!("unknown event type {:08x}", meh(msg.type_)),
+                }
+            }
+
+            if event_count == 0 && self.rpu_irq_watchdog_check().await {
+                self.rpu_irq_watchdog_ack().await;
+            }
+
+            self.rpu_irq_ack().await;
+        }
     }
 
     async fn rpu_irq_enable(&mut self) {
@@ -410,84 +466,26 @@ impl<'a, B: Bus> Nrf70<'a, B> {
         self.write32(c::RPU_REG_MIPS_MCU_TIMER_CONTROL, None, 0).await;
     }
 
-    /// Must be called when the interrupt pin is triggered
-    pub async fn rpu_irq_process<F, FR>(&mut self, mut callback: F)
-    where
-        F: FnMut(Vec<u8, MAX_EVENT_POOL_LEN>) -> FR,
-        FR: Future,
-    {
-        let event_count = self.rpu_event_process_all(&mut callback).await;
-
-        if event_count == 0 && self.rpu_irq_watchdog_check().await {
-            self.rpu_irq_watchdog_ack().await;
-        }
-
-        self.rpu_irq_ack().await;
-    }
-
-    /// Get all events. Every event is processed by the given callback.
-    /// The total amount of events that were processed is returned.
-    async fn rpu_event_process_all<F, FR>(&mut self, mut callback: F) -> u32
-    where
-        F: FnMut(Vec<u8, MAX_EVENT_POOL_LEN>) -> FR,
-        FR: Future,
-    {
-        let mut event_count = 0;
-
-        loop {
-            let event_address = self
-                .rpu_hpq_dequeue(self.rpu_info.as_ref().unwrap().hpqm_info.event_busy_queue)
-                .await;
-
-            let event_address = match event_address {
-                None | Some(0xAAAAAAAA) => {
-                    // No more events to read. Sometimes when low power mode is enabled
-                    // we see a wrong address, but it work after a while, so, add a
-                    // check for that.
-                    break;
-                }
-                Some(event_address) => event_address,
-            };
-
-            self.rpu_event_process(event_address, &mut callback).await;
-
-            event_count += 1;
-        }
-
-        event_count
-    }
-
-    async fn rpu_event_process<F, FR>(&mut self, event_address: u32, callback: &mut F)
-    where
-        F: FnMut(Vec<u8, MAX_EVENT_POOL_LEN>) -> FR,
-        FR: Future,
-    {
-        let mut event_data = Vec::new();
-        event_data.resize_default(c::RPU_EVENT_COMMON_SIZE_MAX as _).unwrap();
-
-        self.read(event_address, None, slice32_mut(&mut event_data)).await;
+    async fn rpu_event_read(&mut self, event_address: u32, buf: &mut [u32]) {
+        self.read(
+            event_address,
+            None,
+            &mut buf[..c::RPU_EVENT_COMMON_SIZE_MAX as usize / 4],
+        )
+        .await;
 
         // Get the header from the front of the event data
-        let message_header: c::host_rpu_msg_hdr =
-            unsafe { core::mem::transmute_copy(event_data.as_ptr().as_ref().unwrap()) };
-
-        if message_header.len <= c::RPU_EVENT_COMMON_SIZE_MAX {
-            event_data.truncate(message_header.len as usize);
-        } else if message_header.len as usize <= MAX_EVENT_POOL_LEN {
-            // This is a longer than usual event. We gotta read it again
-            let Ok(_) = event_data.resize_default(message_header.len as usize) else {
-                let len = message_header.len;
-                defmt::panic!("Event is too big ({} bytes)! Either the buffer has to be increased or we need to implement fragmented event reading which is something the C lib does", len);
-            };
-            self.read(event_address, None, slice32_mut(&mut event_data)).await;
-        } else {
-            todo!("Fragmented event read is not yet implemented");
-        }
-
-        callback(event_data).await;
-
+        let message_header: &c::host_rpu_msg_hdr = unsliceit(slice8(buf));
         if message_header.resubmit > 0 {
             self.rpu_event_free(event_address).await;
+        }
+
+        let len = message_header.len as usize;
+        if len > MAX_EVENT_POOL_LEN {
+            todo!("Fragmented event read is not yet implemented");
+        } else if len > c::RPU_EVENT_COMMON_SIZE_MAX as usize {
+            // This is a longer than usual event. We gotta read it again
+            self.read(event_address, None, &mut buf[..(len + 3) / 4]).await;
         }
     }
 

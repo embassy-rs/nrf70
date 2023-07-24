@@ -709,7 +709,7 @@ pub const CMD_REQ_SET_REG_USER_REG_HINT_TYPE_VALID: u32 = 0x2;
 pub const CMD_REQ_SET_REG_USER_REG_FORCE: u32 = 0x4;
 pub const EVNT_WIPHY_SELF_MANAGED: u32 = 0x1;
 #[repr(u32)]
-#[derive(Debug, Copy, Clone, Hash, PartialEq, Eq)]
+#[derive(Debug, Copy, Clone, Hash, PartialEq, Eq, num_enum::TryFromPrimitive)]
 pub enum RPU_MCU_ADDR_REGIONS {
     RPU_MCU_ADDR_REGION_ROM = 0,
     RPU_MCU_ADDR_REGION_RETENTION = 1,
@@ -784,7 +784,7 @@ pub struct pta_ext_params {
 }
 #[repr(u32)]
 #[doc = " enum host_rpu_msg_type - RPU message type\n @HOST_RPU_MSG_TYPE_SYSTEM: Unused\n @HOST_RPU_MSG_TYPE_SUPPLICANT: Unused\n @HOST_RPU_MSG_TYPE_DATA: Data path and System messages\n @HOST_RPU_MSG_TYPE_UMAC: Control path messages\n\n Different categories of messages that can passed between the Host and\n the RPU."]
-#[derive(Debug, Copy, Clone, Hash, PartialEq, Eq)]
+#[derive(Debug, Copy, Clone, Hash, PartialEq, Eq, num_enum::TryFromPrimitive)]
 pub enum host_rpu_msg_type {
     HOST_RPU_MSG_TYPE_SYSTEM = 0,
     HOST_RPU_MSG_TYPE_SUPPLICANT = 1,
@@ -945,7 +945,7 @@ impl sys_iftype {
 }
 #[repr(u32)]
 #[doc = " enum sys_iftype - Interface types based on functionality.\n\n @UMAC_IFTYPE_UNSPECIFIED: Unspecified type, driver decides.\n @UMAC_IFTYPE_ADHOC: Independent BSS member.\n @UMAC_IFTYPE_STATION: Managed BSS member.\n @UMAC_IFTYPE_AP: Access point.\n @UMAC_IFTYPE_AP_VLAN: VLAN interface for access points; VLAN interfaces\n\tare a bit special in that they must always be tied to a pre-existing\n\tAP type interface.\n @UMAC_IFTYPE_WDS: Wireless Distribution System.\n @UMAC_IFTYPE_MONITOR: Monitor interface receiving all frames.\n @UMAC_IFTYPE_MESH_POINT: Mesh point.\n @UMAC_IFTYPE_P2P_CLIENT: P2P client.\n @UMAC_IFTYPE_P2P_GO: P2P group owner.\n @UMAC_IFTYPE_P2P_DEVICE: P2P device interface type, this is not a netdev\n\tand therefore can't be created in the normal ways, use the\n\t%UMAC_CMD_START_P2P_DEVICE and %UMAC_CMD_STOP_P2P_DEVICE\n\tcommands (Refer &enum umac_commands) to create and destroy one.\n @UMAC_IFTYPE_OCB: Outside Context of a BSS.\n\tThis mode corresponds to the MIB variable dot11OCBActivated=true.\n @UMAC_IFTYPE_MAX: Highest interface type number currently defined.\n @UMAC_IFTYPES: Number of defined interface types.\n\n Lists the different interface types based on how they are configured\n functionally."]
-#[derive(Debug, Copy, Clone, Hash, PartialEq, Eq)]
+#[derive(Debug, Copy, Clone, Hash, PartialEq, Eq, num_enum::TryFromPrimitive)]
 pub enum sys_iftype {
     UMAC_IFTYPE_UNSPECIFIED = 0,
     UMAC_IFTYPE_ADHOC = 1,
@@ -963,7 +963,7 @@ pub enum sys_iftype {
 }
 #[repr(u32)]
 #[doc = " enum rpu_op_mode - operating modes.\n\n @RPU_OP_MODE_NORMAL: Normal mode is the regular mode of operation\n @RPU_OP_MODE_DBG: Debug mode can be used to control certain parameters\n\tlike TX rate etc in order to debug functional issues\n @RPU_OP_MODE_PROD: Production mode is used for performing production\n\ttests using continuous Tx/Rx on a configured channel at a particular\n\trate, power etc\n @RPU_OP_MODE_FCM: In the FCM mode different type of calibration like RF\n\tcalibration can be performed\n\n Lists the different types of operating modes."]
-#[derive(Debug, Copy, Clone, Hash, PartialEq, Eq)]
+#[derive(Debug, Copy, Clone, Hash, PartialEq, Eq, num_enum::TryFromPrimitive)]
 pub enum rpu_op_mode {
     RPU_OP_MODE_RADIO_TEST = 0,
     RPU_OP_MODE_FCM = 1,
@@ -973,7 +973,7 @@ pub enum rpu_op_mode {
 }
 #[repr(u32)]
 #[doc = " enum rpu_stats_type - statistics type.\n\n To obtain statistics relevant to the operation mode set via op_mode\n parameter."]
-#[derive(Debug, Copy, Clone, Hash, PartialEq, Eq)]
+#[derive(Debug, Copy, Clone, Hash, PartialEq, Eq, num_enum::TryFromPrimitive)]
 pub enum rpu_stats_type {
     RPU_STATS_TYPE_ALL = 0,
     RPU_STATS_TYPE_HOST = 1,
@@ -984,7 +984,7 @@ pub enum rpu_stats_type {
 }
 #[repr(u32)]
 #[doc = " enum rpu_tput_mode - Throughput mode\n\n Throughput mode to be used for transmitting the packet."]
-#[derive(Debug, Copy, Clone, Hash, PartialEq, Eq)]
+#[derive(Debug, Copy, Clone, Hash, PartialEq, Eq, num_enum::TryFromPrimitive)]
 pub enum rpu_tput_mode {
     RPU_TPUT_MODE_LEGACY = 0,
     RPU_TPUT_MODE_HT = 1,
@@ -996,7 +996,7 @@ pub enum rpu_tput_mode {
 }
 #[repr(u32)]
 #[doc = " enum sys_commands - system commands\n @CMD_INIT: After host driver bringup host sends the CMD_INIT\n\tto the RPU. then RPU initializes and responds with\n\tEVENT_BUFF_CONFIG.\n @CMD_BUFF_CONFIG_COMPLETE: Host sends this command to RPU after\n\tcompletion of all buffers configuration\n @CMD_TX: command to send a Tx packet\n @CMD_MODE: command to specify mode of operation\n @CMD_GET_STATS: command to get statistics\n @CMD_CLEAR_STATS: command to clear statistics\n @CMD_RX: command to ENABLE/DISABLE receiving packets in radio test mode\n @CMD_DEINIT: RPU De-initialization\n @CMD_HE_GI_LTF_CONFIG: Configure HE_GI & HE_LTF.\n"]
-#[derive(Debug, Copy, Clone, Hash, PartialEq, Eq)]
+#[derive(Debug, Copy, Clone, Hash, PartialEq, Eq, num_enum::TryFromPrimitive)]
 pub enum sys_commands {
     CMD_INIT = 0,
     CMD_TX = 1,
@@ -1017,7 +1017,7 @@ pub enum sys_commands {
 }
 #[repr(u32)]
 #[doc = " enum sys_events -\n @EVENT_BUFF_CONFIG: Response to CMD_INIT\n\tsee &struct event_buffs_config\n @EVENT_BUFF_CONFIG_DONE: Response to CMD_BUFF_CONFIG_COMPLETE\n @EVENT_STATS: Response to CMD_GET_STATS\n @EVENT_DEINIT_DONE: Response to CMD_DEINIT\n\n Events from the RPU for different commands."]
-#[derive(Debug, Copy, Clone, Hash, PartialEq, Eq)]
+#[derive(Debug, Copy, Clone, Hash, PartialEq, Eq, num_enum::TryFromPrimitive)]
 pub enum sys_events {
     EVENT_PWR_DATA = 0,
     EVENT_INIT_DONE = 1,
@@ -1029,7 +1029,7 @@ pub enum sys_events {
     EVENT_RADIOCMD_STATUS = 7,
 }
 #[repr(u32)]
-#[derive(Debug, Copy, Clone, Hash, PartialEq, Eq)]
+#[derive(Debug, Copy, Clone, Hash, PartialEq, Eq, num_enum::TryFromPrimitive)]
 pub enum rpu_ch_bw {
     RPU_CH_BW_20 = 0,
     RPU_CH_BW_40 = 1,
@@ -1271,7 +1271,7 @@ pub struct bgscan_params {
 }
 #[repr(u32)]
 #[doc = " enum max_rx_ampdu_size - Max Rx AMPDU size in KB\n\n Max Rx AMPDU Size"]
-#[derive(Debug, Copy, Clone, Hash, PartialEq, Eq)]
+#[derive(Debug, Copy, Clone, Hash, PartialEq, Eq, num_enum::TryFromPrimitive)]
 pub enum max_rx_ampdu_size {
     MAX_RX_AMPDU_SIZE_8KB = 0,
     MAX_RX_AMPDU_SIZE_16KB = 1,
@@ -1327,7 +1327,7 @@ pub struct tx_pwr_ctrl_params {
     pub band_edge_5g_unii_4_hi: ::core::ffi::c_uchar,
 }
 #[repr(u32)]
-#[derive(Debug, Copy, Clone, Hash, PartialEq, Eq)]
+#[derive(Debug, Copy, Clone, Hash, PartialEq, Eq, num_enum::TryFromPrimitive)]
 pub enum op_band {
     BAND_ALL = 0,
     BAND_24G = 1,
@@ -1370,7 +1370,7 @@ pub struct cmd_buff_config_complete {
     pub sys_head: sys_head,
 }
 #[repr(u32)]
-#[derive(Debug, Copy, Clone, Hash, PartialEq, Eq)]
+#[derive(Debug, Copy, Clone, Hash, PartialEq, Eq, num_enum::TryFromPrimitive)]
 pub enum rpu_pkt_preamble {
     RPU_PKT_PREAMBLE_SHORT = 0,
     RPU_PKT_PREAMBLE_LONG = 1,
@@ -1566,7 +1566,7 @@ pub struct umac_event_stats {
 }
 #[repr(u32)]
 #[doc = " struct umac_event_cmd_err_status - cmd error indication\n @sys_head: UMAC header, See &struct sys_head.\n @status: status of the command ie Fail(Type of err) or success.\n\n This event is the response to command chanl_prog.\n"]
-#[derive(Debug, Copy, Clone, Hash, PartialEq, Eq)]
+#[derive(Debug, Copy, Clone, Hash, PartialEq, Eq, num_enum::TryFromPrimitive)]
 pub enum radio_test_err_status {
     UMAC_CMD_SUCCESS = 1,
     UMAC_INVALID_CHNL = 2,
@@ -1625,7 +1625,7 @@ pub struct event_deinit_done {
 }
 #[repr(u32)]
 #[doc = " enum umac_data_commands - UMAC init and data buffer command/events\n\n @CMD_MGMT_BUFF_CONFIG: Configure MGMT frame buffer.\n\tSee &struct rx_buff_config\n @CMD_TX_BUFF: Transmit data packet.\n\tSee &struct tx_buff\n @CMD_TX_BUFF_DONE: TX done event.\n\tSee &struct tx_buff_done\n @CMD_RX_BUFF: RX data event.\n\tSee &struct rx_buff\n @CMD_CARRIER_ON: STA connection complete event.\n\tSee &struct data_carrier_state\n @CMD_CARRIER_OFF: STA disconnected event.\n\tSee &struct data_carrier_state\n @CMD_PM_MODE: SoftAP client power save event.\n\tSee &struct sap_client_pwrsave\n @CMD_PS_GET_FRAMES: SoftAP client PS get frames event.\n\tSee &struct sap_ps_get_frames\n"]
-#[derive(Debug, Copy, Clone, Hash, PartialEq, Eq)]
+#[derive(Debug, Copy, Clone, Hash, PartialEq, Eq, num_enum::TryFromPrimitive)]
 pub enum umac_data_commands {
     CMD_MGMT_BUFF_CONFIG = 0,
     CMD_TX_BUFF = 1,
@@ -1662,7 +1662,7 @@ pub struct mgmt_buff_config {
 }
 #[repr(u32)]
 #[doc = " HEADER_FILL_FLAGS - mac80211 header filled information.\n @FC_POPULATED: Frame Control field is populated by Host Driver.\n @DUR_POPULATED: Duration field is populated by Host Driver.\n @ADDR1_POPULATED: Address 1 field is populated by Host Driver.\n @ADDR2_POPULATED: Address 2 field is populated by Host Driver.\n @ADDR3_POPULATED: Address 3 field is populated by Host Driver.\n @SEQ_CTRL_POPULATED: Sequence Control field is populated by Host Driver.\n @QOS_CTRL_POPULATED: Qos field is populated by Host Driver.\n"]
-#[derive(Debug, Copy, Clone, Hash, PartialEq, Eq)]
+#[derive(Debug, Copy, Clone, Hash, PartialEq, Eq, num_enum::TryFromPrimitive)]
 pub enum HEADER_FILL_FLAGS {
     FC_POPULATED = 2,
     DUR_POPULATED = 4,
@@ -1715,7 +1715,7 @@ pub struct tx_buff_done {
 }
 #[repr(u32)]
 #[doc = " enum rx_pkt_type: The Received packet type\n @RX_PKT_DATA: The Rx packet is of type data.\n @RX_PKT_BCN_PRB_RSP: The RX packet is of type beacon or probe response\n"]
-#[derive(Debug, Copy, Clone, Hash, PartialEq, Eq)]
+#[derive(Debug, Copy, Clone, Hash, PartialEq, Eq, num_enum::TryFromPrimitive)]
 pub enum rx_pkt_type {
     RX_PKT_DATA = 0,
     RX_PKT_BCN_PRB_RSP = 1,
@@ -1770,7 +1770,7 @@ pub struct sap_ps_get_frames {
 }
 #[repr(u32)]
 #[doc = " enum umac_commands - Commands that the host can send to the RPU.\n\n @UMAC_CMD_TRIGGER_SCAN: Trigger a new scan with the given parameters.\n\tSee &struct umac_cmd_scan\n @UMAC_CMD_GET_SCAN_RESULTS: Request for scan results.\n\tSee &struct umac_cmd_get_scan_results\n @UMAC_CMD_AUTHENTICATE: Send authentication request to AP.\n\tSee &struct umac_cmd_auth\n @UMAC_CMD_ASSOCIATE: Send associate request to AP.\n\tSee &struct umac_cmd_assoc\n @UMAC_CMD_DEAUTHENTICATE: Send deauthentication request to AP.\n\tSee &struct umac_cmd_disconn\n @UMAC_CMD_SET_WIPHY: Set wiphy parameters.\n\tSee &struct umac_cmd_set_wiphy\n @UMAC_CMD_NEW_KEY: Add new key.\n\tSee &struct umac_cmd_key\n @UMAC_CMD_DEL_KEY: Delete crypto key.\n\tSee &struct umac_cmd_key\n @UMAC_CMD_SET_KEY: Set default key to use.\n\tSee &struct umac_cmd_set_key\n @UMAC_CMD_GET_KEY: Unused.\n @UMAC_CMD_NEW_BEACON: Set the beacon fields in AP mode.\n\tSee &struct umac_cmd_start_ap\n @UMAC_CMD_SET_BEACON: Set the beacon fields in AP mode.\n\tSee &struct umac_cmd_set_beacon\n @UMAC_CMD_SET_BSS: Set the BSS.\n\tSee &struct umac_cmd_set_bss\n @UMAC_CMD_START_AP: Start the device as Soft AP.\n\tSee &struct umac_cmd_start_ap\n @UMAC_CMD_STOP_AP: Stop the AP mode.\n\tSee &struct umac_cmd_stop_ap\n @UMAC_CMD_NEW_INTERFACE: Adding interface.\n\tSee &struct umac_cmd_add_vif\n @UMAC_CMD_SET_INTERFACE: Change interface configuration.\n\tSee &struct umac_cmd_chg_vif_attr\n @UMAC_CMD_DEL_INTERFACE: Delete interface.\n\tSee &struct umac_cmd_del_vif\n @UMAC_CMD_SET_IFFLAGS: Change interface flags.\n\tSee &struct umac_cmd_chg_vif_state\n @UMAC_CMD_NEW_STATION: Add a new station.\n\tSee &struct umac_cmd_add_sta\n @UMAC_CMD_DEL_STATION: Delete station.\n\tSee &struct umac_cmd_del_sta\n @UMAC_CMD_SET_STATION: Change station info.\n\tSee &struct umac_cmd_chg_sta\n @UMAC_CMD_GET_STATION: Get station info.\n\tSee &struct umac_cmd_get_sta\n @UMAC_CMD_START_P2P_DEVICE: Start the P2P device.\n\tSee &struct umac_cmd_start_p2p_dev\n @UMAC_CMD_STOP_P2P_DEVICE: Stop the P2P device.\n\tSee &struct umac_cmd_stop_p2p_dev\n @UMAC_CMD_REMAIN_ON_CHANNEL: Unused.\n @UMAC_CMD_CANCEL_REMAIN_ON_CHANNEL: Unused.\n @UMAC_CMD_SET_CHANNEL: Unused.\n @UMAC_CMD_RADAR_DETECT: Unused.\n @UMAC_CMD_REGISTER_FRAME: Whitelist filter based on frame types.\n\tSee &struct umac_cmd_mgmt_frame_reg\n @UMAC_CMD_FRAME: Send a management frame.\n\tSee &struct umac_cmd_mgmt_tx\n @UMAC_CMD_JOIN_IBSS: Unused.\n @UMAC_CMD_WIN_STA_CONNECT: Connect to AP.\n\tSee &struct umac_cmd_win_sta_connect\n @UMAC_CMD_SET_POWER_SAVE: Power save Enable/Disable\n\tSee &struct umac_cmd_set_power_save\n @UMAC_CMD_SET_WOWLAN: Set the WoWLAN trigger configs\n\tSee &struct umac_cmd_set_wowlan\n @UMAC_CMD_SUSPEND: Suspend the bus after WoWLAN configurations\n\tSee &struct umac_cmd_suspend\n @UMAC_CMD_RESUME: Resume the bus activity before wakeup\n\tSee &struct umac_cmd_resume\n @UMAC_CMD_GET_CHANNEL: Get Channel info\n\t\tSee &struct umac_cmd_get_channel\n @UMAC_CMD_GET_TX_POWER: Get Tx power level\n\t\tSee &struct umac_cmd_get_tx_power\n @UMAC_CMD_GET_REG : Get Regulatory info\n\t\tSee &struct reg_t\n @UMAC_CMD_SET_REG : Set Regulatory info\n\t\tSee &struct reg_t\n\n Lists the different ID's to be used to when sending a command to the RPU.\n All the commands are to be encapsulated using struct host_rpu_msg."]
-#[derive(Debug, Copy, Clone, Hash, PartialEq, Eq)]
+#[derive(Debug, Copy, Clone, Hash, PartialEq, Eq, num_enum::TryFromPrimitive)]
 pub enum umac_commands {
     UMAC_CMD_TRIGGER_SCAN = 0,
     UMAC_CMD_GET_SCAN_RESULTS = 1,
@@ -1833,7 +1833,7 @@ pub enum umac_commands {
 }
 #[repr(u32)]
 #[doc = " enum umac_events - Events that the RPU can send to the host.\n\n @UMAC_EVENT_TRIGGER_SCAN_START: Unused.\n @UMAC_EVENT_SCAN_ABORTED: Indicate scan has been cancelled.\n\tSee &struct umac_event_trigger_scan\n @UMAC_EVENT_SCAN_DONE: Indicate scan results are available.\n\tSee &struct umac_event_trigger_scan\n @UMAC_EVENT_SCAN_RESULT: Scan result. We will receive one event for all\n\tthe scan results until umac_hdr->seq == 0.\n\tSee &struct umac_event_new_scan_results\n @UMAC_EVENT_AUTHENTICATE: Authentication status.\n\tSee &struct umac_event_mlme\n @UMAC_EVENT_ASSOCIATE: Association status.\n\tSee &struct umac_event_mlme\n @UMAC_EVENT_CONNECT: Connection complete event.\n\tSee &struct umac_event_connect\n @UMAC_EVENT_DEAUTHENTICATE: Station deauth event.\n\tSee &struct umac_event_mlme\n @UMAC_EVENT_NEW_STATION: Station added indication.\n\tSee &struct umac_event_new_station\n @UMAC_EVENT_DEL_STATION: Station deleted indication.\n\tSee &struct umac_event_new_station\n @UMAC_EVENT_GET_STATION: Station info indication.\n\tSee &umac_event_station_t\n @UMAC_EVENT_REMAIN_ON_CHANNEL: Unused.\n @UMAC_EVENT_CANCEL_REMAIN_ON_CHANNEL: Unused.\n @UMAC_EVENT_DISCONNECT: Unused.\n @UMAC_EVENT_FRAME: RX management frame.\n\tSee &struct umac_event_mlme\n @UMAC_EVENT_COOKIE_RESP: Cookie mapping for UMAC_CMD_FRAME.\n\tSee &struct umac_event_cookie_rsp\n @UMAC_EVENT_FRAME_TX_STATUS: TX management frame transmitted.\n\tSee &struct umac_event_mlme\n @UMAC_EVENT_GET_CHANNEL: Send Channel info.\n\tSee &struct umac_event_get_channel\n @UMAC_EVENT_GET_TX_POWER: Send Tx power.\n\tSee &struct umac_event_get_tx_power\n @UMAC_EVENT_SET_INTERFACE: UMAC_CMD_SET_INTERFACE status.\n\tSee &struct umac_event_set_interface\n @UMAC_EVENT_GET_REG: UMAC_CMD_GET_REG status\n\tSee &struct reg_t\n @UMAC_EVENT_SET_REG: UMAC_CMD_SET_REG status\n\tSee &struct reg_t\n @UMAC_EVENT_REQ_SET_REG: UMAC_CMD_REQ_SET_REG status\n\tSee &struct reg_t\n @UMAC_EVENT_SCAN_DISPLAY_RESULT: Scan display result. We will receive one event for all\n\tthe scan results until umac_hdr->seq == 0\n Lists the ID's to used by the RPU when sending a Event to the Host. All the\n events are encapsulated using struct host_rpu_msg."]
-#[derive(Debug, Copy, Clone, Hash, PartialEq, Eq)]
+#[derive(Debug, Copy, Clone, Hash, PartialEq, Eq, num_enum::TryFromPrimitive)]
 pub enum umac_events {
     UMAC_EVENT_UNSPECIFIED = 256,
     UMAC_EVENT_TRIGGER_SCAN_START = 257,
@@ -1883,7 +1883,7 @@ pub enum umac_events {
 }
 #[repr(u32)]
 #[doc = " enum band - Frequency band.\n\n @BAND_2GHZ: 2.4 GHz ISM band.\n @BAND_5GHZ: Around 5 GHz band (4.9 - 5.7 GHz).\n @BAND_60GHZ: Unused.\n\n This enum represents the values that can be used to specify which frequency\n band is used."]
-#[derive(Debug, Copy, Clone, Hash, PartialEq, Eq)]
+#[derive(Debug, Copy, Clone, Hash, PartialEq, Eq, num_enum::TryFromPrimitive)]
 pub enum band {
     BAND_2GHZ = 0,
     BAND_5GHZ = 1,
@@ -1891,14 +1891,14 @@ pub enum band {
 }
 #[repr(u32)]
 #[doc = " enum mfp - Management frame protection state.\n\n @MFP_NO: Management frame protection not used.\n @MFP_REQUIRED: Management frame protection required.\n\n Enabling/Disabling of Management Frame Protection."]
-#[derive(Debug, Copy, Clone, Hash, PartialEq, Eq)]
+#[derive(Debug, Copy, Clone, Hash, PartialEq, Eq, num_enum::TryFromPrimitive)]
 pub enum mfp {
     MFP_NO = 0,
     MFP_REQUIRED = 1,
 }
 #[repr(u32)]
 #[doc = " enum key_type - Key Type\n\n @KEYTYPE_GROUP: Group (broadcast/multicast) key\n @KEYTYPE_PAIRWISE: Pairwise (unicast/individual) key\n @KEYTYPE_PEERKEY: Peer key (DLS)\n @NUM_KEYTYPES: Number of defined key types\n\n Lists the different categories of security keys."]
-#[derive(Debug, Copy, Clone, Hash, PartialEq, Eq)]
+#[derive(Debug, Copy, Clone, Hash, PartialEq, Eq, num_enum::TryFromPrimitive)]
 pub enum key_type {
     KEYTYPE_GROUP = 0,
     KEYTYPE_PAIRWISE = 1,
@@ -1910,7 +1910,7 @@ impl auth_type {
 }
 #[repr(u32)]
 #[doc = " enum auth_type - Authentication Type.\n\n @AUTHTYPE_OPEN_SYSTEM: Open System authentication.\n @AUTHTYPE_SHARED_KEY: Shared Key authentication (WEP only).\n @AUTHTYPE_FT: Fast BSS Transition (IEEE 802.11r).\n @AUTHTYPE_NETWORK_EAP: Network EAP (some Cisco APs and mainly LEAP).\n @AUTHTYPE_SAE: Simultaneous authentication of equals.\n @__AUTHTYPE_NUM: Internal.\n @AUTHTYPE_MAX: Maximum valid auth algorithm.\n @AUTHTYPE_AUTOMATIC: Determine automatically (if necessary by\n\ttrying multiple times); this is invalid in netlink -- leave out\n\tthe attribute for this on CONNECT commands.\n\n Lists the different types of authentication mechanisms."]
-#[derive(Debug, Copy, Clone, Hash, PartialEq, Eq)]
+#[derive(Debug, Copy, Clone, Hash, PartialEq, Eq, num_enum::TryFromPrimitive)]
 pub enum auth_type {
     AUTHTYPE_OPEN_SYSTEM = 0,
     AUTHTYPE_SHARED_KEY = 1,
@@ -1922,7 +1922,7 @@ pub enum auth_type {
 }
 #[repr(u32)]
 #[doc = " enum hidden_ssid - Hidden SSID usage.\n @HIDDEN_SSID_NOT_IN_USE: Do not hide SSID (i.e., broadcast it in\n\tBeacon frames).\n @HIDDEN_SSID_ZERO_LEN: Hide SSID by using zero-length SSID element\n\tin Beacon frames.\n @HIDDEN_SSID_ZERO_CONTENTS: Hide SSID by using correct length of SSID\n\telement in Beacon frames but zero out each byte in the SSID.\n\n Enable/Disable Hidden SSID feature and also lists the different mechanisms of\n hiding the SSIDs."]
-#[derive(Debug, Copy, Clone, Hash, PartialEq, Eq)]
+#[derive(Debug, Copy, Clone, Hash, PartialEq, Eq, num_enum::TryFromPrimitive)]
 pub enum hidden_ssid {
     HIDDEN_SSID_NOT_IN_USE = 0,
     HIDDEN_SSID_ZERO_LEN = 1,
@@ -1933,7 +1933,7 @@ impl smps_mode {
 }
 #[repr(u32)]
 #[doc = " enum smps_mode - SMPS mode.\n @SMPS_OFF: SMPS off (use all antennas).\n @SMPS_STATIC: Static SMPS (use a single antenna).\n @SMPS_DYNAMIC: Dynamic smps (start with a single antenna and\n\tturn on other antennas after CTS/RTS).\n\n Requested SMPS mode (for AP mode)."]
-#[derive(Debug, Copy, Clone, Hash, PartialEq, Eq)]
+#[derive(Debug, Copy, Clone, Hash, PartialEq, Eq, num_enum::TryFromPrimitive)]
 pub enum smps_mode {
     SMPS_OFF = 0,
     SMPS_STATIC = 1,
@@ -1942,7 +1942,7 @@ pub enum smps_mode {
 }
 #[repr(u32)]
 #[doc = " enum bss_status - BSS status.\n @BSS_STATUS_AUTHENTICATED: Authenticated with this BSS.\n\tNote that this is no longer used since cfg80211 no longer\n\tkeeps track of whether or not authentication was done with\n\ta given BSS.\n @BSS_STATUS_ASSOCIATED: Associated with this BSS.\n @BSS_STATUS_IBSS_JOINED: Joined to this IBSS.\n\n The BSS status is a BSS attribute in scan dumps, which\n indicates the status the interface has with respect to this BSS."]
-#[derive(Debug, Copy, Clone, Hash, PartialEq, Eq)]
+#[derive(Debug, Copy, Clone, Hash, PartialEq, Eq, num_enum::TryFromPrimitive)]
 pub enum bss_status {
     BSS_STATUS_AUTHENTICATED = 0,
     BSS_STATUS_ASSOCIATED = 1,
@@ -1950,7 +1950,7 @@ pub enum bss_status {
 }
 #[repr(u32)]
 #[doc = " enum channel_type - Channel type.\n @CHAN_NO_HT: 20 MHz, non-HT channel.\n @CHAN_HT20: 20 MHz HT channel.\n @CHAN_HT40MINUS: HT40 channel, secondary channel\n      below the control channel.\n @CHAN_HT40PLUS: HT40 channel, secondary channel\n      above the control channel.\n\n Lists the different categories of channels."]
-#[derive(Debug, Copy, Clone, Hash, PartialEq, Eq)]
+#[derive(Debug, Copy, Clone, Hash, PartialEq, Eq, num_enum::TryFromPrimitive)]
 pub enum channel_type {
     CHAN_NO_HT = 0,
     CHAN_HT20 = 1,
@@ -1959,7 +1959,7 @@ pub enum channel_type {
 }
 #[repr(u32)]
 #[doc = " enum chan_width - Channel width definitions.\n\n\n @CHAN_WIDTH_20_NOHT: 20 MHz, non-HT channel.\n @CHAN_WIDTH_20: 20 MHz HT channel.\n @CHAN_WIDTH_40: 40 MHz channel, the %ATTR_CENTER_FREQ1\n\tattribute must be provided as well.\n @CHAN_WIDTH_80: 80 MHz channel, the %ATTR_CENTER_FREQ1\n\tattribute must be provided as well.\n @CHAN_WIDTH_80P80: 80+80 MHz channel, the %ATTR_CENTER_FREQ1\n\tand %ATTR_CENTER_FREQ2 attributes must be provided as well.\n @CHAN_WIDTH_160: 160 MHz channel, the %ATTR_CENTER_FREQ1\n\tattribute must be provided as well.\n @CHAN_WIDTH_5: 5 MHz OFDM channel.\n @CHAN_WIDTH_10: 10 MHz OFDM channel.\n\n Lists the different channel widths."]
-#[derive(Debug, Copy, Clone, Hash, PartialEq, Eq)]
+#[derive(Debug, Copy, Clone, Hash, PartialEq, Eq, num_enum::TryFromPrimitive)]
 pub enum chan_width {
     CHAN_WIDTH_20_NOHT = 0,
     CHAN_WIDTH_20 = 1,
@@ -1975,7 +1975,7 @@ impl iftype {
 }
 #[repr(u32)]
 #[doc = " enum iftype - Interface types based on functionality.\n\n @IFTYPE_UNSPECIFIED: Unspecified type, driver decides.\n @IFTYPE_ADHOC: Independent BSS member.\n @IFTYPE_STATION: Managed BSS member.\n @IFTYPE_AP: Access point.\n @IFTYPE_AP_VLAN: VLAN interface for access points; VLAN interfaces\n      are a bit special in that they must always be tied to a pre-existing\n      AP type interface.\n @IFTYPE_WDS: Wireless Distribution System.\n @IFTYPE_MONITOR: Monitor interface receiving all frames.\n @IFTYPE_MESH_POINT: Mesh point.\n @IFTYPE_P2P_CLIENT: P2P client.\n @IFTYPE_P2P_GO: P2P group owner.\n @IFTYPE_P2P_DEVICE: P2P device interface type, this is not a netdev\n\tand therefore can't be created in the normal ways, use the\n\t%UMAC_CMD_START_P2P_DEVICE and %UMAC_CMD_STOP_P2P_DEVICE\n\tcommands (Refer &enum umac_commands) to create and destroy one.\n @IFTYPE_OCB: Outside Context of a BSS.\n\tThis mode corresponds to the MIB variable dot11OCBActivated=true.\n @IFTYPE_MAX: Highest interface type number currently defined.\n @NUM_IFTYPES: Number of defined interface types.\n\n Lists the different interface types based on how they are configured\n functionally."]
-#[derive(Debug, Copy, Clone, Hash, PartialEq, Eq)]
+#[derive(Debug, Copy, Clone, Hash, PartialEq, Eq, num_enum::TryFromPrimitive)]
 pub enum iftype {
     IFTYPE_UNSPECIFIED = 0,
     IFTYPE_ADHOC = 1,
@@ -1993,14 +1993,14 @@ pub enum iftype {
 }
 #[repr(u32)]
 #[doc = " enum ps_state - powersave state\n @PS_DISABLED: powersave is disabled\n @PS_ENABLED: powersave is enabled"]
-#[derive(Debug, Copy, Clone, Hash, PartialEq, Eq)]
+#[derive(Debug, Copy, Clone, Hash, PartialEq, Eq, num_enum::TryFromPrimitive)]
 pub enum ps_state {
     PS_DISABLED = 0,
     PS_ENABLED = 1,
 }
 #[repr(u32)]
 #[doc = " enum security_type - WLAN security type\n @WEP: WEP\n @WPA: WPA\n @WPA2: WPA2\n @WPA3: WPA3\n @WAPI: WAPI"]
-#[derive(Debug, Copy, Clone, Hash, PartialEq, Eq)]
+#[derive(Debug, Copy, Clone, Hash, PartialEq, Eq, num_enum::TryFromPrimitive)]
 pub enum security_type {
     OPEN = 0,
     WEP = 1,
@@ -2013,7 +2013,7 @@ pub enum security_type {
 }
 #[repr(u32)]
 #[doc = " enum reg_initiator - Indicates the initiator of a reg domain request\n @NL80211_REGDOM_SET_BY_CORE: Core queried CRDA for a dynamic world\n regulatory domain.\n @NL80211_REGDOM_SET_BY_USER: User asked the wireless core to set the\n regulatory domain.\n @NL80211_REGDOM_SET_BY_DRIVER: a wireless drivers has hinted to the\n wireless core it thinks its knows the regulatory domain we should be in.\n @NL80211_REGDOM_SET_BY_COUNTRY_IE: the wireless core has received an\n 802.11 country information element with regulatory information it\n thinks we should consider. cfg80211 only processes the country\n\tcode from the IE, and relies on the regulatory domain information\n\tstructure passed by userspace (CRDA) from our wireless-regdb.\n\tIf a channel is enabled but the country code indicates it should\n\tbe disabled we disable the channel and re-enable it upon disassociation."]
-#[derive(Debug, Copy, Clone, Hash, PartialEq, Eq)]
+#[derive(Debug, Copy, Clone, Hash, PartialEq, Eq, num_enum::TryFromPrimitive)]
 pub enum reg_initiator {
     REGDOM_SET_BY_CORE = 0,
     REGDOM_SET_BY_USER = 1,
@@ -2022,7 +2022,7 @@ pub enum reg_initiator {
 }
 #[repr(u32)]
 #[doc = " enum reg_type - specifies the type of regulatory domain\n @NL80211_REGDOM_TYPE_COUNTRY: the regulatory domain set is one that pertains\n\tto a specific country. When this is set you can count on the\n\tISO / IEC 3166 alpha2 country code being valid.\n @NL80211_REGDOM_TYPE_WORLD: the regulatory set domain is the world regulatory\n domain.\n @NL80211_REGDOM_TYPE_CUSTOM_WORLD: the regulatory domain set is a custom\n driver specific world regulatory domain. These do not apply system-wide\n and are only applicable to the individual devices which have requested\n them to be applied.\n @NL80211_REGDOM_TYPE_INTERSECTION: the regulatory domain set is the product\n\tof an intersection between two regulatory domains -- the previously\n\tset regulatory domain on the system and the last accepted regulatory\n\tdomain request to be processed."]
-#[derive(Debug, Copy, Clone, Hash, PartialEq, Eq)]
+#[derive(Debug, Copy, Clone, Hash, PartialEq, Eq, num_enum::TryFromPrimitive)]
 pub enum reg_type {
     REGDOM_TYPE_COUNTRY = 0,
     REGDOM_TYPE_WORLD = 1,
@@ -2284,14 +2284,14 @@ pub struct umac_event_get_key {
 }
 #[repr(u32)]
 #[doc = " enum scan_mode - scan operation mode\n @AUTO: auto or legacy scan operation\n @CHANNEL_MAPPING_SCAN: channel mapping mode. most of parameters will come from host.\n\n This enum represents the different types of scanning operations."]
-#[derive(Debug, Copy, Clone, Hash, PartialEq, Eq)]
+#[derive(Debug, Copy, Clone, Hash, PartialEq, Eq, num_enum::TryFromPrimitive)]
 pub enum scan_mode {
     AUTO_SCAN = 0,
     CHANNEL_MAPPING_SCAN = 1,
 }
 #[repr(u32)]
 #[doc = " enum scan_reason - scan reason\n @SCAN_DISPLAY: scan for display purpose in user space\n @SCAN_CONNECT: scan for connection purpose.\n\n This enum represents the different types of scan reasons."]
-#[derive(Debug, Copy, Clone, Hash, PartialEq, Eq)]
+#[derive(Debug, Copy, Clone, Hash, PartialEq, Eq, num_enum::TryFromPrimitive)]
 pub enum scan_reason {
     SCAN_DISPLAY = 0,
     SCAN_CONNECT = 1,
@@ -2537,7 +2537,7 @@ pub struct txq_params {
 }
 #[repr(u32)]
 #[doc = " enum tx_power_type - TX power adjustment.\n @TX_POWER_AUTOMATIC: Automatically determine transmit power.\n @TX_POWER_LIMITED: Limit TX power by the mBm parameter.\n @TX_POWER_FIXED: Fix TX power to the mBm parameter.\n\n Types of transmit power settings."]
-#[derive(Debug, Copy, Clone, Hash, PartialEq, Eq)]
+#[derive(Debug, Copy, Clone, Hash, PartialEq, Eq, num_enum::TryFromPrimitive)]
 pub enum tx_power_type {
     TX_POWER_AUTOMATIC = 0,
     TX_POWER_LIMITED = 1,
@@ -2872,7 +2872,7 @@ pub struct umac_cmd_get_channel {
 }
 #[repr(u32)]
 #[doc = " enum twt_setup_cmd_type - TWT Setup command/Response type.\n @REQUEST_TWT:STA requests to join a TWT without specifying a target wake time.\n @SUGGEST_TWT:STA requests to join a TWT with specifying a target wake time and other\n\t\tparams, these values can change during negotiation.\n @DEMAND_TWT:requests to join a TWT with demanded a target wake time and other params.\n\t\tSTA rejects if AP not scheduling those params.\n @GROUPING_TWT:Response to the STA request(suggest/demand), these are may be different\n\t\tparams.\n @ACCEPT_TWT: AP accept the STA requested params.\n @ALTERNATE_TWT:AP may suggest the params, these may be different from STA requested.\n @DICTATE_TWT:AP may suggest the params, these may be different from STA requested.\n @REJECT_TWT: AP may reject the STA requested params.\n\n Types of TWT setup command/events."]
-#[derive(Debug, Copy, Clone, Hash, PartialEq, Eq)]
+#[derive(Debug, Copy, Clone, Hash, PartialEq, Eq, num_enum::TryFromPrimitive)]
 pub enum twt_setup_cmd_type {
     REQUEST_TWT = 0,
     SUGGEST_TWT = 1,
@@ -3070,7 +3070,7 @@ pub struct umac_event_set_interface {
 }
 #[repr(u32)]
 #[doc = " enum channel_flags - channel flags\n\n Channel flags set by the regulatory control code.\n\n @CHAN_DISABLED: This channel is disabled.\n @CHAN_NO_IR: do not initiate radiation, this includes\n sending probe requests or beaconing.\n @CHAN_RADAR: Radar detection is required on this channel.\n @CHAN_NO_HT40PLUS: extension channel above this channel\n\tis not permitted.\n @CHAN_NO_HT40MINUS: extension channel below this channel\n\tis not permitted.\n @CHAN_NO_OFDM: OFDM is not allowed on this channel.\n @CHAN_NO_80MHZ: If the driver supports 80 MHz on the band,\n\tthis flag indicates that an 80 MHz channel cannot use this\n\tchannel as the control or any of the secondary channels.\n\tThis may be due to the driver or due to regulatory bandwidth\n\trestrictions.\n @CHAN_NO_160MHZ: If the driver supports 160 MHz on the band,\n\tthis flag indicates that an 160 MHz channel cannot use this\n\tchannel as the control or any of the secondary channels.\n\tThis may be due to the driver or due to regulatory bandwidth\n\trestrictions.\n @CHAN_INDOOR_ONLY: see %NL80211_FREQUENCY_ATTR_INDOOR_ONLY\n @CHAN_GO_CONCURRENT: see %NL80211_FREQUENCY_ATTR_GO_CONCURRENT\n @CHAN_NO_20MHZ: 20 MHz bandwidth is not permitted\n\ton this channel.\n @CHAN_NO_10MHZ: 10 MHz bandwidth is not permitted\n\ton this channel.\n"]
-#[derive(Debug, Copy, Clone, Hash, PartialEq, Eq)]
+#[derive(Debug, Copy, Clone, Hash, PartialEq, Eq, num_enum::TryFromPrimitive)]
 pub enum channel_flags {
     CHAN_DISABLED = 1,
     CHAN_NO_IR = 2,
@@ -3141,7 +3141,7 @@ pub struct umac_cmd_conn_info {
     pub umac_hdr: umac_hdr,
 }
 #[repr(u32)]
-#[derive(Debug, Copy, Clone, Hash, PartialEq, Eq)]
+#[derive(Debug, Copy, Clone, Hash, PartialEq, Eq, num_enum::TryFromPrimitive)]
 pub enum link_mode {
     MODE_11B = 1,
     MODE_11A = 2,
