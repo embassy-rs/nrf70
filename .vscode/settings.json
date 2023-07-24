@@ -4,4 +4,7 @@
     "rust-analyzer.check.allTargets": false,
     "rust-analyzer.cargo.noDefaultFeatures": true,
     "rust-analyzer.check.noDefaultFeatures": true,
+    "rust-analyzer.linkedProjects": [
+        "example/Cargo.toml"
+    ],
 }
