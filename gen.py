@@ -26,6 +26,9 @@ subprocess.run(
 
 h = open("fw/bindings.rs").read()
 h = re.sub("= (\d+);", lambda m: "= 0x{:x};".format(int(m[1])), h)
+h = h.replace("NRF_WIFI_802", "IEEE_802")
+h = h.replace("NRF_WIFI_", "")
+h = h.replace("nrf_wifi_", "")
 open("fw/bindings.rs", "w").write(h)
 
 

@@ -26,9 +26,6 @@ use messages::{commands, RpuMessage};
 use regions::*;
 use {embassy_nrf as _, panic_probe as _};
 
-use crate::messages::commands::sys::{DataConfigParams, RxBufPoolParams, TempVbatConfig};
-use crate::messages::RpuMessageHeader;
-
 //pub mod config;
 pub(crate) mod messages;
 
@@ -450,15 +447,16 @@ impl<'a, B: Bus> Nrf70<'a, B> {
         self.read(event_address, None, slice32_mut(&mut event_data)).await;
 
         // Get the header from the front of the event data
-        let message_header: RpuMessageHeader =
+        let message_header: c::host_rpu_msg_hdr =
             unsafe { core::mem::transmute_copy(event_data.as_ptr().as_ref().unwrap()) };
 
-        if message_header.length <= c::RPU_EVENT_COMMON_SIZE_MAX {
-            event_data.truncate(message_header.length as usize);
-        } else if message_header.length as usize <= MAX_EVENT_POOL_LEN {
+        if message_header.len <= c::RPU_EVENT_COMMON_SIZE_MAX {
+            event_data.truncate(message_header.len as usize);
+        } else if message_header.len as usize <= MAX_EVENT_POOL_LEN {
             // This is a longer than usual event. We gotta read it again
-            let Ok(_) = event_data.resize_default(message_header.length as usize) else {
-                defmt::panic!("Event is too big ({} bytes)! Either the buffer has to be increased or we need to implement fragmented event reading which is something the C lib does", message_header.length);
+            let Ok(_) = event_data.resize_default(message_header.len as usize) else {
+                let len = message_header.len;
+                defmt::panic!("Event is too big ({} bytes)! Either the buffer has to be increased or we need to implement fragmented event reading which is something the C lib does", len);
             };
             self.read(event_address, None, slice32_mut(&mut event_data)).await;
         } else {
@@ -478,7 +476,7 @@ impl<'a, B: Bus> Nrf70<'a, B> {
     }
 
     pub async fn rpu_cmd_ctrl_send(&mut self, message: &[u8]) {
-        if message.len() > c::MAX_NRF_WIFI_UMAC_CMD_SIZE as usize {
+        if message.len() > c::MAX_UMAC_CMD_SIZE as usize {
             todo!("Fragmenting commands is not yet implemented");
         } else {
             // Wait until we get an address to write to
@@ -538,34 +536,38 @@ impl<'a, B: Bus> Nrf70<'a, B> {
     }
 
     async fn init_umac(&mut self) {
-        let umac_cmd = RpuMessage::new(commands::sys::SysCommand::new(commands::sys::Init {
+        let umac_cmd = RpuMessage::new(c::cmd_sys_init {
+            sys_head: c::sys_head {
+                cmd_event: c::sys_commands::CMD_INIT as _,
+                len: size_of::<c::cmd_sys_init>() as _,
+            },
             wdev_id: 0,
-            sys_params: commands::sys::SysParams {
+            sys_params: c::sys_params {
                 sleep_enable: 0, // TODO for low power
                 hw_bringup_time: c::HW_DELAY,
                 sw_bringup_time: c::SW_DELAY,
                 bcn_time_out: c::BCN_TIMEOUT,
                 calib_sleep_clk: c::CALIB_SLEEP_CLOCK_ENABLE,
-                phy_calib: c::NRF_WIFI_DEF_PHY_CALIB,
+                phy_calib: c::DEF_PHY_CALIB,
                 mac_addr: [0; 6],
                 rf_params: [0; 200],
                 rf_params_valid: 0,
             },
             rx_buf_pools: [
-                RxBufPoolParams {
+                c::rx_buf_pool_params {
                     buf_sz: RX_MAX_DATA_SIZE as _, // TODO is this including the header or not?
                     num_bufs: RX_BUFS_PER_QUEUE as _,
                 },
-                RxBufPoolParams {
+                c::rx_buf_pool_params {
                     buf_sz: RX_MAX_DATA_SIZE as _, // TODO is this including the header or not?
                     num_bufs: RX_BUFS_PER_QUEUE as _,
                 },
-                RxBufPoolParams {
+                c::rx_buf_pool_params {
                     buf_sz: RX_MAX_DATA_SIZE as _, // TODO is this including the header or not?
                     num_bufs: RX_BUFS_PER_QUEUE as _,
                 },
             ],
-            data_config_params: DataConfigParams {
+            data_config_params: c::data_config_params {
                 rate_protection_type: 0,
                 aggregation: 1,
                 wmm: 1,
@@ -575,28 +577,46 @@ impl<'a, B: Bus> Nrf70<'a, B> {
                 reorder_buf_size: 64,
                 max_rxampdu_size: 3,
             },
-            temp_vbat_config_params: TempVbatConfig {
-                temp_based_calib_en: c::NRF_WIFI_TEMP_CALIB_ENABLE,
-                temp_calib_bitmap: c::NRF_WIFI_DEF_PHY_TEMP_CALIB,
-                vbat_calibp_bitmap: c::NRF_WIFI_DEF_PHY_VBAT_CALIB,
-                temp_vbat_mon_period: c::NRF_WIFI_TEMP_CALIB_PERIOD,
-                vth_very_low: c::NRF_WIFI_VBAT_VERYLOW as _,
-                vth_low: c::NRF_WIFI_VBAT_LOW as _,
-                vth_hi: c::NRF_WIFI_VBAT_HIGH as _,
-                temp_threshold: c::NRF_WIFI_TEMP_CALIB_THRESHOLD as _,
+            temp_vbat_config_params: c::temp_vbat_config {
+                temp_based_calib_en: c::TEMP_CALIB_ENABLE,
+                temp_calib_bitmap: c::DEF_PHY_TEMP_CALIB,
+                vbat_calibp_bitmap: c::DEF_PHY_VBAT_CALIB,
+                temp_vbat_mon_period: c::TEMP_CALIB_PERIOD,
+                vth_very_low: c::VBAT_VERYLOW as _,
+                vth_low: c::VBAT_LOW as _,
+                vth_hi: c::VBAT_HIGH as _,
+                temp_threshold: c::TEMP_CALIB_THRESHOLD as _,
                 vbat_threshold: 0,
             },
-        }));
+            country_code: [0, 0],
+            mgmt_buff_offload: 0,
+            op_band: 0,
+            tcp_ip_checksum_offload: 0,
+            tx_pwr_ctrl_params: c::tx_pwr_ctrl_params {
+                ant_gain_2g: 0,
+                ant_gain_5g_band1: 0,
+                ant_gain_5g_band2: 0,
+                ant_gain_5g_band3: 0,
+                band_edge_2g_lo: 0,
+                band_edge_2g_hi: 0,
+                band_edge_5g_unii_1_lo: 0,
+                band_edge_5g_unii_1_hi: 0,
+                band_edge_5g_unii_2a_lo: 0,
+                band_edge_5g_unii_2a_hi: 0,
+                band_edge_5g_unii_2c_lo: 0,
+                band_edge_5g_unii_2c_hi: 0,
+                band_edge_5g_unii_3_lo: 0,
+                band_edge_5g_unii_3_hi: 0,
+                band_edge_5g_unii_4_lo: 0,
+                band_edge_5g_unii_4_hi: 0,
+            },
+        });
 
-        let cmd_bytes = unsafe {
-            core::slice::from_raw_parts(
-                &umac_cmd as *const RpuMessage<commands::sys::SysCommand<commands::sys::Init>> as *const u8,
-                size_of::<RpuMessage<commands::sys::SysCommand<commands::sys::Init>>>(),
-            )
-        };
+        let cmd_bytes =
+            unsafe { core::slice::from_raw_parts(&umac_cmd as *const _ as *const u8, size_of_val(&umac_cmd)) };
 
         // pad to multiple of 4
-        let mut buf = [0u32; (size_of::<RpuMessage<commands::sys::SysCommand<commands::sys::Init>>>() + 3) / 4];
+        let mut buf = [0u32; (size_of::<RpuMessage<c::cmd_sys_init>>() + 3) / 4];
         slice8_mut(&mut buf)[..cmd_bytes.len()].copy_from_slice(cmd_bytes);
 
         unwrap!(embassy_time::with_timeout(Duration::from_secs(1), self.rpu_cmd_ctrl_send(slice8(&buf))).await);
@@ -808,7 +828,7 @@ pub trait Bus {
     async fn read_sr0(&mut self) -> u8;
     async fn read_sr1(&mut self) -> u8;
     async fn read_sr2(&mut self) -> u8;
-    async fn write_sr2(&mut self, val: u8);c::
+    async fn write_sr2(&mut self, val: u8);
 }
 
 struct SpiBus<T> {
