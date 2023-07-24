@@ -6,7 +6,7 @@
 #![feature(impl_trait_projections)]
 
 use core::future::Future;
-use core::mem::{size_of, size_of_val};
+use core::mem::{size_of, size_of_val, zeroed};
 use core::slice;
 
 use align_data::{include_aligned, Align16};
@@ -22,12 +22,8 @@ use embassy_time::{Delay, Duration, Timer};
 use embedded_hal::spi::Operation;
 use embedded_hal_async::spi::{ExclusiveDevice, SpiDevice};
 use heapless::Vec;
-use messages::{commands, RpuMessage};
 use regions::*;
 use {embassy_nrf as _, panic_probe as _};
-
-//pub mod config;
-pub(crate) mod messages;
 
 #[allow(unused)]
 #[allow(non_camel_case_types)]
@@ -37,6 +33,27 @@ mod c {
     pub const RPU_MCU_CORE_INDIRECT_BASE: u32 = 0xC0000000;
     pub const RX_BUF_HEADROOM: u32 = 4;
 }
+
+trait Command {
+    const MESSAGE_TYPE: c::host_rpu_msg_type;
+    fn fill(&mut self);
+}
+
+macro_rules! impl_cmd {
+    (sys, $cmd:path, $num:expr) => {
+        impl Command for $cmd {
+            const MESSAGE_TYPE: c::host_rpu_msg_type = c::host_rpu_msg_type::HOST_RPU_MSG_TYPE_SYSTEM;
+            fn fill(&mut self) {
+                self.sys_head = c::sys_head {
+                    cmd_event: $num as _,
+                    len: size_of::<Self>() as _,
+                };
+            }
+        }
+    };
+}
+
+impl_cmd!(sys, c::cmd_sys_init, c::sys_commands::CMD_INIT);
 
 bind_interrupts!(struct Irqs {
     SERIAL0 => spim::InterruptHandler<embassy_nrf::peripherals::SERIAL0>;
@@ -106,6 +123,10 @@ async fn main(spawner: Spawner) {
             .rpu_irq_process(|_data| async { defmt::info!("Received an event") })
             .await;
     }
+}
+
+fn sliceit<T>(t: &T) -> &[u8] {
+    unsafe { slice::from_raw_parts(t as *const _ as _, size_of::<T>()) }
 }
 
 fn slice8(x: &[u32]) -> &[u8] {
@@ -535,12 +556,42 @@ impl<'a, B: Bus> Nrf70<'a, B> {
         });
     }
 
+    async fn send_cmd<T: Command>(&mut self, mut cmd: T) {
+        cmd.fill();
+
+        const MAX_CMD_SIZE: usize = 512; // TODO this is a wild guess.
+
+        let mut buf = [0u32; MAX_CMD_SIZE / 4];
+        let buf8 = slice8_mut(&mut buf);
+
+        #[repr(C, packed)]
+        struct Msg<T> {
+            header: c::host_rpu_msg,
+            cmd: T,
+        }
+
+        let mut cmd = Msg {
+            header: unsafe { zeroed() },
+            cmd,
+        };
+        cmd.header.hdr.len = size_of_val(&cmd) as _;
+        cmd.header.type_ = T::MESSAGE_TYPE as _;
+
+        let cmd_bytes = sliceit(&cmd);
+        buf8[..cmd_bytes.len()].copy_from_slice(cmd_bytes);
+
+        unwrap!(
+            embassy_time::with_timeout(
+                Duration::from_secs(1),
+                self.rpu_cmd_ctrl_send(slice8(&buf[..(size_of::<T>() + 3) / 4]))
+            )
+            .await
+        );
+    }
+
     async fn init_umac(&mut self) {
-        let umac_cmd = RpuMessage::new(c::cmd_sys_init {
-            sys_head: c::sys_head {
-                cmd_event: c::sys_commands::CMD_INIT as _,
-                len: size_of::<c::cmd_sys_init>() as _,
-            },
+        let cmd = c::cmd_sys_init {
+            sys_head: unsafe { zeroed() },
             wdev_id: 0,
             sys_params: c::sys_params {
                 sleep_enable: 0, // TODO for low power
@@ -610,16 +661,8 @@ impl<'a, B: Bus> Nrf70<'a, B> {
                 band_edge_5g_unii_4_lo: 0,
                 band_edge_5g_unii_4_hi: 0,
             },
-        });
-
-        let cmd_bytes =
-            unsafe { core::slice::from_raw_parts(&umac_cmd as *const _ as *const u8, size_of_val(&umac_cmd)) };
-
-        // pad to multiple of 4
-        let mut buf = [0u32; (size_of::<RpuMessage<c::cmd_sys_init>>() + 3) / 4];
-        slice8_mut(&mut buf)[..cmd_bytes.len()].copy_from_slice(cmd_bytes);
-
-        unwrap!(embassy_time::with_timeout(Duration::from_secs(1), self.rpu_cmd_ctrl_send(slice8(&buf))).await);
+        };
+        self.send_cmd(cmd).await;
     }
 
     async fn init_tx(&mut self) {}
