@@ -5,8 +5,6 @@
 #![feature(async_fn_in_trait)]
 #![feature(impl_trait_projections)]
 
-use core::mem::size_of_val;
-
 use defmt::*;
 use defmt_rtt as _; // global logger
 use embassy_executor::Spawner;
@@ -15,7 +13,7 @@ use embassy_nrf::spim::Spim;
 use embassy_nrf::{bind_interrupts, spim};
 use embassy_time::{Delay, Duration, Timer};
 use embedded_hal_bus::spi::ExclusiveDevice;
-use nrf70::{Nrf70, SpiBus};
+use nrf70::SpiBus;
 use {embassy_nrf as _, panic_probe as _};
 
 bind_interrupts!(struct Irqs {
@@ -74,9 +72,8 @@ async fn main(spawner: Spawner) {
     let bus = QspiBus { qspi };
     */
 
-    let mut nrf70 = Nrf70::new(bus, bucken, iovdd_ctl, host_irq);
+    let mut state = nrf70::State::new();
+    let (device, control, mut runner) = nrf70::new(&mut state, bus, bucken, iovdd_ctl, host_irq).await;
 
-    info!("Size of nrf70: {}", size_of_val(&nrf70));
-
-    nrf70.run().await;
+    runner.run().await;
 }

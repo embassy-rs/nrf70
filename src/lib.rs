@@ -8,6 +8,8 @@ use core::slice;
 
 use align_data::{include_aligned, Align16};
 use defmt::{assert, panic, todo, unwrap, *};
+use embassy_net_driver_channel as ch;
+use embassy_net_driver_channel::driver::LinkState;
 use embassy_time::{Duration, Timer};
 use embedded_hal::digital::{InputPin, OutputPin};
 use embedded_hal::spi::Operation;
@@ -22,6 +24,67 @@ mod c {
     include!("../fw/bindings.rs");
     pub const RPU_MCU_CORE_INDIRECT_BASE: u32 = 0xC0000000;
     pub const RX_BUF_HEADROOM: u32 = 4;
+}
+
+const MTU: usize = 1514;
+
+struct Shared {}
+
+pub struct State {
+    shared: Shared,
+    ch: ch::State<MTU, 4, 4>,
+}
+
+impl State {
+    pub fn new() -> Self {
+        Self {
+            ch: ch::State::new(),
+            shared: Shared {},
+        }
+    }
+}
+
+pub type NetDriver<'a> = ch::Device<'a, MTU>;
+
+pub async fn new<'a, BUS, IN, OUT>(
+    state: &'a mut State,
+    bus: BUS,
+    bucken: OUT,
+    iovdd_ctl: OUT,
+    host_irq: IN,
+) -> (NetDriver<'a>, Control<'a>, Runner<'a, BUS, IN, OUT>)
+where
+    BUS: Bus,
+    IN: InputPin + Wait,
+    OUT: OutputPin,
+{
+    let (ch_runner, device) = ch::new(&mut state.ch, ch::driver::HardwareAddress::Ethernet([0; 6]));
+    let state_ch = ch_runner.state_runner();
+
+    let mut runner = Runner {
+        ch: ch_runner,
+        state_ch,
+        shared: &state.shared,
+        bus,
+        bucken,
+        iovdd_ctl,
+        host_irq,
+        rpu_info: None,
+        num_commands: c::RPU_CMD_START_MAGIC,
+    };
+    runner.init().await;
+
+    let control = Control {
+        shared: &state.shared,
+        state_ch,
+    };
+
+    (device, control, runner)
+}
+
+pub struct Control<'a> {
+    shared: &'a Shared,
+    state_ch: ch::StateRunner<'a>,
 }
 
 trait Command {
@@ -217,30 +280,23 @@ const _: () = {
     );
 };
 
-pub struct Nrf70<B: Bus, O: OutputPin, I: InputPin + Wait> {
-    bus: B,
-    bucken: O,
-    iovdd_ctl: O,
-    host_irq: I,
+pub struct Runner<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> {
+    ch: ch::Runner<'a, MTU>,
+    state_ch: ch::StateRunner<'a>,
+    shared: &'a Shared,
+
+    bus: BUS,
+    bucken: OUT,
+    iovdd_ctl: OUT,
+    host_irq: IN,
 
     rpu_info: Option<RpuInfo>,
 
     num_commands: u32,
 }
 
-impl<B: Bus, O: OutputPin, I: InputPin + Wait> Nrf70<B, O, I> {
-    pub const fn new(bus: B, bucken: O, iovdd_ctl: O, host_irq: I) -> Self {
-        Self {
-            bus,
-            bucken,
-            iovdd_ctl,
-            host_irq,
-            rpu_info: None,
-            num_commands: c::RPU_CMD_START_MAGIC,
-        }
-    }
-
-    pub async fn run(&mut self) {
+impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT> {
+    async fn init(&mut self) {
         info!("power on...");
         Timer::after(Duration::from_millis(10)).await;
         self.bucken.set_high().unwrap();
@@ -313,7 +369,9 @@ impl<B: Bus, O: OutputPin, I: InputPin + Wait> Nrf70<B, O, I> {
 
         info!("Initializing umac...");
         self.init_umac().await;
+    }
 
+    pub async fn run(&mut self) -> ! {
         info!("running...");
 
         let mut buf = [0u32; MAX_EVENT_POOL_LEN / 4];

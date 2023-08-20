@@ -50,6 +50,8 @@ embassy-sync = { git = "https://github.com/embassy-rs/embassy", rev = "268700824
 embassy-futures = { git = "https://github.com/embassy-rs/embassy", rev = "26870082427b64d3ca42691c55a2cded5eadc548" }
 embassy-nrf = { git = "https://github.com/embassy-rs/embassy", rev = "26870082427b64d3ca42691c55a2cded5eadc548" }
 embassy-macros = { git = "https://github.com/embassy-rs/embassy", rev = "26870082427b64d3ca42691c55a2cded5eadc548" }
+embassy-net = { git = "https://github.com/embassy-rs/embassy", rev = "26870082427b64d3ca42691c55a2cded5eadc548" }
+embassy-net-driver-channel = { git = "https://github.com/embassy-rs/embassy", rev = "26870082427b64d3ca42691c55a2cded5eadc548" }
 
 # embassy-embedded-hal = { path = "/home/dirbaio/embassy/embassy/embassy-embedded-hal" }
 # embassy-executor = { path = "/home/dirbaio/embassy/embassy/embassy-executor" }
