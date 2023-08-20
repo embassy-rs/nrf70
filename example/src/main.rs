@@ -14,7 +14,7 @@ use embassy_nrf::gpio::{AnyPin, Input, Level, Output, OutputDrive, Pin, Pull};
 use embassy_nrf::spim::Spim;
 use embassy_nrf::{bind_interrupts, spim};
 use embassy_time::{Delay, Duration, Timer};
-use embedded_hal_async::spi::ExclusiveDevice;
+use embedded_hal_bus::spi::ExclusiveDevice;
 use nrf70::{Nrf70, SpiBus};
 use {embassy_nrf as _, panic_probe as _};
 

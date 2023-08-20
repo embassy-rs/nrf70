@@ -33,23 +33,23 @@ cortex-m-rt = { version = "0.7.3" }
 defmt = "0.3"
 defmt-rtt = "0.4"
 panic-probe = { version = "0.3", features = ["print-defmt"] }
-embedded-hal = "1.0.0-alpha.11"
+embedded-hal = "1.0.0-rc.1"
 futures = { version = "0.3.28", default-features = false }
 heapless = "0.7.16"
 static_cell = "1.2.0"
-embedded-hal-bus = "0.1.0-alpha.3"
-embedded-hal-async = "0.2.0-alpha.2"
+embedded-hal-bus = { version = "0.1.0-rc.1", features = ["async"] }
+embedded-hal-async = "1.0.0-rc.1"
 align-data = "0.1.0"
 num_enum = { version = "0.6.1", default-features = false }
 
 [patch.crates-io]
-embassy-embedded-hal = { git = "https://github.com/embassy-rs/embassy", rev = "4d1d125f4157084668a949f9bc24e4417628f9fe" }
-embassy-executor = { git = "https://github.com/embassy-rs/embassy", rev = "4d1d125f4157084668a949f9bc24e4417628f9fe" }
-embassy-time = { git = "https://github.com/embassy-rs/embassy", rev = "4d1d125f4157084668a949f9bc24e4417628f9fe" }
-embassy-sync = { git = "https://github.com/embassy-rs/embassy", rev = "4d1d125f4157084668a949f9bc24e4417628f9fe" }
-embassy-futures = { git = "https://github.com/embassy-rs/embassy", rev = "4d1d125f4157084668a949f9bc24e4417628f9fe" }
-embassy-nrf = { git = "https://github.com/embassy-rs/embassy", rev = "4d1d125f4157084668a949f9bc24e4417628f9fe" }
-embassy-macros = { git = "https://github.com/embassy-rs/embassy", rev = "4d1d125f4157084668a949f9bc24e4417628f9fe" }
+embassy-embedded-hal = { git = "https://github.com/embassy-rs/embassy", rev = "26870082427b64d3ca42691c55a2cded5eadc548" }
+embassy-executor = { git = "https://github.com/embassy-rs/embassy", rev = "26870082427b64d3ca42691c55a2cded5eadc548" }
+embassy-time = { git = "https://github.com/embassy-rs/embassy", rev = "26870082427b64d3ca42691c55a2cded5eadc548" }
+embassy-sync = { git = "https://github.com/embassy-rs/embassy", rev = "26870082427b64d3ca42691c55a2cded5eadc548" }
+embassy-futures = { git = "https://github.com/embassy-rs/embassy", rev = "26870082427b64d3ca42691c55a2cded5eadc548" }
+embassy-nrf = { git = "https://github.com/embassy-rs/embassy", rev = "26870082427b64d3ca42691c55a2cded5eadc548" }
+embassy-macros = { git = "https://github.com/embassy-rs/embassy", rev = "26870082427b64d3ca42691c55a2cded5eadc548" }
 
 # embassy-embedded-hal = { path = "/home/dirbaio/embassy/embassy/embassy-embedded-hal" }
 # embassy-executor = { path = "/home/dirbaio/embassy/embassy/embassy-executor" }
@@ -59,34 +59,35 @@ embassy-macros = { git = "https://github.com/embassy-rs/embassy", rev = "4d1d125
 # embassy-nrf = { path = "/home/dirbaio/embassy/embassy/embassy-nrf" }
 # embassy-macros = { path = "/home/dirbaio/embassy/embassy/embassy-macros" }
 
-
-
 [profile.dev]
 debug = 2
+opt-level = 's'
+incremental = true
 debug-assertions = true
-opt-level = 2
 overflow-checks = true
 
 [profile.release]
-codegen-units = 1
 debug = 2
-debug-assertions = false
-incremental = false
 lto = 'fat'
-opt-level = 'z'
+opt-level = 's'
+codegen-units = 1
+incremental = false
+debug-assertions = false
 overflow-checks = false
 
 # do not optimize proc-macro crates = faster builds from scratch
 [profile.dev.build-override]
-codegen-units = 8
 debug = false
-debug-assertions = false
 opt-level = 0
+codegen-units = 8
+incremental = false
+debug-assertions = false
 overflow-checks = false
 
 [profile.release.build-override]
-codegen-units = 8
 debug = false
-debug-assertions = false
 opt-level = 0
+codegen-units = 8
+incremental = false
+debug-assertions = false
 overflow-checks = false
