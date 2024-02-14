@@ -3,7 +3,7 @@ build-std = ["core"]
 #build-std-features = ["panic_immediate_abort"]
 
 [target.'cfg(all(target_arch = "arm", target_os = "none"))']
-runner = "probe-run --chip nrf5340"
+runner = "probe-rs run --chip nrf5340 --allow-erase-all"
 
 [build]
 target = "thumbv8m.main-none-eabihf"

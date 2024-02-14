@@ -5,27 +5,23 @@ edition = "2021"
 
 [dependencies]
 nrf70 = { path = ".." }
-embassy-executor = { version = "0.2.0", features = [
+embassy-executor = { version = "0.5.0", features = [
     "nightly",
     "defmt",
     "arch-cortex-m",
     "executor-thread",
     "integrated-timers",
 ] }
-embassy-time = { version = "0.1.2", features = [
-    "nightly",
+embassy-time = { version = "0.3.0", features = [
     "defmt",
     "defmt-timestamp-uptime",
-    "unstable-traits",
 ] }
-embassy-sync = { version = "0.2.0" }
+embassy-sync = { version = "0.5.0" }
 embassy-nrf = { version = "0.1.0", features = [
-    "nightly",
     "defmt",
     "nrf5340-app-s",
     "gpiote",
     "time-driver-rtc1",
-    "unstable-traits",
     "unstable-pac",
 ] }
 cortex-m = { version = "0.7.7", features = ["critical-section-single-core"] }
@@ -35,31 +31,12 @@ defmt-rtt = "0.4"
 panic-probe = { version = "0.3", features = ["print-defmt"] }
 embedded-hal = "1.0.0-rc.1"
 futures = { version = "0.3.28", default-features = false }
-heapless = "0.7.16"
-static_cell = "1.2.0"
-embedded-hal-bus = { version = "0.1.0-rc.1", features = ["async"] }
-embedded-hal-async = "1.0.0-rc.1"
+heapless = "0.8.0"
+static_cell = "2.0.0"
+embedded-hal-bus = { version = "0.1.0", features = ["async"] }
+embedded-hal-async = "1.0.0"
 align-data = "0.1.0"
-num_enum = { version = "0.6.1", default-features = false }
-
-[patch.crates-io]
-embassy-embedded-hal = { git = "https://github.com/embassy-rs/embassy", rev = "26870082427b64d3ca42691c55a2cded5eadc548" }
-embassy-executor = { git = "https://github.com/embassy-rs/embassy", rev = "26870082427b64d3ca42691c55a2cded5eadc548" }
-embassy-time = { git = "https://github.com/embassy-rs/embassy", rev = "26870082427b64d3ca42691c55a2cded5eadc548" }
-embassy-sync = { git = "https://github.com/embassy-rs/embassy", rev = "26870082427b64d3ca42691c55a2cded5eadc548" }
-embassy-futures = { git = "https://github.com/embassy-rs/embassy", rev = "26870082427b64d3ca42691c55a2cded5eadc548" }
-embassy-nrf = { git = "https://github.com/embassy-rs/embassy", rev = "26870082427b64d3ca42691c55a2cded5eadc548" }
-embassy-macros = { git = "https://github.com/embassy-rs/embassy", rev = "26870082427b64d3ca42691c55a2cded5eadc548" }
-embassy-net = { git = "https://github.com/embassy-rs/embassy", rev = "26870082427b64d3ca42691c55a2cded5eadc548" }
-embassy-net-driver-channel = { git = "https://github.com/embassy-rs/embassy", rev = "26870082427b64d3ca42691c55a2cded5eadc548" }
-
-# embassy-embedded-hal = { path = "/home/dirbaio/embassy/embassy/embassy-embedded-hal" }
-# embassy-executor = { path = "/home/dirbaio/embassy/embassy/embassy-executor" }
-# embassy-time = { path = "/home/dirbaio/embassy/embassy/embassy-time" }
-# embassy-sync = { path = "/home/dirbaio/embassy/embassy/embassy-sync" }
-# embassy-futures = { path = "/home/dirbaio/embassy/embassy/embassy-futures" }
-# embassy-nrf = { path = "/home/dirbaio/embassy/embassy/embassy-nrf" }
-# embassy-macros = { path = "/home/dirbaio/embassy/embassy/embassy-macros" }
+num_enum = { version = "0.7.2", default-features = false }
 
 [profile.dev]
 debug = 2

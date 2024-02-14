@@ -1,7 +1,6 @@
 #![no_std]
 #![deny(unused_must_use)]
-#![feature(async_fn_in_trait)]
-#![feature(impl_trait_projections)]
+#![allow(async_fn_in_trait)]
 
 use core::mem::{align_of, size_of, size_of_val, zeroed};
 use core::slice;
