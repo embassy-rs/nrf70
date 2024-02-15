@@ -2,7044 +2,4659 @@
 
 #[repr(C)]
 #[derive(Default)]
-
 pub struct __IncompleteArrayField<T>(::core::marker::PhantomData<T>, [T; 0]);
-
 impl<T> __IncompleteArrayField<T> {
     #[inline]
-
     pub const fn new() -> Self {
         __IncompleteArrayField(::core::marker::PhantomData, [])
     }
-
     #[inline]
-
     pub fn as_ptr(&self) -> *const T {
         self as *const _ as *const T
     }
-
     #[inline]
-
     pub fn as_mut_ptr(&mut self) -> *mut T {
         self as *mut _ as *mut T
     }
-
     #[inline]
-
     pub unsafe fn as_slice(&self, len: usize) -> &[T] {
         ::core::slice::from_raw_parts(self.as_ptr(), len)
     }
-
     #[inline]
-
     pub unsafe fn as_mut_slice(&mut self, len: usize) -> &mut [T] {
         ::core::slice::from_raw_parts_mut(self.as_mut_ptr(), len)
     }
 }
-
 impl<T> ::core::fmt::Debug for __IncompleteArrayField<T> {
     fn fmt(&self, fmt: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {
         fmt.write_str("__IncompleteArrayField")
     }
 }
-
 pub const RPU_ADDR_SPI_START: u32 = 0x0;
-
 pub const RPU_ADDR_GRAM_START: u32 = 0xb7000000;
-
 pub const RPU_ADDR_GRAM_END: u32 = 0xb70101ff;
-
 pub const RPU_ADDR_SBUS_START: u32 = 0xa4000000;
-
 pub const RPU_ADDR_SBUS_END: u32 = 0xa4007fff;
-
 pub const RPU_ADDR_PBUS_START: u32 = 0xa5000000;
-
 pub const RPU_ADDR_PBUS_END: u32 = 0xa503ffff;
-
 pub const RPU_ADDR_BEV_START: u32 = 0xbfc00000;
-
 pub const RPU_ADDR_BEV_END: u32 = 0xbfcfffff;
-
 pub const RPU_ADDR_PKTRAM_START: u32 = 0xb0000000;
-
 pub const RPU_ADDR_PKTRAM_END: u32 = 0xb0030fff;
-
 pub const RPU_ADDR_LMAC_CORE_RET_START: u32 = 0x80040000;
-
 pub const RPU_ADDR_UMAC_CORE_RET_START: u32 = 0x80080000;
-
 pub const RPU_ADDR_MASK_BASE: u32 = 0xff000000;
-
 pub const RPU_ADDR_MASK_OFFSET: u32 = 0xffffff;
-
 pub const RPU_ADDR_MASK_BEV_OFFSET: u32 = 0xfffff;
-
 pub const RPU_REG_INT_FROM_RPU_CTRL: u32 = 0xa4000400;
-
 pub const RPU_REG_BIT_INT_FROM_RPU_CTRL: u32 = 0x11;
-
 pub const RPU_REG_INT_TO_MCU_CTRL: u32 = 0xa4000480;
-
 pub const RPU_REG_INT_FROM_MCU_ACK: u32 = 0xa4000488;
-
 pub const RPU_REG_BIT_INT_FROM_MCU_ACK: u32 = 0x1f;
-
 pub const RPU_REG_INT_FROM_MCU_CTRL: u32 = 0xa4000494;
-
 pub const RPU_REG_BIT_INT_FROM_MCU_CTRL: u32 = 0x1f;
-
 pub const RPU_REG_UCC_SLEEP_CTRL_DATA_0: u32 = 0xa4002c2c;
-
 pub const RPU_REG_UCC_SLEEP_CTRL_DATA_1: u32 = 0xa4002c30;
-
 pub const RPU_REG_MIPS_MCU_CONTROL: u32 = 0xa4000000;
-
 pub const RPU_REG_BIT_MIPS_MCU_LATCH_SOFT_RESET: u32 = 0x1;
-
 pub const RPU_REG_MIPS_MCU2_CONTROL: u32 = 0xa4000100;
-
 pub const RPU_REG_MIPS_MCU_UCCP_INT_STATUS: u32 = 0xa4000004;
-
 pub const RPU_REG_BIT_MIPS_UCCP_INT_STATUS: u32 = 0x0;
-
 pub const RPU_REG_BIT_MIPS_WATCHDOG_INT_STATUS: u32 = 0x1;
-
 pub const RPU_REG_MIPS_MCU_TIMER_CONTROL: u32 = 0xa4000048;
-
 pub const RPU_REG_MIPS_MCU_SYS_CORE_MEM_CTRL: u32 = 0xa4000030;
-
 pub const RPU_REG_MIPS_MCU_SYS_CORE_MEM_WDATA: u32 = 0xa4000034;
-
 pub const RPU_REG_MIPS_MCU_BOOT_EXCP_INSTR_0: u32 = 0xa4000050;
-
 pub const RPU_REG_MIPS_MCU_BOOT_EXCP_INSTR_1: u32 = 0xa4000054;
-
 pub const RPU_REG_MIPS_MCU_BOOT_EXCP_INSTR_2: u32 = 0xa4000058;
-
 pub const RPU_REG_MIPS_MCU_BOOT_EXCP_INSTR_3: u32 = 0xa400005c;
-
 pub const RPU_REG_MIPS_MCU2_SYS_CORE_MEM_CTRL: u32 = 0xa4000130;
-
 pub const RPU_REG_MIPS_MCU2_SYS_CORE_MEM_WDATA: u32 = 0xa4000134;
-
 pub const RPU_REG_MIPS_MCU2_BOOT_EXCP_INSTR_0: u32 = 0xa4000150;
-
 pub const RPU_REG_MIPS_MCU2_BOOT_EXCP_INSTR_1: u32 = 0xa4000154;
-
 pub const RPU_REG_MIPS_MCU2_BOOT_EXCP_INSTR_2: u32 = 0xa4000158;
-
 pub const RPU_REG_MIPS_MCU2_BOOT_EXCP_INSTR_3: u32 = 0xa400015c;
-
 pub const RPU_REG_MCP_SYS_CSTRCTRL: u32 = 0xa4001200;
-
 pub const RPU_REG_MCP_SYS_CSTRDAT32: u32 = 0xa4001218;
-
 pub const RPU_REG_MCP2_SYS_CSTRCTRL: u32 = 0xa4003200;
-
 pub const RPU_REG_MCP2_SYS_CSTRDAT32: u32 = 0xa4003218;
-
 pub const RPU_REG_MCP3_SYS_CSTRCTRL: u32 = 0xa4004200;
-
 pub const RPU_REG_MCP3_SYS_CSTRDAT32: u32 = 0xa4004218;
-
 pub const RPU_REG_RFCTL_UCC_RF_CTRL_CONFIG_00: u32 = 0xa401c200;
-
 pub const RPU_REG_RFCTL_UCC_RF_CTRL_CONFIG_01: u32 = 0xa401c204;
-
 pub const RPU_REG_RFCTL_UCC_RF_CTRL_CONFIG_02: u32 = 0xa401c208;
-
 pub const RPU_REG_RFCTL_UCC_RF_CTRL_CONFIG_04: u32 = 0xa401c210;
-
 pub const RPU_REG_RFCTL_UCC_RF_CTRL_CONFIG_16: u32 = 0xa401c260;
-
 pub const RPU_REG_RFCTL_SPI_CMD_DATA_TABLE_0: u32 = 0xa401c300;
-
 pub const RPU_REG_RFCTL_SPI_CMD_DATA_TABLE_1: u32 = 0xa401c304;
-
 pub const RPU_REG_RFCTL_SPI_CMD_DATA_TABLE_2: u32 = 0xa401c308;
-
 pub const RPU_REG_RFCTL_SPI_READ_DATA_TABLE_0: u32 = 0xa401c380;
-
 pub const PWR_CTRL1_SYSDEF: u32 = 0x1040;
-
 pub const PWR_COUNTERSTART_SYSDEF: u32 = 0x1158;
-
 pub const PWR_COUNTERCYCLES_SYSDEF: u32 = 0x1159;
-
 pub const PWR_COUNTERSTATUS0_SYSDEF: u32 = 0x115c;
-
 pub const PWR_COUNTERSTATUS1_SYSDEF: u32 = 0x115d;
-
 pub const PWR_COUNTERSTATUS2_SYSDEF: u32 = 0x115e;
-
 pub const PWR_COUNTERSTATUS3_SYSDEF: u32 = 0x115f;
-
 pub const WL_PWR_MON_SYSDEF: u32 = 0x144;
-
 pub const WL_PWR_AUX_SYSDEF: u32 = 0x145;
-
 pub const PWR_BREAKTIMER90_SYSDEF: u32 = 0x1264;
-
 pub const PWR_BREAKCOND2_SYSDEF: u32 = 0x1155;
-
 pub const PWR_BREAK3_SYSDEF: u32 = 0x1150;
-
 pub const PWR_BREAKCOND3_SYSDEF: u32 = 0x1156;
-
 pub const PWR_BREAK5_SYSDEF: u32 = 0x1152;
-
 pub const SPI_PAGESELECT: u32 = 0x7c;
-
 pub const SPI_DIGREFCLOCKCTRL: u32 = 0x7d;
-
 pub const RPU_REG_BIT_HARDRST_CTRL: u32 = 0x8;
-
 pub const RPU_REG_BIT_PS_CTRL: u32 = 0x0;
-
 pub const RPU_REG_BIT_PS_STATE: u32 = 0x1;
-
 pub const RPU_REG_BIT_READY_STATE: u32 = 0x2;
-
 pub const RPU_MEM_RX_CMD_BASE: u32 = 0xb7000d58;
-
 pub const RPU_MEM_HPQ_INFO: u32 = 0xb0000024;
-
 pub const RPU_MEM_TX_CMD_BASE: u32 = 0xb00000b8;
-
 pub const RPU_MEM_OTP_INFO: u32 = 0xb000005c;
-
 pub const RPU_MEM_OTP_FT_PROG_VERSION: u32 = 0xb0004fd8;
-
 pub const RPU_MEM_OTP_INFO_FLAGS: u32 = 0xb0004fdc;
-
 pub const RPU_MEM_LMAC_IF_INFO: u32 = 0xb0004fe0;
-
 pub const RPU_MEM_PKT_BASE: u32 = 0xb0005000;
-
 pub const RPU_CMD_START_MAGIC: u32 = 0xdead;
-
 pub const RPU_DATA_CMD_SIZE_MAX_RX: u32 = 0x8;
-
 pub const RPU_DATA_CMD_SIZE_MAX_TX: u32 = 0x94;
-
 pub const RPU_EVENT_COMMON_SIZE_MAX: u32 = 0x80;
-
 pub const EVENT_POOL_NUM_ELEMS: u32 = 0x7;
-
 pub const MAX_EVENT_POOL_LEN: u32 = 0x3e8;
-
 pub const MAX_NUM_OF_RX_QUEUES: u32 = 0x3;
-
 pub const RPU_PWR_DATA_TYPE_LFC_ERR: u32 = 0x0;
-
 pub const RPU_PWR_DATA_TYPE_VBAT_MON: u32 = 0x1;
-
 pub const RPU_PWR_DATA_TYPE_TEMP: u32 = 0x2;
-
 pub const RPU_PWR_DATA_TYPE_ALL: u32 = 0x3;
-
 pub const RPU_PWR_DATA_TYPE_MAX: u32 = 0x4;
-
 pub const RPU_RF_CLK_TYPE_20: u32 = 0x0;
-
 pub const RPU_RF_CLK_TYPE_40: u32 = 0x1;
-
 pub const RPU_RF_CLK_TYPE_MAX: u32 = 0x2;
-
 pub const RPU_PKTRAM_SIZE: u32 = 0x2c000;
-
 pub const REGION_PROTECT: u32 = 0x40;
-
 pub const PRODTEST_FT_PROGVERSION: u32 = 0x1d;
-
 pub const PRODTEST_TRIM0: u32 = 0x20;
-
 pub const PRODTEST_TRIM1: u32 = 0x21;
-
 pub const PRODTEST_TRIM2: u32 = 0x22;
-
 pub const PRODTEST_TRIM3: u32 = 0x23;
-
 pub const PRODTEST_TRIM4: u32 = 0x24;
-
 pub const PRODTEST_TRIM5: u32 = 0x25;
-
 pub const PRODTEST_TRIM6: u32 = 0x26;
-
 pub const PRODTEST_TRIM7: u32 = 0x27;
-
 pub const PRODTEST_TRIM8: u32 = 0x28;
-
 pub const PRODTEST_TRIM9: u32 = 0x29;
-
 pub const PRODTEST_TRIM10: u32 = 0x2a;
-
 pub const PRODTEST_TRIM11: u32 = 0x2b;
-
 pub const PRODTEST_TRIM12: u32 = 0x2c;
-
 pub const PRODTEST_TRIM13: u32 = 0x2d;
-
 pub const PRODTEST_TRIM14: u32 = 0x2e;
-
 pub const PRODCTRL_DISABLE5GHZ: u32 = 0x2f;
-
 pub const INFO_PART: u32 = 0x30;
-
 pub const INFO_VARIANT: u32 = 0x31;
-
 pub const INFO_UUID: u32 = 0x34;
-
 pub const QSPI_KEY: u32 = 0x44;
-
 pub const MAC0_ADDR: u32 = 0x48;
-
 pub const MAC1_ADDR: u32 = 0x4a;
-
 pub const CALIB_XO: u32 = 0x4c;
-
 pub const CALIB_PDADJM7: u32 = 0x4d;
-
 pub const CALIB_PDADJM0: u32 = 0x4e;
-
 pub const CALIB_PWR2G: u32 = 0x4f;
-
 pub const CALIB_PWR5GM7: u32 = 0x50;
-
 pub const CALIB_PWR5GM0: u32 = 0x51;
-
 pub const CALIB_RXGNOFF: u32 = 0x52;
-
 pub const CALIB_TXPOWBACKOFFT: u32 = 0x53;
-
 pub const CALIB_TXPOWBACKOFFV: u32 = 0x54;
-
 pub const REGION_DEFAULTS: u32 = 0x55;
-
 pub const PRODRETEST_PROGVERSION: u32 = 0x56;
-
 pub const PRODRETEST_TRIM0: u32 = 0x57;
-
 pub const PRODRETEST_TRIM1: u32 = 0x58;
-
 pub const PRODRETEST_TRIM2: u32 = 0x59;
-
 pub const PRODRETEST_TRIM3: u32 = 0x5a;
-
 pub const PRODRETEST_TRIM4: u32 = 0x5b;
-
 pub const PRODRETEST_TRIM5: u32 = 0x5c;
-
 pub const PRODRETEST_TRIM6: u32 = 0x5d;
-
 pub const PRODRETEST_TRIM7: u32 = 0x5e;
-
 pub const PRODRETEST_TRIM8: u32 = 0x5f;
-
 pub const PRODRETEST_TRIM9: u32 = 0x60;
-
 pub const PRODRETEST_TRIM10: u32 = 0x61;
-
 pub const PRODRETEST_TRIM11: u32 = 0x62;
-
 pub const PRODRETEST_TRIM12: u32 = 0x63;
-
 pub const PRODRETEST_TRIM13: u32 = 0x64;
-
 pub const PRODRETEST_TRIM14: u32 = 0x65;
-
 pub const OTP_MAX_WORD_LEN: u32 = 0x80;
-
 pub const QSPI_KEY_LENGTH_BYTES: u32 = 0x10;
-
 pub const RETRIM_LEN: u32 = 0xf;
-
 pub const OTP_SZ_CALIB_XO: u32 = 0x1;
-
 pub const OTP_SZ_CALIB_PDADJM7: u32 = 0x4;
-
 pub const OTP_SZ_CALIB_PDADJM0: u32 = 0x4;
-
 pub const OTP_SZ_CALIB_PWR2G: u32 = 0x1;
-
 pub const OTP_SZ_CALIB_PWR2GM0M7: u32 = 0x2;
-
 pub const OTP_SZ_CALIB_PWR5GM7: u32 = 0x3;
-
 pub const OTP_SZ_CALIB_PWR5GM0: u32 = 0x3;
-
 pub const OTP_SZ_CALIB_RXGNOFF: u32 = 0x4;
-
 pub const OTP_SZ_CALIB_TXP_BOFF_2GH: u32 = 0x1;
-
 pub const OTP_SZ_CALIB_TXP_BOFF_2GL: u32 = 0x1;
-
 pub const OTP_SZ_CALIB_TXP_BOFF_5GH: u32 = 0x1;
-
 pub const OTP_SZ_CALIB_TXP_BOFF_5GL: u32 = 0x1;
-
 pub const OTP_SZ_CALIB_TXP_BOFF_V: u32 = 0x4;
-
 pub const OTP_OFF_CALIB_XO: u32 = 0x0;
-
 pub const OTP_OFF_CALIB_PDADJM7: u32 = 0x4;
-
 pub const OTP_OFF_CALIB_PDADJM0: u32 = 0x8;
-
 pub const OTP_OFF_CALIB_PWR2G: u32 = 0xc;
-
 pub const OTP_OFF_CALIB_PWR2GM0M7: u32 = 0xd;
-
 pub const OTP_OFF_CALIB_PWR5GM7: u32 = 0x10;
-
 pub const OTP_OFF_CALIB_PWR5GM0: u32 = 0x14;
-
 pub const OTP_OFF_CALIB_RXGNOFF: u32 = 0x18;
-
 pub const OTP_OFF_CALIB_TXP_BOFF_2GH: u32 = 0x1c;
-
 pub const OTP_OFF_CALIB_TXP_BOFF_2GL: u32 = 0x1d;
-
 pub const OTP_OFF_CALIB_TXP_BOFF_5GH: u32 = 0x1e;
-
 pub const OTP_OFF_CALIB_TXP_BOFF_5GL: u32 = 0x1f;
-
 pub const OTP_OFF_CALIB_TXP_BOFF_V: u32 = 0x20;
-
 pub const QSPI_KEY_FLAG_MASK: i32 = -2;
-
 pub const MAC0_ADDR_FLAG_MASK: i32 = -3;
-
 pub const MAC1_ADDR_FLAG_MASK: i32 = -5;
-
 pub const CALIB_XO_FLAG_MASK: i32 = -9;
-
 pub const CALIB_PDADJM7_FLAG_MASK: i32 = -17;
-
 pub const CALIB_PDADJM0_FLAG_MASK: i32 = -33;
-
 pub const CALIB_PWR2G_FLAG_MASK: i32 = -65;
-
 pub const CALIB_PWR5GM7_FLAG_MASK: i32 = -129;
-
 pub const CALIB_PWR5GM0_FLAG_MASK: i32 = -257;
-
 pub const CALIB_RXGNOFF_FLAG_MASK: i32 = -513;
-
 pub const CALIB_TXPOWBACKOFFT_FLAG_MASK: i32 = -1025;
-
 pub const CALIB_TXPOWBACKOFFV_FLAG_MASK: i32 = -2049;
-
 pub const OTP_VOLTCTRL_ADDR: u32 = 0x19004;
-
 pub const OTP_VOLTCTRL_2V5: u32 = 0x3b;
-
 pub const OTP_VOLTCTRL_1V8: u32 = 0xb;
-
 pub const OTP_POLL_ADDR: u32 = 0x1b804;
-
 pub const OTP_WR_DONE: u32 = 0x1;
-
 pub const OTP_READ_VALID: u32 = 0x2;
-
 pub const OTP_READY: u32 = 0x4;
-
 pub const OTP_RWSBMODE_ADDR: u32 = 0x1b800;
-
 pub const OTP_STANDBY_MODE: u32 = 0x0;
-
 pub const OTP_READ_MODE: u32 = 0x1;
-
 pub const OTP_BYTE_WRITE_MODE: u32 = 0x42;
-
 pub const OTP_RDENABLE_ADDR: u32 = 0x1b810;
-
 pub const OTP_READREG_ADDR: u32 = 0x1b814;
-
 pub const OTP_WRENABLE_ADDR: u32 = 0x1b808;
-
 pub const OTP_WRITEREG_ADDR: u32 = 0x1b80c;
-
 pub const OTP_TIMING_REG1_ADDR: u32 = 0x1b820;
-
 pub const OTP_TIMING_REG1_VAL: u32 = 0x0;
-
 pub const OTP_TIMING_REG2_ADDR: u32 = 0x1b824;
-
 pub const OTP_TIMING_REG2_VAL: u32 = 0x30d8b;
-
 pub const PRODTEST_TRIM_LEN: u32 = 0xf;
-
 pub const OTP_FRESH_FROM_FAB: u32 = 0xffffffff;
-
 pub const OTP_PROGRAMMED: u32 = 0x0;
-
 pub const OTP_ENABLE_PATTERN: u32 = 0x50fa50fa;
-
 pub const OTP_INVALID: u32 = 0xdeadbeef;
-
 pub const FT_PROG_VER_MASK: u32 = 0xf0000;
-
 pub const BT_INIT: u32 = 0x1;
-
 pub const BT_MODE: u32 = 0x2;
-
 pub const BT_CTRL: u32 = 0x4;
-
 pub const BT_COEX_DISABLE: u32 = 0x0;
-
 pub const BT_COEX_ENABLE: u32 = 0x1;
-
 pub const SLAVE: u32 = 0x0;
-
 pub const MASTER: u32 = 0x1;
-
 pub const RPU_MEM_UMAC_BOOT_SIG: u32 = 0xb0000000;
-
 pub const RPU_MEM_UMAC_VER: u32 = 0xb0000004;
-
 pub const RPU_MEM_UMAC_PEND_Q_BMP: u32 = 0xb0000008;
-
 pub const RPU_MEM_UMAC_CMD_ADDRESS: u32 = 0xb00007a8;
-
 pub const RPU_MEM_UMAC_EVENT_ADDRESS: u32 = 0xb0000e28;
-
 pub const RPU_MEM_UMAC_PATCH_BIN: u32 = 0x8008c000;
-
 pub const RPU_MEM_UMAC_PATCH_BIMG: u32 = 0x80099400;
-
 pub const UMAC_BOOT_SIG: u32 = 0x5a5a5a5a;
-
 pub const UMAC_ROM_PATCH_OFFSET: u32 = 0x19400;
-
 pub const UMAC_BOOT_EXCP_VECT_0: u32 = 0x3c1a8000;
-
 pub const UMAC_BOOT_EXCP_VECT_1: u32 = 0x275a0000;
-
 pub const UMAC_BOOT_EXCP_VECT_2: u32 = 0x3400008;
-
 pub const UMAC_BOOT_EXCP_VECT_3: u32 = 0x0;
-
 pub const PENDING_FRAMES_BITMAP_AC_VO: u32 = 0x1;
-
 pub const PENDING_FRAMES_BITMAP_AC_VI: u32 = 0x2;
-
 pub const PENDING_FRAMES_BITMAP_AC_BE: u32 = 0x4;
-
 pub const PENDING_FRAMES_BITMAP_AC_BK: u32 = 0x8;
-
 pub const RF_PARAMS_SIZE: u32 = 0xc8;
-
 pub const RF_PARAMS_CONF_SIZE: u32 = 0x2a;
-
 pub const DEF_RF_PARAMS : & [u8 ; 311] = b"0000000000002A0000000003030303544040383838383838000000003C00FC00F8FCFCFC00FC00000000007077003F032424001000002800323500000CF008087D8105010071630300EED501001F6F00003B350100F52E0000E35E0000B7B6000066EFFEFFB5F60000896200007A840200E28FFCFF080808080408120100000000A1A10178000000080050003B020726181818181A120A140E0600\0" ;
-
 pub const RF_PARAMS_OFF_RESV_1: u32 = 0x0;
-
 pub const RF_PARAMS_OFF_CALIB_X0: u32 = 0x6;
-
 pub const RF_PARAMS_OFF_CALIB_PDADJM7: u32 = 0x7;
-
 pub const RF_PARAMS_OFF_CALIB_PDADJM0: u32 = 0xb;
-
 pub const RF_PARAMS_OFF_CALIB_PWR2G: u32 = 0xf;
-
 pub const RF_PARAMS_OFF_CALIB_PWR2GM0M7: u32 = 0x10;
-
 pub const RF_PARAMS_OFF_CALIB_PWR5GM7: u32 = 0x12;
-
 pub const RF_PARAMS_OFF_CALIB_PWR5GM0: u32 = 0x15;
-
 pub const RF_PARAMS_OFF_CALIB_RXGNOFF: u32 = 0x18;
-
 pub const RF_PARAMS_OFF_CALIB_MAX_TEMP: u32 = 0x1c;
-
 pub const RF_PARAMS_OFF_CALIB_MIN_TEMP: u32 = 0x1d;
-
 pub const RF_PARAMS_OFF_CALIB_TXP_BOFF_2GH: u32 = 0x1e;
-
 pub const RF_PARAMS_OFF_CALIB_TXP_BOFF_2GL: u32 = 0x1f;
-
 pub const RF_PARAMS_OFF_CALIB_TXP_BOFF_5GH: u32 = 0x20;
-
 pub const RF_PARAMS_OFF_CALIB_TXP_BOFF_5GL: u32 = 0x21;
-
 pub const RF_PARAMS_OFF_CALIB_TXP_BOFF_V: u32 = 0x22;
-
 pub const RF_PARAMS_OFF_CALIB_RESV_2: u32 = 0x25;
-
 pub const PHY_CALIB_FLAG_RXDC: u32 = 0x1;
-
 pub const PHY_CALIB_FLAG_TXDC: u32 = 0x2;
-
 pub const PHY_CALIB_FLAG_TXPOW: u32 = 0x0;
-
 pub const PHY_CALIB_FLAG_TXIQ: u32 = 0x8;
-
 pub const PHY_CALIB_FLAG_RXIQ: u32 = 0x10;
-
 pub const PHY_CALIB_FLAG_DPD: u32 = 0x20;
-
 pub const PHY_SCAN_CALIB_FLAG_RXDC: u32 = 0x10000;
-
 pub const PHY_SCAN_CALIB_FLAG_TXDC: u32 = 0x20000;
-
 pub const PHY_SCAN_CALIB_FLAG_TXPOW: u32 = 0x0;
-
 pub const PHY_SCAN_CALIB_FLAG_TXIQ: u32 = 0x0;
-
 pub const PHY_SCAN_CALIB_FLAG_RXIQ: u32 = 0x0;
-
 pub const PHY_SCAN_CALIB_FLAG_DPD: u32 = 0x0;
-
 pub const DEF_PHY_CALIB: u32 = 0x3003b;
-
 pub const DEF_PHY_TEMP_CALIB: u32 = 0x3b;
-
 pub const TEMP_CALIB_PERIOD: u32 = 0x100000;
-
 pub const TEMP_CALIB_THRESHOLD: u32 = 0x28;
-
 pub const TEMP_CALIB_ENABLE: u32 = 0x1;
-
 pub const DEF_PHY_VBAT_CALIB: u32 = 0x20;
-
 pub const VBAT_VERYLOW: u32 = 0x8;
-
 pub const VBAT_LOW: u32 = 0xc;
-
 pub const VBAT_HIGH: u32 = 0xe;
-
 pub const FT_PROG_VER1_2G_DSSS_TXCEIL_BKOFF: u32 = 0x0;
-
 pub const FT_PROG_VER1_2G_OFDM_TXCEIL_BKOFF: u32 = 0x0;
-
 pub const FT_PROG_VER1_5G_LOW_OFDM_TXCEIL_BKOFF: u32 = 0x0;
-
 pub const FT_PROG_VER1_5G_MID_OFDM_TXCEIL_BKOFF: u32 = 0x0;
-
 pub const FT_PROG_VER1_5G_HIGH_OFDM_TXCEIL_BKOFF: u32 = 0x0;
-
 pub const FT_PROG_VER2_2G_DSSS_TXCEIL_BKOFF: u32 = 0x0;
-
 pub const FT_PROG_VER2_2G_OFDM_TXCEIL_BKOFF: u32 = 0x0;
-
 pub const FT_PROG_VER2_5G_LOW_OFDM_TXCEIL_BKOFF: u32 = 0x0;
-
 pub const FT_PROG_VER2_5G_MID_OFDM_TXCEIL_BKOFF: u32 = 0x0;
-
 pub const FT_PROG_VER2_5G_HIGH_OFDM_TXCEIL_BKOFF: u32 = 0x0;
-
 pub const FT_PROG_VER3_2G_DSSS_TXCEIL_BKOFF: u32 = 0x0;
-
 pub const FT_PROG_VER3_2G_OFDM_TXCEIL_BKOFF: u32 = 0x0;
-
 pub const FT_PROG_VER3_5G_LOW_OFDM_TXCEIL_BKOFF: u32 = 0x0;
-
 pub const FT_PROG_VER3_5G_MID_OFDM_TXCEIL_BKOFF: u32 = 0x0;
-
 pub const FT_PROG_VER3_5G_HIGH_OFDM_TXCEIL_BKOFF: u32 = 0x0;
-
 pub const RPU_MEM_LMAC_BOOT_SIG: u32 = 0xb7000d50;
-
 pub const RPU_MEM_LMAC_VER: u32 = 0xb7000d54;
-
 pub const RPU_MEM_LMAC_PATCH_BIN: u32 = 0x80044000;
-
 pub const RPU_MEM_LMAC_PATCH_BIMG: u32 = 0x8004b000;
-
 pub const LMAC_BOOT_SIG: u32 = 0x5a5a5a5a;
-
 pub const LMAC_ROM_PATCH_OFFSET: u32 = 0xb000;
-
 pub const LMAC_BOOT_EXCP_VECT_0: u32 = 0x3c1a8000;
-
 pub const LMAC_BOOT_EXCP_VECT_1: u32 = 0x275a0000;
-
 pub const LMAC_BOOT_EXCP_VECT_2: u32 = 0x3400008;
-
 pub const LMAC_BOOT_EXCP_VECT_3: u32 = 0x0;
-
 pub const LMAC_MAX_RX_BUFS: u32 = 0x100;
-
 pub const HW_SLEEP_ENABLE: u32 = 0x2;
-
 pub const SW_SLEEP_ENABLE: u32 = 0x1;
-
 pub const SLEEP_DISABLE: u32 = 0x0;
-
 pub const HW_DELAY: u32 = 0x1c84;
-
 pub const SW_DELAY: u32 = 0x1388;
-
 pub const BCN_TIMEOUT: u32 = 0x9c40;
-
 pub const CALIB_SLEEP_CLOCK_ENABLE: u32 = 0x1;
-
 pub const ACTIVE_SCAN_DURATION: u32 = 0x32;
-
 pub const PASSIVE_SCAN_DURATION: u32 = 0x82;
-
 pub const WORKING_CH_SCAN_DURATION: u32 = 0x32;
-
 pub const CHNL_PROBE_CNT: u32 = 0x2;
-
 pub const PKT_TYPE_MPDU: u32 = 0x0;
-
 pub const PKT_TYPE_MSDU_WITH_MAC: u32 = 0x1;
-
 pub const PKT_TYPE_MSDU: u32 = 0x2;
-
 pub const RPU_PWR_STATUS_SUCCESS: u32 = 0x0;
-
 pub const RPU_PWR_STATUS_FAIL: i32 = -1;
-
 pub const MAX_RSSI_SAMPLES: u32 = 0xa;
-
 pub const FREQ_2_4_GHZ: u32 = 0x1;
-
 pub const FREQ_5_GHZ: u32 = 0x2;
-
 pub const NUM_32_QUEUES: u32 = 0x4;
-
 pub const USE_PROTECTION_NONE: u32 = 0x0;
-
 pub const USE_PROTECTION_RTS: u32 = 0x1;
-
 pub const USE_PROTECTION_CTS2SELF: u32 = 0x2;
-
 pub const USE_SHORT_PREAMBLE: u32 = 0x0;
-
 pub const DONT_USE_SHORT_PREAMBLE: u32 = 0x1;
-
 pub const MARK_RATE_AS_MCS_INDEX: u32 = 0x80;
-
 pub const MARK_RATE_AS_RATE: u32 = 0x0;
-
 pub const ENABLE_GREEN_FIELD: u32 = 0x1;
-
 pub const ENABLE_CHNL_WIDTH_40MHZ: u32 = 0x2;
-
 pub const ENABLE_SGI: u32 = 0x4;
-
 pub const ENABLE_11N_FORMAT: u32 = 0x8;
-
 pub const ENABLE_VHT_FORMAT: u32 = 0x10;
-
 pub const ENABLE_CHNL_WIDTH_80MHZ: u32 = 0x20;
-
 pub const MAX_TX_AGG_SIZE: u32 = 0x10;
-
 pub const MAX_RX_BUFS_PER_EVNT: u32 = 0x40;
-
 pub const MAX_MGMT_BUFS: u32 = 0x10;
-
 pub const MAX_RF_CALIB_DATA: u32 = 0x384;
-
 pub const ETH_ADDR_LEN: u32 = 0x6;
-
 pub const PHY_THRESHOLD_NORMAL: i32 = -65;
-
 pub const PHY_THRESHOLD_PROD_MODE: i32 = -93;
-
 pub const MAX_TX_STREAMS: u32 = 0x1;
-
 pub const MAX_RX_STREAMS: u32 = 0x1;
-
 pub const MAX_NUM_VIFS: u32 = 0x2;
-
 pub const MAX_NUM_STAS: u32 = 0x2;
-
 pub const MAX_NUM_APS: u32 = 0x1;
-
 pub const COUNTRY_CODE_LEN: u32 = 0x2;
-
 pub const FEATURE_DISABLE: u32 = 0x0;
-
 pub const FEATURE_ENABLE: u32 = 0x1;
-
 pub const TWT_EXTEND_SP_EDCA: u32 = 0x1;
-
 pub const HE_GI_800NS: u32 = 0x0;
-
 pub const HE_GI_1600NS: u32 = 0x1;
-
 pub const HE_GI_3200NS: u32 = 0x2;
-
 pub const HE_LTF_3200NS: u32 = 0x0;
-
 pub const HE_LTF_6400NS: u32 = 0x1;
-
 pub const HE_LTF_12800NS: u32 = 0x2;
-
 pub const DISABLE: u32 = 0x0;
-
 pub const ENABLE: u32 = 0x1;
-
 pub const TX_BUF_HEADROOM: u32 = 0x34;
-
 pub const DSCP_TOS_MASK: u32 = 0xffff;
-
 pub const DSCP_OR_TOS_TWT_EMERGENCY_TX: u32 = 0x80000000;
-
 pub const TX_STATUS_SUCCESS: u32 = 0x0;
-
 pub const TX_STATUS_FAILED: u32 = 0x1;
-
 pub const CLIENT_ACTIVE: u32 = 0x0;
-
 pub const CLIENT_PS_MODE: u32 = 0x1;
-
 pub const MAX_UMAC_CMD_SIZE: u32 = 0x190;
-
 pub const MAX_SSID_LEN: u32 = 0x20;
-
 pub const MAX_IE_LEN: u32 = 0x190;
-
 pub const MAX_SEQ_LENGTH: u32 = 0x100;
-
 pub const MAX_KEY_LENGTH: u32 = 0x100;
-
 pub const MAX_SAE_DATA_LENGTH: u32 = 0x100;
-
 pub const MAX_FRAME_LEN: u32 = 0x190;
-
 pub const INDEX_IDS_WDEV_ID_VALID: u32 = 0x1;
-
 pub const INDEX_IDS_IFINDEX_VALID: u32 = 0x2;
-
 pub const INDEX_IDS_WIPHY_IDX_VALID: u32 = 0x4;
-
 pub const SUPP_RATES_BAND_VALID: u32 = 0x1;
-
 pub const MAX_SUPP_RATES: u32 = 0x3c;
-
 pub const SCAN_MAX_NUM_SSIDS: u32 = 0x2;
-
 pub const SCAN_MAX_NUM_FREQUENCIES: u32 = 0x40;
-
 pub const SCAN_BAND_2GHZ: u32 = 0x1;
-
 pub const SCAN_BAND_5GHZ: u32 = 0x2;
-
 pub const SCAN_BAND_6GHZ: u32 = 0x4;
-
 pub const HT_CAPABILITY_VALID: u32 = 0x1;
-
 pub const HT_CAPABILITY_MASK_VALID: u32 = 0x2;
-
 pub const VHT_CAPABILITY_VALID: u32 = 0x4;
-
 pub const VHT_CAPABILITY_MASK_VALID: u32 = 0x8;
-
 pub const CMD_HT_VHT_CAPABILITY_DISABLE_HT: u32 = 0x1;
-
 pub const HT_VHT_CAPABILITY_MAX_SIZE: u32 = 0x100;
-
 pub const SIGNAL_TYPE_NONE: u32 = 0x1;
-
 pub const SIGNAL_TYPE_MBM: u32 = 0x2;
-
 pub const SIGNAL_TYPE_UNSPEC: u32 = 0x3;
-
 pub const WPA_VERSION_1: u32 = 0x1;
-
 pub const WPA_VERSION_2: u32 = 0x2;
-
 pub const CONNECT_COMMON_INFO_MAC_ADDR_VALID: u32 = 0x1;
-
 pub const CONNECT_COMMON_INFO_MAC_ADDR_HINT_VALID: u32 = 0x2;
-
 pub const CONNECT_COMMON_INFO_FREQ_VALID: u32 = 0x4;
-
 pub const CONNECT_COMMON_INFO_FREQ_HINT_VALID: u32 = 0x8;
-
 pub const CONNECT_COMMON_INFO_BG_SCAN_PERIOD_VALID: u32 = 0x10;
-
 pub const CONNECT_COMMON_INFO_SSID_VALID: u32 = 0x20;
-
 pub const CONNECT_COMMON_INFO_WPA_IE_VALID: u32 = 0x40;
-
 pub const CONNECT_COMMON_INFO_WPA_VERSIONS_VALID: u32 = 0x80;
-
 pub const CONNECT_COMMON_INFO_CIPHER_SUITES_PAIRWISE_VALID: u32 = 0x100;
-
 pub const CONNECT_COMMON_INFO_CIPHER_SUITE_GROUP_VALID: u32 = 0x200;
-
 pub const CONNECT_COMMON_INFO_AKM_SUITES_VALID: u32 = 0x400;
-
 pub const CONNECT_COMMON_INFO_USE_MFP_VALID: u32 = 0x800;
-
 pub const CONNECT_COMMON_INFO_CONTROL_PORT_ETHER_TYPE: u32 = 0x1000;
-
 pub const CONNECT_COMMON_INFO_CONTROL_PORT_NO_ENCRYPT: u32 = 0x2000;
-
 pub const MAX_NR_AKM_SUITES: u32 = 0x2;
-
 pub const CMD_CONNECT_COMMON_INFO_USE_RRM: u32 = 0x4000;
-
 pub const CONNECT_COMMON_INFO_PREV_BSSID: u32 = 0x8000;
-
 pub const BEACON_DATA_MAX_HEAD_LEN: u32 = 0x100;
-
 pub const BEACON_DATA_MAX_TAIL_LEN: u32 = 0x200;
-
 pub const BEACON_DATA_MAX_PROBE_RESP_LEN: u32 = 0x190;
-
 pub const STA_FLAG_INVALID: u32 = 0x1;
-
 pub const STA_FLAG_AUTHORIZED: u32 = 0x2;
-
 pub const STA_FLAG_SHORT_PREAMBLE: u32 = 0x4;
-
 pub const STA_FLAG_WME: u32 = 0x8;
-
 pub const STA_FLAG_MFP: u32 = 0x10;
-
 pub const STA_FLAG_AUTHENTICATED: u32 = 0x20;
-
 pub const STA_FLAG_TDLS_PEER: u32 = 0x40;
-
 pub const STA_FLAG_ASSOCIATED: u32 = 0x80;
-
 pub const RATE_INFO_BITRATE_VALID: u32 = 0x1;
-
 pub const RATE_INFO_BITRATE_COMPAT_VALID: u32 = 0x2;
-
 pub const RATE_INFO_BITRATE_MCS_VALID: u32 = 0x4;
-
 pub const RATE_INFO_BITRATE_VHT_MCS_VALID: u32 = 0x8;
-
 pub const RATE_INFO_BITRATE_VHT_NSS_VALID: u32 = 0x10;
-
 pub const RATE_INFO_0_MHZ_WIDTH: u32 = 0x1;
-
 pub const RATE_INFO_5_MHZ_WIDTH: u32 = 0x2;
-
 pub const RATE_INFO_10_MHZ_WIDTH: u32 = 0x4;
-
 pub const RATE_INFO_40_MHZ_WIDTH: u32 = 0x8;
-
 pub const RATE_INFO_80_MHZ_WIDTH: u32 = 0x10;
-
 pub const RATE_INFO_160_MHZ_WIDTH: u32 = 0x20;
-
 pub const RATE_INFO_SHORT_GI: u32 = 0x40;
-
 pub const RATE_INFO_80P80_MHZ_WIDTH: u32 = 0x80;
-
 pub const BSS_PARAM_FLAGS_CTS_PROT: u32 = 0x1;
-
 pub const BSS_PARAM_FLAGS_SHORT_PREAMBLE: u32 = 0x2;
-
 pub const BSS_PARAM_FLAGS_SHORT_SLOT_TIME: u32 = 0x4;
-
 pub const STA_INFO_CONNECTED_TIME_VALID: u32 = 0x1;
-
 pub const STA_INFO_INACTIVE_TIME_VALID: u32 = 0x2;
-
 pub const STA_INFO_RX_BYTES_VALID: u32 = 0x4;
-
 pub const STA_INFO_TX_BYTES_VALID: u32 = 0x8;
-
 pub const STA_INFO_CHAIN_SIGNAL_VALID: u32 = 0x10;
-
 pub const STA_INFO_CHAIN_SIGNAL_AVG_VALID: u32 = 0x20;
-
 pub const STA_INFO_TX_BITRATE_VALID: u32 = 0x40;
-
 pub const STA_INFO_RX_BITRATE_VALID: u32 = 0x80;
-
 pub const STA_INFO_STA_FLAGS_VALID: u32 = 0x100;
-
 pub const STA_INFO_LLID_VALID: u32 = 0x200;
-
 pub const STA_INFO_PLID_VALID: u32 = 0x400;
-
 pub const STA_INFO_PLINK_STATE_VALID: u32 = 0x800;
-
 pub const STA_INFO_SIGNAL_VALID: u32 = 0x1000;
-
 pub const STA_INFO_SIGNAL_AVG_VALID: u32 = 0x2000;
-
 pub const STA_INFO_RX_PACKETS_VALID: u32 = 0x4000;
-
 pub const STA_INFO_TX_PACKETS_VALID: u32 = 0x8000;
-
 pub const STA_INFO_TX_RETRIES_VALID: u32 = 0x10000;
-
 pub const STA_INFO_TX_FAILED_VALID: u32 = 0x20000;
-
 pub const STA_INFO_EXPECTED_THROUGHPUT_VALID: u32 = 0x40000;
-
 pub const STA_INFO_BEACON_LOSS_COUNT_VALID: u32 = 0x80000;
-
 pub const STA_INFO_LOCAL_PM_VALID: u32 = 0x100000;
-
 pub const STA_INFO_PEER_PM_VALID: u32 = 0x200000;
-
 pub const STA_INFO_NONPEER_PM_VALID: u32 = 0x400000;
-
 pub const STA_INFO_T_OFFSET_VALID: u32 = 0x800000;
-
 pub const STA_INFO_RX_DROPPED_MISC_VALID: u32 = 0x1000000;
-
 pub const STA_INFO_RX_BEACON_VALID: u32 = 0x2000000;
-
 pub const STA_INFO_RX_BEACON_SIGNAL_AVG_VALID: u32 = 0x4000000;
-
 pub const STA_INFO_STA_BSS_PARAMS_VALID: u32 = 0x8000000;
-
 pub const IEEE80211_MAX_CHAINS: u32 = 0x4;
-
 pub const KEY_VALID: u32 = 0x1;
-
 pub const KEY_TYPE_VALID: u32 = 0x2;
-
 pub const KEY_IDX_VALID: u32 = 0x4;
-
 pub const SEQ_VALID: u32 = 0x8;
-
 pub const CIPHER_SUITE_VALID: u32 = 0x10;
-
 pub const KEY_INFO_VALID: u32 = 0x20;
-
 pub const KEY_DEFAULT: u32 = 0x1;
-
 pub const KEY_DEFAULT_TYPES: u32 = 0x2;
-
 pub const KEY_DEFAULT_MGMT: u32 = 0x4;
-
 pub const KEY_DEFAULT_TYPE_UNICAST: u32 = 0x8;
-
 pub const KEY_DEFAULT_TYPE_MULTICAST: u32 = 0x10;
-
 pub const MCAST_ADDR_ADD: u32 = 0x0;
-
 pub const MCAST_ADDR_DEL: u32 = 0x1;
-
 pub const CMD_AUTHENTICATE_KEY_INFO_VALID: u32 = 0x1;
-
 pub const CMD_AUTHENTICATE_BSSID_VALID: u32 = 0x2;
-
 pub const CMD_AUTHENTICATE_FREQ_VALID: u32 = 0x4;
-
 pub const CMD_AUTHENTICATE_SSID_VALID: u32 = 0x8;
-
 pub const CMD_AUTHENTICATE_IE_VALID: u32 = 0x10;
-
 pub const CMD_AUTHENTICATE_SAE_VALID: u32 = 0x20;
-
 pub const CMD_AUTHENTICATE_LOCAL_STATE_CHANGE: u32 = 0x1;
-
 pub const CMD_ASSOCIATE_MAC_ADDR_VALID: u32 = 0x1;
-
 pub const CMD_MLME_MAC_ADDR_VALID: u32 = 0x1;
-
 pub const CMD_MLME_LOCAL_STATE_CHANGE: u32 = 0x1;
-
 pub const CMD_NEW_INTERFACE_USE_4ADDR_VALID: u32 = 0x1;
-
 pub const CMD_NEW_INTERFACE_MAC_ADDR_VALID: u32 = 0x2;
-
 pub const CMD_NEW_INTERFACE_IFTYPE_VALID: u32 = 0x4;
-
 pub const CMD_NEW_INTERFACE_IFNAME_VALID: u32 = 0x8;
-
 pub const FRAME_MATCH_MAX_LEN: u32 = 0x8;
-
 pub const CMD_KEY_MAC_ADDR_VALID: u32 = 0x1;
-
 pub const CMD_SET_BSS_CTS_VALID: u32 = 0x1;
-
 pub const CMD_SET_BSS_PREAMBLE_VALID: u32 = 0x2;
-
 pub const CMD_SET_BSS_SLOT_VALID: u32 = 0x4;
-
 pub const CMD_SET_BSS_HT_OPMODE_VALID: u32 = 0x8;
-
 pub const CMD_SET_BSS_AP_ISOLATE_VALID: u32 = 0x10;
-
 pub const CMD_SET_BSS_P2P_CTWINDOW_VALID: u32 = 0x20;
-
 pub const CMD_SET_BSS_P2P_OPPPS_VALID: u32 = 0x40;
-
 pub const BASIC_MAX_SUPP_RATES: u32 = 0x20;
-
 pub const SET_FREQ_PARAMS_FREQ_VALID: u32 = 0x1;
-
 pub const SET_FREQ_PARAMS_CHANNEL_WIDTH_VALID: u32 = 0x2;
-
 pub const SET_FREQ_PARAMS_CENTER_FREQ1_VALID: u32 = 0x4;
-
 pub const SET_FREQ_PARAMS_CENTER_FREQ2_VALID: u32 = 0x8;
-
 pub const SET_FREQ_PARAMS_CHANNEL_TYPE_VALID: u32 = 0x10;
-
 pub const TX_POWER_SETTING_TYPE_VALID: u32 = 0x1;
-
 pub const TX_POWER_SETTING_TX_POWER_LEVEL_VALID: u32 = 0x2;
-
 pub const CMD_SET_WIPHY_FREQ_PARAMS_VALID: u32 = 0x1;
-
 pub const CMD_SET_WIPHY_TXQ_PARAMS_VALID: u32 = 0x2;
-
 pub const CMD_SET_WIPHY_RTS_THRESHOLD_VALID: u32 = 0x4;
-
 pub const CMD_SET_WIPHY_FRAG_THRESHOLD_VALID: u32 = 0x8;
-
 pub const CMD_SET_WIPHY_TX_POWER_SETTING_VALID: u32 = 0x10;
-
 pub const CMD_SET_WIPHY_ANTENNA_TX_VALID: u32 = 0x20;
-
 pub const CMD_SET_WIPHY_ANTENNA_RX_VALID: u32 = 0x40;
-
 pub const CMD_SET_WIPHY_RETRY_SHORT_VALID: u32 = 0x80;
-
 pub const CMD_SET_WIPHY_RETRY_LONG_VALID: u32 = 0x100;
-
 pub const CMD_SET_WIPHY_COVERAGE_CLASS_VALID: u32 = 0x200;
-
 pub const CMD_SET_WIPHY_WIPHY_NAME_VALID: u32 = 0x400;
-
 pub const CMD_DEL_STATION_MAC_ADDR_VALID: u32 = 0x1;
-
 pub const CMD_DEL_STATION_MGMT_SUBTYPE_VALID: u32 = 0x2;
-
 pub const CMD_DEL_STATION_REASON_CODE_VALID: u32 = 0x4;
-
 pub const EXT_CAPABILITY_MAX_LEN: u32 = 0x20;
-
 pub const SUPPORTED_CHANNELS_MAX_LEN: u32 = 0x40;
-
 pub const OPER_CLASSES_MAX_LEN: u32 = 0x40;
-
 pub const STA_FLAGS2_MAX_LEN: u32 = 0x40;
-
 pub const CMD_SET_STATION_SUPP_RATES_VALID: u32 = 0x1;
-
 pub const CMD_SET_STATION_AID_VALID: u32 = 0x2;
-
 pub const CMD_SET_STATION_PEER_AID_VALID: u32 = 0x4;
-
 pub const CMD_SET_STATION_STA_CAPABILITY_VALID: u32 = 0x8;
-
 pub const CMD_SET_STATION_EXT_CAPABILITY_VALID: u32 = 0x10;
-
 pub const CMD_SET_STATION_STA_VLAN_VALID: u32 = 0x20;
-
 pub const CMD_SET_STATION_HT_CAPABILITY_VALID: u32 = 0x40;
-
 pub const CMD_SET_STATION_VHT_CAPABILITY_VALID: u32 = 0x80;
-
 pub const CMD_SET_STATION_OPMODE_NOTIF_VALID: u32 = 0x200;
-
 pub const CMD_SET_STATION_SUPPORTED_CHANNELS_VALID: u32 = 0x400;
-
 pub const CMD_SET_STATION_SUPPORTED_OPER_CLASSES_VALID: u32 = 0x800;
-
 pub const CMD_SET_STATION_STA_FLAGS2_VALID: u32 = 0x1000;
-
 pub const CMD_SET_STATION_STA_WME_UAPSD_QUEUES_VALID: u32 = 0x2000;
-
 pub const CMD_SET_STATION_STA_WME_MAX_SP_VALID: u32 = 0x4000;
-
 pub const CMD_SET_STATION_LISTEN_INTERVAL_VALID: u32 = 0x8000;
-
 pub const CMD_NEW_STATION_SUPP_RATES_VALID: u32 = 0x1;
-
 pub const CMD_NEW_STATION_AID_VALID: u32 = 0x2;
-
 pub const CMD_NEW_STATION_PEER_AID_VALID: u32 = 0x4;
-
 pub const CMD_NEW_STATION_STA_CAPABILITY_VALID: u32 = 0x8;
-
 pub const CMD_NEW_STATION_EXT_CAPABILITY_VALID: u32 = 0x10;
-
 pub const CMD_NEW_STATION_STA_VLAN_VALID: u32 = 0x20;
-
 pub const CMD_NEW_STATION_HT_CAPABILITY_VALID: u32 = 0x40;
-
 pub const CMD_NEW_STATION_VHT_CAPABILITY_VALID: u32 = 0x80;
-
 pub const CMD_NEW_STATION_OPMODE_NOTIF_VALID: u32 = 0x200;
-
 pub const CMD_NEW_STATION_SUPPORTED_CHANNELS_VALID: u32 = 0x400;
-
 pub const CMD_NEW_STATION_SUPPORTED_OPER_CLASSES_VALID: u32 = 0x800;
-
 pub const CMD_NEW_STATION_STA_FLAGS2_VALID: u32 = 0x1000;
-
 pub const CMD_NEW_STATION_STA_WME_UAPSD_QUEUES_VALID: u32 = 0x2000;
-
 pub const CMD_NEW_STATION_STA_WME_MAX_SP_VALID: u32 = 0x4000;
-
 pub const CMD_NEW_STATION_LISTEN_INTERVAL_VALID: u32 = 0x8000;
-
 pub const CMD_BEACON_INFO_BEACON_INTERVAL_VALID: u32 = 0x1;
-
 pub const CMD_BEACON_INFO_AUTH_TYPE_VALID: u32 = 0x2;
-
 pub const CMD_BEACON_INFO_VERSIONS_VALID: u32 = 0x4;
-
 pub const CMD_BEACON_INFO_CIPHER_SUITE_GROUP_VALID: u32 = 0x8;
-
 pub const CMD_BEACON_INFO_INACTIVITY_TIMEOUT_VALID: u32 = 0x10;
-
 pub const CMD_BEACON_INFO_FREQ_PARAMS_VALID: u32 = 0x20;
-
 pub const CMD_BEACON_INFO_PRIVACY: u32 = 0x1;
-
 pub const CMD_BEACON_INFO_CONTROL_PORT_NO_ENCRYPT: u32 = 0x2;
-
 pub const CMD_BEACON_INFO_P2P_CTWINDOW_VALID: u32 = 0x40;
-
 pub const CMD_BEACON_INFO_P2P_OPPPS_VALID: u32 = 0x80;
-
 pub const SET_INTERFACE_IFTYPE_VALID: u32 = 0x1;
-
 pub const SET_INTERFACE_USE_4ADDR_VALID: u32 = 0x2;
-
 pub const IFACENAMSIZ: u32 = 0x10;
-
 pub const CMD_FRAME_FREQ_VALID: u32 = 0x1;
-
 pub const CMD_FRAME_DURATION_VALID: u32 = 0x2;
-
 pub const CMD_SET_FRAME_FREQ_PARAMS_VALID: u32 = 0x4;
-
 pub const CMD_FRAME_OFFCHANNEL_TX_OK: u32 = 0x1;
-
 pub const CMD_FRAME_TX_NO_CCK_RATE: u32 = 0x2;
-
 pub const CMD_FRAME_DONT_WAIT_FOR_ACK: u32 = 0x4;
-
 pub const TWT_NEGOTIATION_TYPE_INDIVIDUAL: u32 = 0x0;
-
 pub const TWT_NEGOTIATION_TYPE_BROADCAST: u32 = 0x2;
-
 pub const TWT_FLOW_TYPE_ANNOUNCED: u32 = 0x0;
-
 pub const TWT_FLOW_TYPE_UNANNOUNCED: u32 = 0x1;
-
 pub const TWT_RESP_RECEIVED: u32 = 0x0;
-
 pub const TWT_RESP_NOT_RECEIVED: u32 = 0x1;
-
 pub const INVALID_TWT_WAKE_INTERVAL: u32 = 0x3;
-
 pub const INVALID_TIME: u32 = 0x1;
-
 pub const TRIGGER_NOT_RECEIVED: u32 = 0x2;
-
 pub const TWT_BLOCK_TX: u32 = 0x0;
-
 pub const TWT_UNBLOCK_TX: u32 = 0x1;
-
 pub const UAPSD_Q_MIN: u32 = 0x0;
-
 pub const UAPSD_Q_MAX: u32 = 0xf;
-
 pub const EVENT_NEW_SCAN_RESULTS_MAC_ADDR_VALID: u32 = 0x1;
-
 pub const EVENT_NEW_SCAN_RESULTS_IES_TSF_VALID: u32 = 0x2;
-
 pub const EVENT_NEW_SCAN_RESULTS_IES_VALID: u32 = 0x4;
-
 pub const EVENT_NEW_SCAN_RESULTS_BEACON_IES_TSF_VALID: u32 = 0x8;
-
 pub const EVENT_NEW_SCAN_RESULTS_BEACON_IES_VALID: u32 = 0x10;
-
 pub const EVENT_NEW_SCAN_RESULTS_BEACON_INTERVAL_VALID: u32 = 0x20;
-
 pub const EVENT_NEW_SCAN_RESULTS_SIGNAL_VALID: u32 = 0x40;
-
 pub const EVENT_NEW_SCAN_RESULTS_STATUS_VALID: u32 = 0x80;
-
 pub const EVENT_NEW_SCAN_RESULTS_BSS_PRESP_DATA: u32 = 0x100;
-
 pub const NEW_SCAN_RESULTS_BSS_PRESP_DATA: u32 = 0x1;
-
 pub const IEEE_802_11A: u32 = 0x1;
-
 pub const IEEE_802_11B: u32 = 0x2;
-
 pub const IEEE_802_11G: u32 = 0x4;
-
 pub const IEEE_802_11N: u32 = 0x8;
-
 pub const IEEE_802_11AC: u32 = 0x10;
-
 pub const IEEE_802_11AX: u32 = 0x20;
-
 pub const MFP_REQUIRED: u32 = 0x1;
-
 pub const MFP_CAPABLE: u32 = 0x2;
-
 pub const DISPLAY_BSS_TOHOST_PEREVNT: u32 = 0x8;
-
 pub const EVENT_MLME_FRAME_VALID: u32 = 0x1;
-
 pub const EVENT_MLME_MAC_ADDR_VALID: u32 = 0x2;
-
 pub const EVENT_MLME_FREQ_VALID: u32 = 0x4;
-
 pub const EVENT_MLME_COOKIE_VALID: u32 = 0x8;
-
 pub const EVENT_MLME_RX_SIGNAL_DBM_VALID: u32 = 0x10;
-
 pub const EVENT_MLME_WME_UAPSD_QUEUES_VALID: u32 = 0x20;
-
 pub const EVENT_MLME_RXMGMT_FLAGS_VALID: u32 = 0x40;
-
 pub const EVENT_MLME_IE_VALID: u32 = 0x80;
-
 pub const EVENT_MLME_TIMED_OUT: u32 = 0x1;
-
 pub const EVENT_MLME_ACK: u32 = 0x2;
-
 pub const CMD_SEND_STATION_ASSOC_REQ_IES_VALID: u32 = 0x1;
-
 pub const CMD_COOKIE_RSP_COOKIE_VALID: u32 = 0x1;
-
 pub const CMD_COOKIE_RSP_MAC_ADDR_VALID: u32 = 0x2;
-
 pub const MAX_TWT_FLOWS: u32 = 0x8;
-
 pub const PS_MODE_LEGACY: u32 = 0x0;
-
 pub const PS_MODE_WMM: u32 = 0x1;
-
 pub const LISTEN_INTERVAL_MIN: u32 = 0x3;
-
 pub const EVENT_TRIGGER_SCAN_IE_VALID: u32 = 0x1;
-
 pub const EVENT_TRIGGER_SCAN_SCAN_FLAGS_VALID: u32 = 0x2;
-
 pub const CMD_ROC_FREQ_PARAMS_VALID: u32 = 0x1;
-
 pub const CMD_ROC_DURATION_VALID: u32 = 0x2;
-
 pub const CMD_CANCEL_ROC_COOKIE_VALID: u32 = 0x1;
-
 pub const EVENT_ROC_FREQ_VALID: u32 = 0x1;
-
 pub const EVENT_ROC_COOKIE_VALID: u32 = 0x2;
-
 pub const EVENT_ROC_DURATION_VALID: u32 = 0x4;
-
 pub const EVENT_ROC_CH_TYPE_VALID: u32 = 0x8;
-
 pub const INTERFACE_INFO_CHAN_DEF_VALID: u32 = 0x1;
-
 pub const INTERFACE_INFO_SSID_VALID: u32 = 0x2;
-
 pub const INTERFACE_INFO_IFNAME_VALID: u32 = 0x4;
-
 pub const HT_MCS_MASK_LEN: u32 = 0xa;
-
 pub const HT_MCS_RES_LEN: u32 = 0x3;
-
 pub const CHAN_FLAG_FREQUENCY_ATTR_NO_IR: u32 = 0x1;
-
 pub const CHAN_FLAG_FREQUENCY_ATTR_NO_IBSS: u32 = 0x2;
-
 pub const CHAN_FLAG_FREQUENCY_ATTR_RADAR: u32 = 0x4;
-
 pub const CHAN_FLAG_FREQUENCY_ATTR_NO_HT40_MINUS: u32 = 0x8;
-
 pub const CHAN_FLAG_FREQUENCY_ATTR_NO_HT40_PLUS: u32 = 0x10;
-
 pub const CHAN_FLAG_FREQUENCY_ATTR_NO_80MHZ: u32 = 0x20;
-
 pub const CHAN_FLAG_FREQUENCY_ATTR_NO_160MHZ: u32 = 0x40;
-
 pub const CHAN_FLAG_FREQUENCY_ATTR_INDOOR_ONLY: u32 = 0x80;
-
 pub const CHAN_FLAG_FREQUENCY_ATTR_GO_CONCURRENT: u32 = 0x100;
-
 pub const CHAN_FLAG_FREQUENCY_ATTR_NO_20MHZ: u32 = 0x200;
-
 pub const CHAN_FLAG_FREQUENCY_ATTR_NO_10MHZ: u32 = 0x400;
-
 pub const CHAN_FLAG_FREQUENCY_DISABLED: u32 = 0x800;
-
 pub const CHAN_DFS_VALID: u32 = 0x1000;
-
 pub const CHAN_DFS_CAC_TIME_VALID: u32 = 0x2000;
-
 pub const EVENT_GET_WIPHY_FLAG_RATE_SHORT_PREAMBLE: u32 = 0x1;
-
 pub const EVENT_GET_WIPHY_VALID_RADAR_DETECT_WIDTHS: u32 = 0x1;
-
 pub const EVENT_GET_WIPHY_VALID_RADAR_DETECT_REGIONS: u32 = 0x2;
-
 pub const EVENT_GET_WIPHY_VALID_: u32 = 0x4;
-
 pub const EVENT_GET_WIPHY_IBSS_RSN: u32 = 0x1;
-
 pub const EVENT_GET_WIPHY_MESH_AUTH: u32 = 0x2;
-
 pub const EVENT_GET_WIPHY_AP_UAPSD: u32 = 0x4;
-
 pub const EVENT_GET_WIPHY_SUPPORTS_FW_ROAM: u32 = 0x8;
-
 pub const EVENT_GET_WIPHY_SUPPORTS_TDLS: u32 = 0x10;
-
 pub const EVENT_GET_WIPHY_TDLS_EXTERNAL_SETUP: u32 = 0x20;
-
 pub const EVENT_GET_WIPHY_CONTROL_PORT_ETHERTYPE: u32 = 0x40;
-
 pub const EVENT_GET_WIPHY_OFFCHANNEL_TX_OK: u32 = 0x80;
-
 pub const GET_WIPHY_VALID_PROBE_RESP_OFFLOAD: u32 = 0x1;
-
 pub const GET_WIPHY_VALID_TX_ANT: u32 = 0x2;
-
 pub const GET_WIPHY_VALID_RX_ANT: u32 = 0x4;
-
 pub const GET_WIPHY_VALID_MAX_NUM_SCAN_SSIDS: u32 = 0x8;
-
 pub const GET_WIPHY_VALID_NUM_SCHED_SCAN_SSIDS: u32 = 0x10;
-
 pub const GET_WIPHY_VALID_MAX_MATCH_SETS: u32 = 0x20;
-
 pub const GET_WIPHY_VALID_MAC_ACL_MAX: u32 = 0x40;
-
 pub const GET_WIPHY_VALID_HAVE_AP_SME: u32 = 0x80;
-
 pub const GET_WIPHY_VALID_EXTENDED_CAPABILITIES: u32 = 0x100;
-
 pub const GET_WIPHY_VALID_MAX_AP_ASSOC_STA: u32 = 0x200;
-
 pub const GET_WIPHY_VALID_WIPHY_NAME: u32 = 0x400;
-
 pub const GET_WIPHY_VALID_EXTENDED_FEATURES: u32 = 0x800;
-
 pub const EVENT_GET_WIPHY_MAX_CIPHER_COUNT: u32 = 0x1e;
-
 pub const INDEX_IDS_WIPHY_NAME: u32 = 0x20;
-
 pub const EVENT_GET_WIPHY_NUM_BANDS: u32 = 0x2;
-
 pub const EXTENDED_FEATURE_LEN: u32 = 0x3c;
-
 pub const REG_RULE_FLAGS_VALID: u32 = 0x1;
-
 pub const FREQ_RANGE_START_VALID: u32 = 0x2;
-
 pub const FREQ_RANGE_END_VALID: u32 = 0x4;
-
 pub const FREQ_RANGE_MAX_BW_VALID: u32 = 0x8;
-
 pub const POWER_RULE_MAX_EIRP_VALID: u32 = 0x10;
-
 pub const RULE_FLAGS_NO_OFDM: u32 = 0x1;
-
 pub const RULE_FLAGS_NO_CCK: u32 = 0x2;
-
 pub const RULE_FLAGS_NO_INDOOR: u32 = 0x4;
-
 pub const RULE_FLAGS_NO_OUTDOOR: u32 = 0x8;
-
 pub const RULE_FLAGS_DFS: u32 = 0x10;
-
 pub const RULE_FLAGS_PTP_ONLY: u32 = 0x20;
-
 pub const RULE_FLAGS_PTMP_ONLY: u32 = 0x40;
-
 pub const RULE_FLAGS_NO_IR: u32 = 0x80;
-
 pub const RULE_FLAGS_IBSS: u32 = 0x100;
-
 pub const RULE_FLAGS_AUTO_BW: u32 = 0x800;
-
 pub const RULE_FLAGS_IR_CONCURRENT: u32 = 0x1000;
-
 pub const RULE_FLAGS_NO_HT40MINUS: u32 = 0x2000;
-
 pub const RULE_FLAGS_NO_HT40PLUS: u32 = 0x4000;
-
 pub const RULE_FLAGS_NO_80MHZ: u32 = 0x8000;
-
 pub const RULE_FLAGS_NO_160MHZ: u32 = 0x10000;
-
 pub const CMD_SET_REG_ALPHA2_VALID: u32 = 0x1;
-
 pub const CMD_SET_REG_RULES_VALID: u32 = 0x2;
-
 pub const CMD_SET_REG_DFS_REGION_VALID: u32 = 0x4;
-
 pub const MAX_NUM_REG_RULES: u32 = 0x20;
-
 pub const CMD_REQ_SET_REG_ALPHA2_VALID: u32 = 0x1;
-
 pub const CMD_REQ_SET_REG_USER_REG_HINT_TYPE_VALID: u32 = 0x2;
-
 pub const CMD_REQ_SET_REG_USER_REG_FORCE: u32 = 0x4;
-
 #[repr(i32)]
-#[derive(Debug, Copy, Clone, Hash, PartialEq, Eq)]
-#[derive(num_enum::TryFromPrimitive)]
+#[derive(Debug, Copy, Clone, Hash, PartialEq, Eq, num_enum::TryFromPrimitive)]
 pub enum RPU_MCU_ADDR_REGIONS {
     RPU_MCU_ADDR_REGION_ROM = 0,
-
     RPU_MCU_ADDR_REGION_RETENTION = 1,
-
     RPU_MCU_ADDR_REGION_SCRATCH = 2,
-
     RPU_MCU_ADDR_REGION_MAX = 3,
 }
-
 #[repr(C)]
 #[derive(Debug, Copy, Clone)]
-
 pub struct rpu_addr_region {
     pub start: ::core::ffi::c_uint,
-
     pub end: ::core::ffi::c_uint,
 }
-
 #[repr(C)]
 #[derive(Debug, Copy, Clone)]
-
 pub struct rpu_addr_map {
     pub regions: [rpu_addr_region; 3usize],
 }
-
 extern "C" {
-
     pub static RPU_ADDR_MAP_MCU: [rpu_addr_map; 2usize];
-
 }
-
 #[doc = " struct rpu_pwr_data - Data that host may want to read from the Power IP.\n @lfc_err: Estimated Lo Frequency Clock error in ppm.\n @vbat_mon: Vbat monitor readout. The actual Vbat in volt equals 2.5 + 0.07*vbat_mon.\n @temp: Estimated die temperature (degC).\n\n This structure represents the Power IP monitoring data."]
 #[repr(C)]
 #[derive(Debug, Copy, Clone)]
-
 pub struct rpu_pwr_data {
     pub lfc_err: ::core::ffi::c_int,
-
     pub vbat_mon: ::core::ffi::c_int,
-
     pub temp: ::core::ffi::c_int,
 }
-
 #[doc = " struct host_rpu_rx_buf_info - RX buffer related information to be passed to\n                               the RPU.\n @addr: Address in the host memory where the RX buffer is located.\n\n This structure encapsulates the information to be passed to the RPU for\n buffers which the RPU will use to pass the received frames."]
 #[repr(C, packed)]
 #[derive(Debug, Copy, Clone)]
-
 pub struct host_rpu_rx_buf_info {
     pub addr: ::core::ffi::c_uint,
 }
-
 #[doc = " struct host_rpu_hpq - Hostport Queue (HPQ) information.\n @enqueue_addr: HPQ address where the host can post the address of a\n                message intended for the RPU.\n @dequeue_addr: HPQ address where the host can get the address of a\n                message intended for the host.\n\n This structure encapsulates the information which represents a HPQ."]
 #[repr(C, packed)]
 #[derive(Debug, Copy, Clone)]
-
 pub struct host_rpu_hpq {
     pub enqueue_addr: ::core::ffi::c_uint,
-
     pub dequeue_addr: ::core::ffi::c_uint,
 }
-
 #[doc = " struct host_rpu_hpqm_info - Information about Hostport Queues (HPQ) to be used\n            for exchanging information between the Host and RPU.\n @event_busy_queue: Queue which the RPU uses to inform the host about events.\n @event_avl_queue: Queue on which the consumed events are pushed so that RPU\n                    can reuse them.\n @cmd_busy_queue: Queue used by the host to push commands to the RPU.\n @cmd_avl_queue: Queue which RPU uses to inform host about command\n                  buffers which can be used to push commands to the RPU.\n\n Hostport queue information passed by the RPU to the host, which the host can\n use, to communicate with the RPU."]
 #[repr(C, packed)]
 #[derive(Debug, Copy, Clone)]
-
 pub struct host_rpu_hpqm_info {
     pub event_busy_queue: host_rpu_hpq,
-
     pub event_avl_queue: host_rpu_hpq,
-
     pub cmd_busy_queue: host_rpu_hpq,
-
     pub cmd_avl_queue: host_rpu_hpq,
-
     pub rx_buf_busy_queue: [host_rpu_hpq; 3usize],
 }
-
 #[doc = " struct host_rpu_msg_hdr - Common header included in each command/event.\n @len: Length of the message.\n @resubmit: Flag to indicate whether the recipient is expected to resubmit\n            the cmd/event address back to the trasmitting entity.\n\n This structure encapsulates the common information included at the start of\n each command/event exchanged with the RPU."]
 #[repr(C, packed)]
 #[derive(Debug, Copy, Clone)]
-
 pub struct host_rpu_msg_hdr {
     pub len: ::core::ffi::c_uint,
-
     pub resubmit: ::core::ffi::c_uint,
 }
-
 #[repr(C, packed)]
 #[derive(Debug, Copy, Clone)]
-
 pub struct pta_ext_params {
     #[doc = " Set polarity to 1 if  BT_TX_RX active high indicates Tx. Set polarity to 0 if BT_TX_RX\n active high indicates Rx."]
     pub tx_rx_pol: ::core::ffi::c_uchar,
-
     #[doc = " BT_ACTIVE signal lead time period. This is with reference to time instance at which\nBT slot boundary starts if BT supports classic only mode and BT activity starts if BT\nsupports BLE or dual mode"]
     pub lead_time: ::core::ffi::c_uint,
-
     #[doc = " Time instance at which BT_STATUS is sampled by PTA to get the BT_PTI information. This\nis done anywhere between BT_ACTIVE_ASSERT time and BT_STATUS priority signalling time\nperiod ends.This is with reference to BT_ACTIVE assert time."]
     pub pti_samp_time: ::core::ffi::c_uint,
-
     #[doc = " Time instance at which BT_STATUS is sampled by PTA to get BT_TX_RX information.\nThis is done by PTA after the end of time period T2.  This is with reference to BT_ACTIVE\nassert time."]
     pub tx_rx_samp_time: ::core::ffi::c_uint,
-
     #[doc = " Time instance at which PTA takes arbitration decision and posts WLAN_DENY to BT. This\n is with reference to BT_ACTIVE assert time."]
     pub dec_time: ::core::ffi::c_uint,
 }
-
 #[repr(i32)]
 #[doc = " @brief This enum defines the different categories of messages that can be exchanged between\n  the Host and the RPU.\n"]
-#[derive(Debug, Copy, Clone, Hash, PartialEq, Eq)]
-#[derive(num_enum::TryFromPrimitive)]
+#[derive(Debug, Copy, Clone, Hash, PartialEq, Eq, num_enum::TryFromPrimitive)]
 pub enum host_rpu_msg_type {
     #[doc = " System interface messages"]
     HOST_RPU_MSG_TYPE_SYSTEM = 0,
-
     #[doc = " Unused"]
     HOST_RPU_MSG_TYPE_SUPPLICANT = 1,
-
     #[doc = " Data path messages"]
     HOST_RPU_MSG_TYPE_DATA = 2,
-
     #[doc = " Control path messages"]
     HOST_RPU_MSG_TYPE_UMAC = 3,
 }
-
 #[doc = " @brief This structure defines the common message header used to encapsulate each message\n  exchanged between the Host and UMAC.\n"]
 #[repr(C, packed)]
-
 pub struct host_rpu_msg {
     #[doc = " Header"]
     pub hdr: host_rpu_msg_hdr,
-
     #[doc = " Type of the RPU message see &enum host_rpu_msg_type"]
     pub type_: ::core::ffi::c_int,
-
     #[doc = " Actual message"]
     pub msg: __IncompleteArrayField<::core::ffi::c_schar>,
 }
-
 #[doc = " @brief This structure represents the bitmap of STA (Station) pending frames in\n  SoftAP power save mode.\n"]
 #[repr(C, packed)]
 #[derive(Debug, Copy, Clone)]
-
 pub struct sap_pend_frames_bitmap {
     #[doc = " STA MAC address"]
     pub mac_addr: [::core::ffi::c_uchar; 6usize],
-
     #[doc = " Pending frames bitmap for each access category"]
     pub pend_frames_bitmap: ::core::ffi::c_uchar,
 }
-
 #[doc = " @brief This structure represents the information related to UMAC.\n"]
 #[repr(C, packed)]
 #[derive(Debug, Copy, Clone)]
-
 pub struct host_rpu_umac_info {
     #[doc = " Boot status signature"]
     pub boot_status: ::core::ffi::c_uint,
-
     #[doc = " UMAC version"]
     pub version: ::core::ffi::c_uint,
-
     #[doc = " @ref sap_pend_frames_bitmap"]
     pub sap_bitmap: [sap_pend_frames_bitmap; 4usize],
-
     #[doc = " Hardware queues info &enum host_rpu_hpqm_info"]
     pub hpqm_info: host_rpu_hpqm_info,
-
     #[doc = " OTP params"]
     pub info_part: ::core::ffi::c_uint,
-
     #[doc = " OTP params"]
     pub info_variant: ::core::ffi::c_uint,
-
     #[doc = " OTP params"]
     pub info_lromversion: ::core::ffi::c_uint,
-
     #[doc = " OTP params"]
     pub info_uromversion: ::core::ffi::c_uint,
-
     #[doc = " OTP params"]
     pub info_uuid: [::core::ffi::c_uint; 4usize],
-
     #[doc = " OTP params"]
     pub info_spare0: ::core::ffi::c_uint,
-
     #[doc = " OTP params"]
     pub info_spare1: ::core::ffi::c_uint,
-
     #[doc = " OTP params"]
     pub mac_address0: [::core::ffi::c_uint; 2usize],
-
     #[doc = " OTP params"]
     pub mac_address1: [::core::ffi::c_uint; 2usize],
-
     #[doc = " OTP params"]
     pub calib: [::core::ffi::c_uint; 9usize],
 }
-
 #[doc = " @brief This structure defines the parameters used to control the max transmit (TX) power\n in both frequency bands for different data rates.\n"]
 #[repr(C, packed)]
 #[derive(Debug, Copy, Clone)]
-
 pub struct tx_pwr_ceil_params {
     #[doc = " Maximum power permitted while transmitting DSSS rates in 2.4G band.\n  Resolution is 0.25dBm."]
     pub max_pwr_2g_dsss: ::core::ffi::c_uchar,
-
     #[doc = " Maximum power permitted while transmitting MCS0 rate in 2.4G band.\n  Resolution is 0.25dBm."]
     pub max_pwr_2g_mcs0: ::core::ffi::c_uchar,
-
     #[doc = " Maximum power permitted while transmitting MCS7 rate in 2.4G band.\n  Resolution is 0.25dBm."]
     pub max_pwr_2g_mcs7: ::core::ffi::c_uchar,
-
     #[doc = " Maximum power permitted while transmitting MCS0 rate in 5G lowband.\n Low band corresponds to ch: 36 to 64 Resolution is 0.25dBm."]
     pub max_pwr_5g_low_mcs0: ::core::ffi::c_uchar,
-
     #[doc = " Maximum power permitted while transmitting MCS7 rate in 5G lowband.\n Low band corresponds to ch: 36 to 64, resolution is 0.25dBm."]
     pub max_pwr_5g_low_mcs7: ::core::ffi::c_uchar,
-
     #[doc = " Maximum power permitted while transmitting MCS0 rate in 5G midband.\n Mid band corresponds to ch: 96 to 132, resolution is 0.25dBm."]
     pub max_pwr_5g_mid_mcs0: ::core::ffi::c_uchar,
-
     #[doc = " Maximum power permitted while transmitting MCS7 rate in 5G midband.\n Mid band corresponds to ch: 96 to 132, resolution is 0.25dBm."]
     pub max_pwr_5g_mid_mcs7: ::core::ffi::c_uchar,
-
     #[doc = " Maximum power permitted while transmitting MCS0 rate in 5G highband.\n High band corresponds to ch: 136 to 177, resolution is 0.25dBm."]
     pub max_pwr_5g_high_mcs0: ::core::ffi::c_uchar,
-
     #[doc = " Maximum power permitted while transmitting MCS7 rate in 5G highband.\n High band corresponds to ch: 136 to 177, resolution is 0.25dBm."]
     pub max_pwr_5g_high_mcs7: ::core::ffi::c_uchar,
-
     #[doc = " Flag to determine presence of overriding, default parameters present\n in RF parameters string."]
     pub rf_tx_pwr_ceil_params_override: ::core::ffi::c_uchar,
 }
-
 #[repr(i32)]
-#[derive(Debug, Copy, Clone, Hash, PartialEq, Eq)]
-#[derive(num_enum::TryFromPrimitive)]
+#[derive(Debug, Copy, Clone, Hash, PartialEq, Eq, num_enum::TryFromPrimitive)]
 pub enum ft_prog_ver {
     FT_PROG_VER1 = 1,
-
     FT_PROG_VER2 = 2,
-
     FT_PROG_VER3 = 3,
 }
-
 #[repr(C)]
 #[derive(Debug, Copy, Clone)]
-
 pub struct lmac_prod_stats {
     pub reset_cmd_cnt: ::core::ffi::c_uint,
-
     pub reset_complete_event_cnt: ::core::ffi::c_uint,
-
     pub unable_gen_event: ::core::ffi::c_uint,
-
     pub ch_prog_cmd_cnt: ::core::ffi::c_uint,
-
     pub channel_prog_done: ::core::ffi::c_uint,
-
     pub tx_pkt_cnt: ::core::ffi::c_uint,
-
     pub tx_pkt_done_cnt: ::core::ffi::c_uint,
-
     pub scan_pkt_cnt: ::core::ffi::c_uint,
-
     pub internal_pkt_cnt: ::core::ffi::c_uint,
-
     pub internal_pkt_done_cnt: ::core::ffi::c_uint,
-
     pub ack_resp_cnt: ::core::ffi::c_uint,
-
     pub tx_timeout: ::core::ffi::c_uint,
-
     pub deagg_isr: ::core::ffi::c_uint,
-
     pub deagg_inptr_desc_empty: ::core::ffi::c_uint,
-
     pub deagg_circular_buffer_full: ::core::ffi::c_uint,
-
     pub lmac_rxisr_cnt: ::core::ffi::c_uint,
-
     pub rx_decryptcnt: ::core::ffi::c_uint,
-
     pub process_decrypt_fail: ::core::ffi::c_uint,
-
     pub prepa_rx_event_fail: ::core::ffi::c_uint,
-
     pub rx_core_pool_full_cnt: ::core::ffi::c_uint,
-
     pub rx_mpdu_crc_success_cnt: ::core::ffi::c_uint,
-
     pub rx_mpdu_crc_fail_cnt: ::core::ffi::c_uint,
-
     pub rx_ofdm_crc_success_cnt: ::core::ffi::c_uint,
-
     pub rx_ofdm_crc_fail_cnt: ::core::ffi::c_uint,
-
     pub rxDSSSCrcSuccessCnt: ::core::ffi::c_uint,
-
     pub rxDSSSCrcFailCnt: ::core::ffi::c_uint,
-
     pub rx_crypto_start_cnt: ::core::ffi::c_uint,
-
     pub rx_crypto_done_cnt: ::core::ffi::c_uint,
-
     pub rx_event_buf_full: ::core::ffi::c_uint,
-
     pub rx_extram_buf_full: ::core::ffi::c_uint,
-
     pub scan_req: ::core::ffi::c_uint,
-
     pub scan_complete: ::core::ffi::c_uint,
-
     pub scan_abort_req: ::core::ffi::c_uint,
-
     pub scan_abort_complete: ::core::ffi::c_uint,
-
     pub internal_buf_pool_null: ::core::ffi::c_uint,
 }
-
 #[doc = " struct phy_prod_stats : used to get the production mode stats"]
 #[repr(C)]
 #[derive(Debug, Copy, Clone)]
-
 pub struct phy_prod_stats {
     pub ofdm_crc32_pass_cnt: ::core::ffi::c_uint,
-
     pub ofdm_crc32_fail_cnt: ::core::ffi::c_uint,
-
     pub dsss_crc32_pass_cnt: ::core::ffi::c_uint,
-
     pub dsss_crc32_fail_cnt: ::core::ffi::c_uint,
-
     pub averageRSSI: ::core::ffi::c_char,
 }
-
 #[repr(C)]
 #[derive(Copy, Clone)]
-
 pub union rpu_stats {
     pub lmac_stats: lmac_prod_stats,
-
     pub phy_stats: phy_prod_stats,
 }
-
 #[repr(C, packed)]
 #[derive(Debug, Copy, Clone)]
-
 pub struct hpqm_queue {
     pub pop_addr: ::core::ffi::c_uint,
-
     pub push_addr: ::core::ffi::c_uint,
-
     pub id_num: ::core::ffi::c_uint,
-
     pub status_addr: ::core::ffi::c_uint,
-
     pub status_mask: ::core::ffi::c_uint,
 }
-
 #[repr(C, packed)]
 #[derive(Debug, Copy, Clone)]
-
 pub struct INT_HPQ {
     pub id: ::core::ffi::c_uint,
-
     pub head: ::core::ffi::c_uint,
-
     pub tail: ::core::ffi::c_uint,
 }
-
 #[doc = " @brief LMAC firmware config params\n"]
 #[repr(C, packed)]
 #[derive(Debug, Copy, Clone)]
-
 pub struct lmac_fw_config_params {
     #[doc = " lmac firmware boot status. LMAC will set to 0x5a5a5a5a after completing boot process"]
     pub boot_status: ::core::ffi::c_uint,
-
     #[doc = " LMAC version"]
     pub version: ::core::ffi::c_uint,
-
     #[doc = " Address to resubmit Rx buffers"]
     pub lmac_rx_buffer_addr: ::core::ffi::c_uint,
-
     #[doc = " Maximum Rx descriptors"]
     pub lmac_rx_max_desc_cnt: ::core::ffi::c_uint,
-
     #[doc = " size of each descriptor size"]
     pub lmac_rx_desc_size: ::core::ffi::c_uint,
-
     #[doc = " rpu config name. this is a string"]
     pub rpu_config_name: [::core::ffi::c_uchar; 16usize],
-
     #[doc = " rpu config number"]
     pub rpu_config_number: [::core::ffi::c_uchar; 8usize],
-
     #[doc = " numRX"]
     pub numRX: ::core::ffi::c_uint,
-
     #[doc = " numTX"]
     pub numTX: ::core::ffi::c_uint,
-
     #[doc = " supported bands"]
     pub bands: ::core::ffi::c_uint,
-
     #[doc = " system frequency"]
     pub sys_frequency_in_mhz: ::core::ffi::c_uint,
-
     #[doc = " queue which contains Free GRAM pointers for commands"]
     pub FreeCmdPtrQ: hpqm_queue,
-
     #[doc = " Command pointer queue. Host should pick pointer from FreeCmdPtrQ, populate\n  command into that address and submit back to this queue for RPU"]
     pub cmdPtrQ: hpqm_queue,
-
     #[doc = " queue which contains Free GRAM pointers for events"]
     pub eventPtrQ: hpqm_queue,
-
     #[doc = " Event pointer queue. Host should pick pointer from FreeCmdPtrQ, populate\n  command into that address and submit back to this queue for RPU"]
     pub freeEventPtrQ: hpqm_queue,
-
     #[doc = " Rx buffer queue"]
     pub SKBGramPtrQ_1: hpqm_queue,
-
     #[doc = " Rx buffer queue"]
     pub SKBGramPtrQ_2: hpqm_queue,
-
     #[doc = " Rx buffer queue"]
     pub SKBGramPtrQ_3: hpqm_queue,
-
     #[doc = " lmac register address to enable ISR to Host"]
     pub HP_lmac_to_host_isr_en: ::core::ffi::c_uint,
-
     #[doc = " Address to Clear host ISR"]
     pub HP_lmac_to_host_isr_clear: ::core::ffi::c_uint,
-
     #[doc = " Address to set ISR to lmac Clear host ISR"]
     pub HP_set_lmac_isr: ::core::ffi::c_uint,
-
     #[doc = " Hardware queues"]
     pub hpq32: [INT_HPQ; 4usize],
 }
-
 #[repr(C, packed)]
 #[derive(Debug, Copy, Clone)]
-
 pub struct rx_buf_pool_params {
     #[doc = " buffer size"]
     pub buf_sz: ::core::ffi::c_ushort,
-
     #[doc = " number of buffers"]
     pub num_bufs: ::core::ffi::c_ushort,
 }
-
 #[repr(C, packed)]
 #[derive(Debug, Copy, Clone)]
-
 pub struct temp_vbat_config {
     pub temp_based_calib_en: ::core::ffi::c_uint,
-
     pub temp_calib_bitmap: ::core::ffi::c_uint,
-
     pub vbat_calibp_bitmap: ::core::ffi::c_uint,
-
     pub temp_vbat_mon_period: ::core::ffi::c_uint,
-
     pub vth_very_low: ::core::ffi::c_int,
-
     pub vth_low: ::core::ffi::c_int,
-
     pub vth_hi: ::core::ffi::c_int,
-
     pub temp_threshold: ::core::ffi::c_int,
-
     pub vbat_threshold: ::core::ffi::c_int,
 }
-
 #[repr(i32)]
 #[doc = " @brief This enum provides a list of different operating modes.\n"]
-#[derive(Debug, Copy, Clone, Hash, PartialEq, Eq)]
-#[derive(num_enum::TryFromPrimitive)]
+#[derive(Debug, Copy, Clone, Hash, PartialEq, Eq, num_enum::TryFromPrimitive)]
 pub enum rpu_op_mode {
     #[doc = " Radio test mode is used for performing radio tests using\n  continuous Tx/Rx on a configured channel at a particular rate or power."]
     RPU_OP_MODE_RADIO_TEST = 0,
-
     #[doc = " In this mode different types of calibration like RF calibration can be performed"]
     RPU_OP_MODE_FCM = 1,
-
     #[doc = " Regular mode of operation"]
     RPU_OP_MODE_REG = 2,
-
     #[doc = " Debug mode can be used to control certain parameters like TX rate\n  in order to debug functional issues."]
     RPU_OP_MODE_DBG = 3,
-
     #[doc = " Highest mode number currently defined"]
     RPU_OP_MODE_MAX = 4,
 }
-
 #[repr(i32)]
 #[doc = "  @brief This enum defines various types of statistics."]
-#[derive(Debug, Copy, Clone, Hash, PartialEq, Eq)]
-#[derive(num_enum::TryFromPrimitive)]
+#[derive(Debug, Copy, Clone, Hash, PartialEq, Eq, num_enum::TryFromPrimitive)]
 pub enum rpu_stats_type {
     #[doc = " All statistics includes PHY, LMAC & UMAC"]
     RPU_STATS_TYPE_ALL = 0,
-
     #[doc = " Host statistics"]
     RPU_STATS_TYPE_HOST = 1,
-
     #[doc = " UMAC statistics"]
     RPU_STATS_TYPE_UMAC = 2,
-
     #[doc = " LMAC statistics"]
     RPU_STATS_TYPE_LMAC = 3,
-
     #[doc = " PHY statistics"]
     RPU_STATS_TYPE_PHY = 4,
-
     #[doc = " Highest statistics type number currently defined"]
     RPU_STATS_TYPE_MAX = 5,
 }
-
 #[repr(i32)]
 #[doc = " @brief- Throughput mode\n Throughput mode to be used for transmitting the packet."]
-#[derive(Debug, Copy, Clone, Hash, PartialEq, Eq)]
-#[derive(num_enum::TryFromPrimitive)]
+#[derive(Debug, Copy, Clone, Hash, PartialEq, Eq, num_enum::TryFromPrimitive)]
 pub enum rpu_tput_mode {
     #[doc = " Legacy mode"]
     RPU_TPUT_MODE_LEGACY = 0,
-
     #[doc = " High Throuput mode(11n)"]
     RPU_TPUT_MODE_HT = 1,
-
     #[doc = " Very hight throughput(11ac)"]
     RPU_TPUT_MODE_VHT = 2,
-
     #[doc = " HE SU mode"]
     RPU_TPUT_MODE_HE_SU = 3,
-
     #[doc = " HE ER SU mode"]
     RPU_TPUT_MODE_HE_ER_SU = 4,
-
     #[doc = " HE TB mode"]
     RPU_TPUT_MODE_HE_TB = 5,
-
     #[doc = " Highest throughput mode currently defined"]
     RPU_TPUT_MODE_MAX = 6,
 }
-
 #[repr(i32)]
 #[doc = " @brief - System commands.\n"]
-#[derive(Debug, Copy, Clone, Hash, PartialEq, Eq)]
-#[derive(num_enum::TryFromPrimitive)]
+#[derive(Debug, Copy, Clone, Hash, PartialEq, Eq, num_enum::TryFromPrimitive)]
 pub enum sys_commands {
     #[doc = " Command to initialize RPU and RPU responds with EVENT_INIT_DONE"]
     CMD_INIT = 0,
-
     #[doc = " command to send a Tx packet in radiotest mode"]
     CMD_TX = 1,
-
     #[doc = " Unused"]
     CMD_IF_TYPE = 2,
-
     #[doc = " command to specify mode of operation"]
     CMD_MODE = 3,
-
     #[doc = " command to get statistics"]
     CMD_GET_STATS = 4,
-
     #[doc = " command to clear statistics"]
     CMD_CLEAR_STATS = 5,
-
     #[doc = " command to ENABLE/DISABLE receiving packets in radiotest mode"]
     CMD_RX = 6,
-
     #[doc = " Command to measure battery voltage and RPU responds\twith EVENT_PWR_DATA"]
     CMD_PWR = 7,
-
     #[doc = " RPU De-initialization"]
     CMD_DEINIT = 8,
-
     #[doc = " Command for WIFI & Bluetooth coexistence"]
     CMD_BTCOEX = 9,
-
     #[doc = " Command to start RF test"]
     CMD_RF_TEST = 10,
-
     #[doc = " Configure HE_GI & HE_LTF"]
     CMD_HE_GI_LTF_CONFIG = 11,
-
     #[doc = " Command for getting UMAC memory statistics"]
     CMD_UMAC_INT_STATS = 12,
-
     #[doc = " Command for Setting the channel & Rf params in radiotest mode"]
     CMD_RADIO_TEST_INIT = 13,
-
     #[doc = " Command for setting country in radiotest mode"]
     CMD_RT_REQ_SET_REG = 14,
-
     #[doc = " Command to enable/disable fixed data rate in regular mode"]
     CMD_TX_FIX_DATA_RATE = 15,
 }
-
 #[repr(i32)]
 #[doc = " @brief - Events from the RPU.\n"]
-#[derive(Debug, Copy, Clone, Hash, PartialEq, Eq)]
-#[derive(num_enum::TryFromPrimitive)]
+#[derive(Debug, Copy, Clone, Hash, PartialEq, Eq, num_enum::TryFromPrimitive)]
 pub enum sys_events {
     #[doc = " Response to CMD_PWR"]
     EVENT_PWR_DATA = 0,
-
     #[doc = " Response to CMD_INIT"]
     EVENT_INIT_DONE = 1,
-
     #[doc = " Response to CMD_GET_STATS"]
     EVENT_STATS = 2,
-
     #[doc = " Response to CMD_DEINIT"]
     EVENT_DEINIT_DONE = 3,
-
     #[doc = " Response to CMD_RF_TEST"]
     EVENT_RF_TEST = 4,
-
     #[doc = " Response to CMD_BTCOEX."]
     EVENT_COEX_CONFIG = 5,
-
     #[doc = " Response to CMD_UMAC_INT_STATS"]
     EVENT_INT_UMAC_STATS = 6,
-
     #[doc = " Command status events for radio test commands"]
     EVENT_RADIOCMD_STATUS = 7,
 }
-
 #[repr(i32)]
 #[doc = " @brief - Channel Bandwidth types.\n"]
-#[derive(Debug, Copy, Clone, Hash, PartialEq, Eq)]
-#[derive(num_enum::TryFromPrimitive)]
+#[derive(Debug, Copy, Clone, Hash, PartialEq, Eq, num_enum::TryFromPrimitive)]
 pub enum rpu_ch_bw {
     #[doc = " 20MHz bandwidth"]
     RPU_CH_BW_20 = 0,
-
     #[doc = " 40MHz bandwidth"]
     RPU_CH_BW_40 = 1,
-
     #[doc = " 80MHz bandwidth"]
     RPU_CH_BW_MAX = 2,
 }
-
 #[doc = " @brief - This structure specifies the parameters required to configure a specific channel.\n"]
 #[repr(C, packed)]
 #[derive(Debug, Copy, Clone)]
-
 pub struct chan_params {
     #[doc = " Primary channel number"]
     pub primary_num: ::core::ffi::c_uint,
-
     #[doc = " Channel bandwidth"]
     pub bw: ::core::ffi::c_uchar,
-
     #[doc = " 20Mhz offset value"]
     pub sec_20_offset: ::core::ffi::c_int,
-
     #[doc = " 40Mhz offset value"]
     pub sec_40_offset: ::core::ffi::c_int,
 }
-
 #[doc = " @brief This structure specifies the parameters required to start or stop the RX (receive)\n  operation in radiotest mode.\n"]
 #[repr(C, packed)]
 #[derive(Debug, Copy, Clone)]
-
 pub struct rpu_conf_rx_radio_test_params {
     #[doc = " Number of spatial streams supported. Currently unused."]
     pub nss: ::core::ffi::c_uchar,
-
     pub rf_params: [::core::ffi::c_uchar; 200usize],
-
     #[doc = " An array containing RF and baseband control params"]
     pub chan: chan_params,
-
     #[doc = " Copy OTP params to this memory"]
     pub phy_threshold: ::core::ffi::c_schar,
-
     #[doc = " Calibration bit map value. More information can be found in the phy_rf_params.h file."]
     pub phy_calib: ::core::ffi::c_uint,
-
     #[doc = " Start Rx : 1, Stop Rx :0"]
     pub rx: ::core::ffi::c_uchar,
 }
-
 #[doc = " @brief This structure specifies the UMAC (Upper MAC) RX (receive) debug parameters\n  specifically designed for debugging purpose.\n"]
 #[repr(C, packed)]
 #[derive(Debug, Copy, Clone)]
-
 pub struct umac_rx_dbg_params {
     #[doc = " Total lmac events received to UMAC"]
     pub lmac_events: ::core::ffi::c_uint,
-
     #[doc = " Total Rx events(LMAC_EVENT_RX) received in ISR"]
     pub rx_events: ::core::ffi::c_uint,
-
     #[doc = " Received coalised events from LMAC"]
     pub rx_coalesce_events: ::core::ffi::c_uint,
-
     #[doc = " Total Rx packets received from LMAC"]
     pub total_rx_pkts_from_lmac: ::core::ffi::c_uint,
-
     #[doc = " Maximum RX packets buffered at any point of time in UMAC."]
     pub max_refill_gap: ::core::ffi::c_uint,
-
     #[doc = " Difference between rx packets received from lmac and packets sent to host"]
     pub current_refill_gap: ::core::ffi::c_uint,
-
     #[doc = " Number of Packets queued to reorder buffer due to out of order"]
     pub out_of_order_mpdus: ::core::ffi::c_uint,
-
     #[doc = " Number of packets removed from reorder buffer"]
     pub reorder_free_mpdus: ::core::ffi::c_uint,
-
     #[doc = " Number of Rx packets resubmitted to LMAC by UMAC"]
     pub umac_consumed_pkts: ::core::ffi::c_uint,
-
     #[doc = " Number of Rx packets sent to Host for resubmiting"]
     pub host_consumed_pkts: ::core::ffi::c_uint,
-
     #[doc = " Total events posted to UMAC RX thread from LMAC"]
     pub rx_mbox_post: ::core::ffi::c_uint,
-
     #[doc = " Total events received to UMAC RX thread from LMAC"]
     pub rx_mbox_receive: ::core::ffi::c_uint,
-
     #[doc = " Number of packets received in out of order"]
     pub reordering_ampdu: ::core::ffi::c_uint,
-
     #[doc = " Messages posted  to TX mbox from timer ISR"]
     pub timer_mbox_post: ::core::ffi::c_uint,
-
     #[doc = " Messages received from timer ISR"]
     pub timer_mbox_rcv: ::core::ffi::c_uint,
-
     #[doc = " Messages posted to TX mbox from work scheduler"]
     pub work_mbox_post: ::core::ffi::c_uint,
-
     #[doc = " Messages received from work scheduler"]
     pub work_mbox_rcv: ::core::ffi::c_uint,
-
     #[doc = " Messages posted to TX mbox from tasklet function"]
     pub tasklet_mbox_post: ::core::ffi::c_uint,
-
     #[doc = " Messages received from tasklet function"]
     pub tasklet_mbox_rcv: ::core::ffi::c_uint,
-
     #[doc = " Management frames sent to userspace"]
     pub userspace_offload_frames: ::core::ffi::c_uint,
-
     #[doc = " Number of times where requested buffer size is not available\n  and allocated from next available memory buffer"]
     pub alloc_buf_fail: ::core::ffi::c_uint,
-
     #[doc = " Total packets count in RX thread"]
     pub rx_packet_total_count: ::core::ffi::c_uint,
-
     #[doc = " Number of data packets received"]
     pub rx_packet_data_count: ::core::ffi::c_uint,
-
     #[doc = " Number of Qos data packets received"]
     pub rx_packet_qos_data_count: ::core::ffi::c_uint,
-
     #[doc = " Number of protected data packets received"]
     pub rx_packet_protected_data_count: ::core::ffi::c_uint,
-
     #[doc = " Number of management packets received"]
     pub rx_packet_mgmt_count: ::core::ffi::c_uint,
-
     #[doc = " Number of beacon packets received"]
     pub rx_packet_beacon_count: ::core::ffi::c_uint,
-
     #[doc = " Number of probe response packets received"]
     pub rx_packet_probe_resp_count: ::core::ffi::c_uint,
-
     #[doc = " Number of authentication packets received"]
     pub rx_packet_auth_count: ::core::ffi::c_uint,
-
     #[doc = " Number of deauthentication packets received"]
     pub rx_packet_deauth_count: ::core::ffi::c_uint,
-
     #[doc = " Number of assoc response packets received"]
     pub rx_packet_assoc_resp_count: ::core::ffi::c_uint,
-
     #[doc = " Number of disassociation packets received"]
     pub rx_packet_disassoc_count: ::core::ffi::c_uint,
-
     #[doc = " Number of action frames received"]
     pub rx_packet_action_count: ::core::ffi::c_uint,
-
     #[doc = " Number of probe request packets received"]
     pub rx_packet_probe_req_count: ::core::ffi::c_uint,
-
     #[doc = " Other management packets received"]
     pub rx_packet_other_mgmt_count: ::core::ffi::c_uint,
-
     #[doc = " Maximum coalised packets received from LMAC in any RX event"]
     pub max_coalesce_pkts: ::core::ffi::c_schar,
-
     #[doc = " Packets received with null skb pointer from LMAC"]
     pub null_skb_pointer_from_lmac: ::core::ffi::c_uint,
-
     #[doc = " Number of unexpected management packets received in coalesce event"]
     pub unexpected_mgmt_pkt: ::core::ffi::c_uint,
 }
-
 #[doc = " @brief This structure specifies the UMAC TX (transmit) debug parameters used for\n  debugging purposes.\n"]
 #[repr(C, packed)]
 #[derive(Debug, Copy, Clone)]
-
 pub struct umac_tx_dbg_params {
     #[doc = " Total number of tx commands received from host"]
     pub tx_cmd: ::core::ffi::c_uint,
-
     #[doc = " Non coalesce packets received"]
     pub tx_non_coalesce_pkts_rcvd_from_host: ::core::ffi::c_uint,
-
     #[doc = " coalesce packets received"]
     pub tx_coalesce_pkts_rcvd_from_host: ::core::ffi::c_uint,
-
     #[doc = " Maximum number of coalesce packets received in any\n  TX command coalesce packets received"]
     pub tx_max_coalesce_pkts_rcvd_from_host: ::core::ffi::c_uint,
-
     #[doc = " Maximum Tx commands currently in process at any point of time in UMAC"]
     pub tx_cmds_max_used: ::core::ffi::c_uint,
-
     #[doc = " Number of Tx commands that are currently in process in UMAC"]
     pub tx_cmds_currently_in_use: ::core::ffi::c_uint,
-
     #[doc = " Number of tx done events sent to host"]
     pub tx_done_events_send_to_host: ::core::ffi::c_uint,
-
     #[doc = " Number of tx done success packets sent to host"]
     pub tx_done_success_pkts_to_host: ::core::ffi::c_uint,
-
     #[doc = " Number of tx done failure packets sent to host"]
     pub tx_done_failure_pkts_to_host: ::core::ffi::c_uint,
-
     #[doc = " Number of packets received from host that needs to be encrypted"]
     pub tx_cmds_with_crypto_pkts_rcvd_from_host: ::core::ffi::c_uint,
-
     #[doc = " Number of packets received from host that need not to be encrypted"]
     pub tx_cmds_with_non_crypto_pkts_rcvd_from_host: ::core::ffi::c_uint,
-
     #[doc = " Number of broadcast\tpackets received from host"]
     pub tx_cmds_with_broadcast_pkts_rcvd_from_host: ::core::ffi::c_uint,
-
     #[doc = " Number of multicast\tpackets received from host"]
     pub tx_cmds_with_multicast_pkts_rcvd_from_host: ::core::ffi::c_uint,
-
     #[doc = " Number of unicast packets received from host"]
     pub tx_cmds_with_unicast_pkts_rcvd_from_host: ::core::ffi::c_uint,
-
     #[doc = " UMAC internal count"]
     pub xmit: ::core::ffi::c_uint,
-
     #[doc = " Number of addba requests sent"]
     pub send_addba_req: ::core::ffi::c_uint,
-
     #[doc = " Total ADD BA responses received from host"]
     pub addba_resp: ::core::ffi::c_uint,
-
     #[doc = " Total packets received in softmac tx function"]
     pub softmac_tx: ::core::ffi::c_uint,
-
     #[doc = " Number of packets generated internally in UMAC"]
     pub internal_pkts: ::core::ffi::c_uint,
-
     #[doc = " Number of packets Received from host"]
     pub external_pkts: ::core::ffi::c_uint,
-
     #[doc = " Total tx commmands sent to lmac"]
     pub tx_cmds_to_lmac: ::core::ffi::c_uint,
-
     #[doc = " Tx dones received from LMAC"]
     pub tx_dones_from_lmac: ::core::ffi::c_uint,
-
     #[doc = " Total commands sent to lmac in UMAC hal"]
     pub total_cmds_to_lmac: ::core::ffi::c_uint,
-
     #[doc = " Number of data packets sent"]
     pub tx_packet_data_count: ::core::ffi::c_uint,
-
     #[doc = " Number of management packets sent"]
     pub tx_packet_mgmt_count: ::core::ffi::c_uint,
-
     #[doc = " Number of beacon packets sent"]
     pub tx_packet_beacon_count: ::core::ffi::c_uint,
-
     #[doc = " Number of probe request packets sent"]
     pub tx_packet_probe_req_count: ::core::ffi::c_uint,
-
     #[doc = " Number of authentication packets sent"]
     pub tx_packet_auth_count: ::core::ffi::c_uint,
-
     #[doc = " Number of deauthentication packets sent"]
     pub tx_packet_deauth_count: ::core::ffi::c_uint,
-
     #[doc = " Number of association request packets sent"]
     pub tx_packet_assoc_req_count: ::core::ffi::c_uint,
-
     #[doc = " Number of disassociation packets sent"]
     pub tx_packet_disassoc_count: ::core::ffi::c_uint,
-
     #[doc = " Number of action packets sent"]
     pub tx_packet_action_count: ::core::ffi::c_uint,
-
     #[doc = " Other management packets sent"]
     pub tx_packet_other_mgmt_count: ::core::ffi::c_uint,
-
     #[doc = " Number of Non management packets sent"]
     pub tx_packet_non_mgmt_data_count: ::core::ffi::c_uint,
 }
-
 #[doc = " @brief This structure specifies the UMAC command and event debug parameters used for\n  debugging purpose.\n"]
 #[repr(C, packed)]
 #[derive(Debug, Copy, Clone)]
-
 pub struct umac_cmd_evnt_dbg_params {
     #[doc = " Number of command init received from host"]
     pub cmd_init: ::core::ffi::c_uchar,
-
     #[doc = " Number of init_done events sent to host"]
     pub event_init_done: ::core::ffi::c_uchar,
-
     #[doc = " Number of rf test command received from host"]
     pub cmd_rf_test: ::core::ffi::c_uchar,
-
     #[doc = " Number of connect command received from host"]
     pub cmd_connect: ::core::ffi::c_uchar,
-
     #[doc = " Number of get_stats command received from host"]
     pub cmd_get_stats: ::core::ffi::c_uint,
-
     #[doc = " Number of power save state events sent to host"]
     pub event_ps_state: ::core::ffi::c_uint,
-
     #[doc = " Unused"]
     pub cmd_set_reg: ::core::ffi::c_uint,
-
     #[doc = " Number of get regulatory commands received from host"]
     pub cmd_get_reg: ::core::ffi::c_uint,
-
     #[doc = " Number of request set regulatory commands received from host"]
     pub cmd_req_set_reg: ::core::ffi::c_uint,
-
     #[doc = " Number of trigger scan commands received from host"]
     pub cmd_trigger_scan: ::core::ffi::c_uint,
-
     #[doc = " Number of scan done events sent to host"]
     pub event_scan_done: ::core::ffi::c_uint,
-
     #[doc = " Number of get scan commands received from the host to get scan results"]
     pub cmd_get_scan: ::core::ffi::c_uint,
-
     #[doc = " Number of scan commands sent to LMAC"]
     pub umac_scan_req: ::core::ffi::c_uint,
-
     #[doc = " Number of scan complete events received from LMAC"]
     pub umac_scan_complete: ::core::ffi::c_uint,
-
     #[doc = " Number of scan requests received from host when previous scan is in progress"]
     pub umac_scan_busy: ::core::ffi::c_uint,
-
     #[doc = " Number of authentication requests received from host"]
     pub cmd_auth: ::core::ffi::c_uint,
-
     #[doc = " Number of association requests received from host"]
     pub cmd_assoc: ::core::ffi::c_uint,
-
     #[doc = " Number of deauthentication requests received from host"]
     pub cmd_deauth: ::core::ffi::c_uint,
-
     #[doc = " Number of register frame commands received from host to register\n  a management frame type which should be passed to host"]
     pub cmd_register_frame: ::core::ffi::c_uint,
-
     #[doc = " Number of command frames from host which will be used for\n  transmitting management frames"]
     pub cmd_frame: ::core::ffi::c_uint,
-
     #[doc = " Number of delete key commands from host"]
     pub cmd_del_key: ::core::ffi::c_uint,
-
     #[doc = " Number of new key commands received from host"]
     pub cmd_new_key: ::core::ffi::c_uint,
-
     #[doc = " Number of set key commands received from host"]
     pub cmd_set_key: ::core::ffi::c_uint,
-
     #[doc = " Number of get key commands received from host"]
     pub cmd_get_key: ::core::ffi::c_uint,
-
     #[doc = " Number of beacon hint events sent to host"]
     pub event_beacon_hint: ::core::ffi::c_uint,
-
     #[doc = " Number of regulatory change events sent to host when regulatory change command\n  received from host such as in response to command NL80211_CMD_REG_CHANGE"]
     pub event_reg_change: ::core::ffi::c_uint,
-
     #[doc = " Number of regulatory change events sent to host other than\n  host request for regulatory change"]
     pub event_wiphy_reg_change: ::core::ffi::c_uint,
-
     #[doc = " Number of set station commands received from host"]
     pub cmd_set_station: ::core::ffi::c_uint,
-
     #[doc = " Number of new station commands received from host"]
     pub cmd_new_station: ::core::ffi::c_uint,
-
     #[doc = " Number of del station commands received from host"]
     pub cmd_del_station: ::core::ffi::c_uint,
-
     #[doc = " Number of new interface commands received from host"]
     pub cmd_new_interface: ::core::ffi::c_uint,
-
     #[doc = " Number of set interface commands received from host"]
     pub cmd_set_interface: ::core::ffi::c_uint,
-
     #[doc = " Number of get interface commands received from host"]
     pub cmd_get_interface: ::core::ffi::c_uint,
-
     #[doc = " Number of set_ifflags commands received from host"]
     pub cmd_set_ifflags: ::core::ffi::c_uint,
-
     #[doc = " Number of set_ifflags events sent to host"]
     pub cmd_set_ifflags_done: ::core::ffi::c_uint,
-
     #[doc = " Number of set bss command received from host"]
     pub cmd_set_bss: ::core::ffi::c_uint,
-
     #[doc = " Number of set wiphy command received from host"]
     pub cmd_set_wiphy: ::core::ffi::c_uint,
-
     #[doc = " Number of start access point command received from host"]
     pub cmd_start_ap: ::core::ffi::c_uint,
-
     #[doc = " Number of power save configuration commands sent to LMAC"]
     pub LMAC_CMD_PS: ::core::ffi::c_uint,
-
     #[doc = " Current power save state configured to LMAC through LMAC_CMD_PS command"]
     pub CURR_STATE: ::core::ffi::c_uint,
 }
-
 #[doc = " @brief This structure specifies the UMAC interface debug parameters used for debugging purpose.\n"]
 #[repr(C, packed)]
 #[derive(Debug, Copy, Clone)]
-
 pub struct interface_stats {
     #[doc = " Number of unicast packets sent"]
     pub tx_unicast_pkt_count: ::core::ffi::c_uint,
-
     #[doc = " Number of multicast packets sent"]
     pub tx_multicast_pkt_count: ::core::ffi::c_uint,
-
     #[doc = " Number of broadcast packets sent"]
     pub tx_broadcast_pkt_count: ::core::ffi::c_uint,
-
     #[doc = " Number of tx data bytes sent"]
     pub tx_bytes: ::core::ffi::c_uint,
-
     #[doc = " Number of unicast packets received"]
     pub rx_unicast_pkt_count: ::core::ffi::c_uint,
-
     #[doc = " Number of multicast packets received"]
     pub rx_multicast_pkt_count: ::core::ffi::c_uint,
-
     #[doc = " Number of broadcast packets received"]
     pub rx_broadcast_pkt_count: ::core::ffi::c_uint,
-
     #[doc = " Number of beacon packets received"]
     pub rx_beacon_success_count: ::core::ffi::c_uint,
-
     #[doc = " Number of beacon packets missed"]
     pub rx_beacon_miss_count: ::core::ffi::c_uint,
-
     #[doc = " Number of rx data bytes received"]
     pub rx_bytes: ::core::ffi::c_uint,
-
     #[doc = " Number of packets with checksum mismatch received"]
     pub rx_checksum_error_count: ::core::ffi::c_uint,
-
     #[doc = " Number of duplicate packets received"]
     pub replay_attack_drop_cnt: ::core::ffi::c_uint,
 }
-
 #[doc = " @brief This structure defines the UMAC debug statistics. It contains the necessary parameters\n  and fields used to gather and present debugging statistics within the UMAC layer.\n"]
 #[repr(C, packed)]
 #[derive(Debug, Copy, Clone)]
-
 pub struct rpu_umac_stats {
     #[doc = " Transmit debug statistics @ref umac_tx_dbg_params"]
     pub tx_dbg_params: umac_tx_dbg_params,
-
     #[doc = " Receive debug statistics @ref umac_rx_dbg_params"]
     pub rx_dbg_params: umac_rx_dbg_params,
-
     #[doc = " Command Event debug statistics @ref umac_cmd_evnt_dbg_params"]
     pub cmd_evnt_dbg_params: umac_cmd_evnt_dbg_params,
-
     #[doc = " Interface debug parameters @ref interface_stats"]
     pub interface_data_stats: interface_stats,
 }
-
 #[doc = " @brief This structure defines the LMAC debug parameters.\n"]
 #[repr(C, packed)]
 #[derive(Debug, Copy, Clone)]
-
 pub struct rpu_lmac_stats {
     #[doc = " Number of reset command counts from UMAC"]
     pub reset_cmd_cnt: ::core::ffi::c_uint,
-
     #[doc = " Number of reset complete events sent to UMAC"]
     pub reset_complete_event_cnt: ::core::ffi::c_uint,
-
     #[doc = " Number of events unable to generate"]
     pub unable_gen_event: ::core::ffi::c_uint,
-
     #[doc = " Number of channel program commands from UMAC"]
     pub ch_prog_cmd_cnt: ::core::ffi::c_uint,
-
     #[doc = " Number of channel program done events to UMAC"]
     pub channel_prog_done: ::core::ffi::c_uint,
-
     #[doc = " Number of Tx commands from UMAC"]
     pub tx_pkt_cnt: ::core::ffi::c_uint,
-
     #[doc = " Number of Tx done events to UMAC"]
     pub tx_pkt_done_cnt: ::core::ffi::c_uint,
-
     #[doc = " Unused"]
     pub scan_pkt_cnt: ::core::ffi::c_uint,
-
     #[doc = " Number of internal Tx packets"]
     pub internal_pkt_cnt: ::core::ffi::c_uint,
-
     #[doc = " Number of Tx dones for internal packets"]
     pub internal_pkt_done_cnt: ::core::ffi::c_uint,
-
     #[doc = " Number of acknowledgment responses"]
     pub ack_resp_cnt: ::core::ffi::c_uint,
-
     #[doc = " Number of transmit timeouts"]
     pub tx_timeout: ::core::ffi::c_uint,
-
     #[doc = " Number of deaggregation ISRs"]
     pub deagg_isr: ::core::ffi::c_uint,
-
     #[doc = " Number of deaggregation input descriptor empties"]
     pub deagg_inptr_desc_empty: ::core::ffi::c_uint,
-
     #[doc = " Number of deaggregation circular buffer full events"]
     pub deagg_circular_buffer_full: ::core::ffi::c_uint,
-
     #[doc = " Number of LMAC received ISRs"]
     pub lmac_rxisr_cnt: ::core::ffi::c_uint,
-
     #[doc = " Number of received packets decrypted"]
     pub rx_decryptcnt: ::core::ffi::c_uint,
-
     #[doc = " Number of packet decryption failures during processing"]
     pub process_decrypt_fail: ::core::ffi::c_uint,
-
     #[doc = " Number of RX event preparation failures"]
     pub prepa_rx_event_fail: ::core::ffi::c_uint,
-
     #[doc = " Number of RX core pool full counts"]
     pub rx_core_pool_full_cnt: ::core::ffi::c_uint,
-
     #[doc = " Number of RX MPDU CRC successes"]
     pub rx_mpdu_crc_success_cnt: ::core::ffi::c_uint,
-
     #[doc = " Number of RX MPDU CRC failures"]
     pub rx_mpdu_crc_fail_cnt: ::core::ffi::c_uint,
-
     #[doc = " Number of RX OFDM CRC successes"]
     pub rx_ofdm_crc_success_cnt: ::core::ffi::c_uint,
-
     #[doc = " Number of RX OFDM CRC failures"]
     pub rx_ofdm_crc_fail_cnt: ::core::ffi::c_uint,
-
     #[doc = " Number of RX DSSS CRC successes"]
     pub rxDSSSCrcSuccessCnt: ::core::ffi::c_uint,
-
     #[doc = " Number of RX DSSS CRC failures"]
     pub rxDSSSCrcFailCnt: ::core::ffi::c_uint,
-
     #[doc = " Number of RX crypto start counts"]
     pub rx_crypto_start_cnt: ::core::ffi::c_uint,
-
     #[doc = " Number of RX crypto done counts"]
     pub rx_crypto_done_cnt: ::core::ffi::c_uint,
-
     #[doc = " Number of RX event buffer full counts"]
     pub rx_event_buf_full: ::core::ffi::c_uint,
-
     #[doc = " Number of RX external RAM buffer full counts"]
     pub rx_extram_buf_full: ::core::ffi::c_uint,
-
     #[doc = " Number of scan requests receive from UMAC"]
     pub scan_req: ::core::ffi::c_uint,
-
     #[doc = " Number of scan complete events sent to UMAC"]
     pub scan_complete: ::core::ffi::c_uint,
-
     #[doc = " Number of scan abort requests"]
     pub scan_abort_req: ::core::ffi::c_uint,
-
     #[doc = " Number of scan abort complete events"]
     pub scan_abort_complete: ::core::ffi::c_uint,
-
     #[doc = " Number of internal buffer pool null counts"]
     pub internal_buf_pool_null: ::core::ffi::c_uint,
 }
-
 #[doc = " @brief This structure defines the PHY (Physical Layer) debug statistics.\n"]
 #[repr(C, packed)]
 #[derive(Debug, Copy, Clone)]
-
 pub struct rpu_phy_stats {
     #[doc = " Rssi average value received from LMAC"]
     pub rssi_avg: ::core::ffi::c_schar,
-
     #[doc = " Unused"]
     pub pdout_val: ::core::ffi::c_uchar,
-
     #[doc = " Number of OFDM CRC Pass packets"]
     pub ofdm_crc32_pass_cnt: ::core::ffi::c_uint,
-
     #[doc = " Number of OFDM CRC Fail packets"]
     pub ofdm_crc32_fail_cnt: ::core::ffi::c_uint,
-
     #[doc = " Number of DSSS CRC Pass packets"]
     pub dsss_crc32_pass_cnt: ::core::ffi::c_uint,
-
     #[doc = " Number of DSSS CRC Fail packets"]
     pub dsss_crc32_fail_cnt: ::core::ffi::c_uint,
 }
-
 #[doc = " @brief The UMAC header structure for system commands and events defines the format\n  used to transmit and receive system-level commands and events.\n"]
 #[repr(C, packed)]
 #[derive(Debug, Copy, Clone)]
-
 pub struct sys_head {
     #[doc = " Command/Event id"]
     pub cmd_event: ::core::ffi::c_uint,
-
     #[doc = " message length"]
     pub len: ::core::ffi::c_uint,
 }
-
 #[repr(i32)]
 #[doc = " @brief The maximum Rx (receive) A-MPDU size in KB.\n"]
-#[derive(Debug, Copy, Clone, Hash, PartialEq, Eq)]
-#[derive(num_enum::TryFromPrimitive)]
+#[derive(Debug, Copy, Clone, Hash, PartialEq, Eq, num_enum::TryFromPrimitive)]
 pub enum max_rx_ampdu_size {
     #[doc = " 8KB AMPDU Size"]
     MAX_RX_AMPDU_SIZE_8KB = 0,
-
     #[doc = " 16KB AMPDU Size"]
     MAX_RX_AMPDU_SIZE_16KB = 1,
-
     #[doc = " 32KB AMPDU Size"]
     MAX_RX_AMPDU_SIZE_32KB = 2,
-
     #[doc = " 64KB AMPDU Size"]
     MAX_RX_AMPDU_SIZE_64KB = 3,
 }
-
 #[doc = " @brief This structure specifies the configuration parameters used for configuring\n  data-related settings.\n"]
 #[repr(C, packed)]
 #[derive(Debug, Copy, Clone)]
-
 pub struct data_config_params {
     #[doc = " rate_protection_type:0->NONE, 1->RTS/CTS, 2->CTS2SELF"]
     pub rate_protection_type: ::core::ffi::c_uchar,
-
     #[doc = " Aggregation is enabled(FEATURE_ENABLE) or\n  disabled(FEATURE_DISABLE)"]
     pub aggregation: ::core::ffi::c_uchar,
-
     #[doc = " WMM is enabled(FEATURE_ENABLE) or\n  disabled(FEATURE_DISABLE)"]
     pub wmm: ::core::ffi::c_uchar,
-
     #[doc = " Max number of aggregated TX sessions"]
     pub max_num_tx_agg_sessions: ::core::ffi::c_uchar,
-
     #[doc = " Max number of aggregated RX sessions"]
     pub max_num_rx_agg_sessions: ::core::ffi::c_uchar,
-
     #[doc = " maximum aggregation size"]
     pub max_tx_aggregation: ::core::ffi::c_uchar,
-
     #[doc = " Reorder buffer size (1 to 64)"]
     pub reorder_buf_size: ::core::ffi::c_uchar,
-
     #[doc = " Max RX AMPDU size (8/16/32/64 KB), see &enum max_rx_ampdu_size"]
     pub max_rxampdu_size: ::core::ffi::c_int,
 }
-
 #[doc = " @brief This structure specifies the parameters that need to be provided for the command\n  CMD_INIT. The CMD_INIT command is typically used to initialize the\n  Wi-Fi module and prepare it for further communication.\n"]
 #[repr(C, packed)]
 #[derive(Debug, Copy, Clone)]
-
 pub struct sys_params {
     #[doc = " enable rpu sleep"]
     pub sleep_enable: ::core::ffi::c_uint,
-
     #[doc = " Normal/FTM mode"]
     pub hw_bringup_time: ::core::ffi::c_uint,
-
     #[doc = " Antenna Configuration, applicable only for 1x1"]
     pub sw_bringup_time: ::core::ffi::c_uint,
-
     #[doc = " Internal tuning parameter"]
     pub bcn_time_out: ::core::ffi::c_uint,
-
     #[doc = " Set to 1 if rpu is expected to perform sleep clock calibration"]
     pub calib_sleep_clk: ::core::ffi::c_uint,
-
     #[doc = " calib bit map value. More info can be found in phy_rf_params.h DEF_PHY_CALIB"]
     pub phy_calib: ::core::ffi::c_uint,
-
     #[doc = " MAC address of the interface"]
     pub mac_addr: [::core::ffi::c_uchar; 6usize],
-
     #[doc = " An array containing RF & baseband control params"]
     pub rf_params: [::core::ffi::c_uchar; 200usize],
-
     #[doc = " Indicates whether the rf_params has a valid value"]
     pub rf_params_valid: ::core::ffi::c_uchar,
 }
-
 #[doc = " @brief This structure defines the parameters used to control the transmit (TX) power.\n"]
 #[repr(C, packed)]
 #[derive(Debug, Copy, Clone)]
-
 pub struct tx_pwr_ctrl_params {
     #[doc = " Antenna gain for 2.4 GHz band"]
     pub ant_gain_2g: ::core::ffi::c_uchar,
-
     #[doc = " Antenna gain for 5 GHz band (5150 MHz - 5350 MHz)"]
     pub ant_gain_5g_band1: ::core::ffi::c_uchar,
-
     #[doc = " Antenna gain for 5 GHz band (5470 MHz - 5730 MHz)"]
     pub ant_gain_5g_band2: ::core::ffi::c_uchar,
-
     #[doc = " Antenna gain for 5 GHz band (5730 MHz - 5895 MHz)"]
     pub ant_gain_5g_band3: ::core::ffi::c_uchar,
-
     #[doc = " Transmit power backoff (in dB) for lower edge of 2.4 GHz frequency band"]
     pub band_edge_2g_lo: ::core::ffi::c_uchar,
-
     #[doc = " Transmit power backoff (in dB) for upper edge of 2.4 GHz frequency band"]
     pub band_edge_2g_hi: ::core::ffi::c_uchar,
-
     #[doc = " Transmit power backoff (in dB) for lower edge of UNII-1 frequency band"]
     pub band_edge_5g_unii_1_lo: ::core::ffi::c_uchar,
-
     #[doc = " Transmit power backoff (in dB) for upper edge of UNII-1 frequency band"]
     pub band_edge_5g_unii_1_hi: ::core::ffi::c_uchar,
-
     #[doc = " Transmit power backoff (in dB) for lower edge of UNII-2A frequency band"]
     pub band_edge_5g_unii_2a_lo: ::core::ffi::c_uchar,
-
     #[doc = " Transmit power backoff (in dB) for upper edge of UNII-2A frequency band"]
     pub band_edge_5g_unii_2a_hi: ::core::ffi::c_uchar,
-
     #[doc = " Transmit power backoff (in dB) for lower edge of UNII-2C frequency band"]
     pub band_edge_5g_unii_2c_lo: ::core::ffi::c_uchar,
-
     #[doc = " Transmit power backoff (in dB) for upper edge of UNII-2C frequency band"]
     pub band_edge_5g_unii_2c_hi: ::core::ffi::c_uchar,
-
     #[doc = " Transmit power backoff (in dB) for lower edge of UNII-3 frequency band"]
     pub band_edge_5g_unii_3_lo: ::core::ffi::c_uchar,
-
     #[doc = " Transmit power backoff (in dB) for upper edge of UNII-3 frequency band"]
     pub band_edge_5g_unii_3_hi: ::core::ffi::c_uchar,
-
     #[doc = " Transmit power backoff (in dB) for lower edge of UNII-4 frequency band"]
     pub band_edge_5g_unii_4_lo: ::core::ffi::c_uchar,
-
     #[doc = " Transmit power backoff (in dB) for upper edge of UNII-4 frequency band"]
     pub band_edge_5g_unii_4_hi: ::core::ffi::c_uchar,
 }
-
 #[repr(i32)]
 #[doc = " @brief This enum defines different types of operating bands.\n"]
-#[derive(Debug, Copy, Clone, Hash, PartialEq, Eq)]
-#[derive(num_enum::TryFromPrimitive)]
+#[derive(Debug, Copy, Clone, Hash, PartialEq, Eq, num_enum::TryFromPrimitive)]
 pub enum op_band {
     #[doc = " All bands"]
     BAND_ALL = 0,
-
     #[doc = " 2.4Ghz band"]
     BAND_24G = 1,
 }
-
 #[doc = " @brief This structure defines the command responsible for initializing the UMAC.\n  After the host driver brings up, the host sends CMD_INIT to the RPU.\n  The RPU then performs the initialization and responds with EVENT_INIT_DONE\n  once the initialization is completed.\n"]
 #[repr(C, packed)]
 #[derive(Debug, Copy, Clone)]
-
 pub struct cmd_sys_init {
     #[doc = " umac header, @ref sys_head"]
     pub sys_head: sys_head,
-
     #[doc = " id of the interface"]
     pub wdev_id: ::core::ffi::c_uint,
-
     #[doc = " @ref sys_params"]
     pub sys_params: sys_params,
-
     #[doc = " LMAC Rx buffs pool params, @ref rx_buf_pool_params"]
     pub rx_buf_pools: [rx_buf_pool_params; 3usize],
-
     #[doc = " Data configuration params, @ref data_config_params"]
     pub data_config_params: data_config_params,
-
     #[doc = " Calibration trigger control info based on battery voltage and temperature changes.\n  @ref temp_vbat_config from lmac_if_common.h"]
     pub temp_vbat_config_params: temp_vbat_config,
-
     #[doc = " 0:umac checksum disable 1: umac checksum enable"]
     pub tcp_ip_checksum_offload: ::core::ffi::c_uchar,
-
     #[doc = " Country code to set"]
     pub country_code: [::core::ffi::c_uchar; 2usize],
-
     #[doc = " Operating band see enum op_band"]
     pub op_band: ::core::ffi::c_uint,
-
     #[doc = " System parameters provided for controlling the TX power"]
     pub tx_pwr_ctrl_params: tx_pwr_ctrl_params,
-
     #[doc = " Offload mgmt buffer refill to UMAC when enabled"]
     pub mgmt_buff_offload: ::core::ffi::c_uchar,
-
     #[doc = " Enable features from driver config"]
     pub feature_flags: ::core::ffi::c_uint,
-
     #[doc = " To deactivate beamforming, By default the RPU enables the beamforming feature.\n  If a user wishes to turn it off, they should set this parameter to 1."]
     pub disable_beamforming: ::core::ffi::c_uint,
 }
-
 #[doc = " @brief This structure defines the command used to de-initialize the RPU.\n"]
 #[repr(C, packed)]
 #[derive(Debug, Copy, Clone)]
-
 pub struct cmd_sys_deinit {
     #[doc = " umac header, @ref sys_head"]
     pub sys_head: sys_head,
 }
-
 #[doc = " @brief This structure defines the command used to configure\n  High-Efficiency Guard Interval(HE-GI) and High-Efficiency Long Training Field (HE-LTF).\n\n  HE-GI duration determines the guard interval length used in the HE transmission.\n  HE-LTF is used for channel estimation and signal detection in HE transmissions.\n"]
 #[repr(C, packed)]
 #[derive(Debug, Copy, Clone)]
-
 pub struct cmd_he_gi_ltf_config {
     #[doc = " umac header, see &sys_head"]
     pub sys_head: sys_head,
-
     #[doc = " wdev interface id"]
     pub wdev_id: ::core::ffi::c_uchar,
-
     #[doc = " HE GI type (HE_GI_800NS/HE_GI_1600NS/HE_GI_3200NS)"]
     pub he_gi_type: ::core::ffi::c_uchar,
-
     #[doc = " HE LTF (HE_LTF_3200NS/HE_LTF_6400NS/HE_LTF_12800NS)"]
     pub he_ltf: ::core::ffi::c_uchar,
-
     #[doc = " Fixed HE GI & LTF values can be enabled and disabled"]
     pub enable: ::core::ffi::c_uchar,
 }
-
 #[repr(i32)]
 #[doc = " @brief This enum represents the different types of preambles used.\n  Preambles are sequences of known symbols transmitted before the actual\n  data transmission to enable synchronization, channel estimation, and\n  frame detection at the receiver.\n"]
-#[derive(Debug, Copy, Clone, Hash, PartialEq, Eq)]
-#[derive(num_enum::TryFromPrimitive)]
+#[derive(Debug, Copy, Clone, Hash, PartialEq, Eq, num_enum::TryFromPrimitive)]
 pub enum rpu_pkt_preamble {
     #[doc = " Short preamble packet"]
     RPU_PKT_PREAMBLE_SHORT = 0,
-
     #[doc = " Long preamble packet"]
     RPU_PKT_PREAMBLE_LONG = 1,
-
     #[doc = " mixed preamble packet"]
     RPU_PKT_PREAMBLE_MIXED = 2,
-
     #[doc = " Highest preamble type currently defined"]
     RPU_PKT_PREAMBLE_MAX = 3,
 }
-
 #[doc = " @brief This structure describes different Physical Layer (PHY) configuration parameters used\n  in RF test and Radio test scenarios. These parameters are specific to testing and evaluating\n  the performance of the radio hardware.\n"]
 #[repr(C, packed)]
 #[derive(Debug, Copy, Clone)]
-
 pub struct rpu_conf_params {
     #[doc = " Unused. Number of spatial streams supported. Support is there for 1x1 only."]
     pub nss: ::core::ffi::c_uchar,
-
     #[doc = " Unused"]
     pub antenna_sel: ::core::ffi::c_uchar,
-
     #[doc = " An array containing RF & baseband control params"]
     pub rf_params: [::core::ffi::c_uchar; 200usize],
-
     #[doc = " Not required"]
     pub tx_pkt_chnl_bw: ::core::ffi::c_uchar,
-
     #[doc = " WLAN packet formats. 0->Legacy 1->HT 2->VHT 3->HE(SU) 4->HE(ERSU) and 5->HE(TB)"]
     pub tx_pkt_tput_mode: ::core::ffi::c_uchar,
-
     #[doc = " Short Guard enable/disable"]
     pub tx_pkt_sgi: ::core::ffi::c_uchar,
-
     #[doc = " Not required"]
     pub tx_pkt_nss: ::core::ffi::c_uchar,
-
     #[doc = " Preamble type. 0->short, 1->Long and 2->Mixed"]
     pub tx_pkt_preamble: ::core::ffi::c_uchar,
-
     #[doc = " Not used"]
     pub tx_pkt_stbc: ::core::ffi::c_uchar,
-
     #[doc = " 0->BCC 1->LDPC. Supporting only BCC in nRF7002"]
     pub tx_pkt_fec_coding: ::core::ffi::c_uchar,
-
     #[doc = " Valid MCS number between 0 to 7"]
     pub tx_pkt_mcs: ::core::ffi::c_schar,
-
     #[doc = " Legacy rate to be used in Mbps (1, 2, 5.5, 11, 6, 9, 12, 18, 24, 36, 48, 54)"]
     pub tx_pkt_rate: ::core::ffi::c_schar,
-
     #[doc = " Copy OTP params to this memory"]
     pub phy_threshold: ::core::ffi::c_schar,
-
     #[doc = " Calibration bit map value. refer DEF_PHY_CALIB"]
     pub phy_calib: ::core::ffi::c_uint,
-
     #[doc = " Radio test mode or System mode selection"]
     pub op_mode: ::core::ffi::c_int,
-
     #[doc = " Channel related info viz, channel, bandwidth, primary 20 offset"]
     pub chan: chan_params,
-
     #[doc = " Value of 0 means continuous transmission.Greater than 1 is invalid"]
     pub tx_mode: ::core::ffi::c_uchar,
-
     #[doc = " Number of packets to be transmitted. Any number above 0.\n  Set -1 for continuous transmission"]
     pub tx_pkt_num: ::core::ffi::c_int,
-
     #[doc = " Length of the packet (in bytes) to be transmitted"]
     pub tx_pkt_len: ::core::ffi::c_ushort,
-
     #[doc = " Desired TX power in dBm in the range 0 dBm to 21 dBm in steps of 1 dBm"]
     pub tx_power: ::core::ffi::c_uint,
-
     #[doc = " Transmit WLAN packet"]
     pub tx: ::core::ffi::c_uchar,
-
     #[doc = " Receive WLAN packet"]
     pub rx: ::core::ffi::c_uchar,
-
     #[doc = "  Not required"]
     pub aux_adc_input_chain_id: ::core::ffi::c_uchar,
-
     #[doc = "  Unused"]
     pub agg: ::core::ffi::c_uchar,
-
     #[doc = " Select HE LTF type viz, 0->1x, 1->2x and 2->4x"]
     pub he_ltf: ::core::ffi::c_uchar,
-
     #[doc = " Select HE LTF type viz, 0->0.8us, 1->1.6us and 2->3.2us"]
     pub he_gi: ::core::ffi::c_uchar,
-
     #[doc = " Not required"]
     pub set_he_ltf_gi: ::core::ffi::c_uchar,
-
     #[doc = " Not required"]
     pub power_save: ::core::ffi::c_uchar,
-
     #[doc = " Not required"]
     pub rts_threshold: ::core::ffi::c_uint,
-
     #[doc = " Not required"]
     pub uapsd_queue: ::core::ffi::c_uint,
-
     #[doc = " Interval between TX packets in us (Min: 200, Max: 200000, Default: 200)"]
     pub tx_pkt_gap_us: ::core::ffi::c_uint,
-
     #[doc = " Configure WLAN antenna switch(0-separate/1-shared)"]
     pub wlan_ant_switch_ctrl: ::core::ffi::c_uchar,
-
     #[doc = " Switch to control the BLE antenna or shared WiFi antenna"]
     pub ble_ant_switch_ctrl: ::core::ffi::c_uchar,
-
     #[doc = " Resource unit (RU) size (26,52,106 or 242)"]
     pub ru_tone: ::core::ffi::c_uchar,
-
     #[doc = " Location of resource unit (RU) in 20 MHz spectrum"]
     pub ru_index: ::core::ffi::c_uchar,
-
     #[doc = " Desired tone frequency to be transmitted"]
     pub tx_tone_freq: ::core::ffi::c_schar,
-
     #[doc = " RX LNA gain"]
     pub lna_gain: ::core::ffi::c_uchar,
-
     #[doc = " RX BB gain"]
     pub bb_gain: ::core::ffi::c_uchar,
-
     #[doc = " Number of RX samples to be captured"]
     pub capture_length: ::core::ffi::c_ushort,
-
     #[doc = " Configure WLAN to bypass regulatory"]
     pub bypass_regulatory: ::core::ffi::c_uchar,
-
     #[doc = " Two letter country code (00: Default for WORLD)"]
     pub country_code: [::core::ffi::c_uchar; 2usize],
-
     #[doc = " Contention window value to be configured"]
     pub tx_pkt_cw: ::core::ffi::c_uint,
 }
-
 #[doc = " @brief This structure defines the command used to configure the RPU with different\n  PHY configuration parameters specifically designed for RF test and Radio test scenarios.\n  The command is intended to set up the RPU for testing and evaluating the performance\n  of the radio hardware.\n"]
 #[repr(C, packed)]
 #[derive(Debug, Copy, Clone)]
-
 pub struct cmd_mode_params {
     #[doc = " UMAC header, See &struct sys_head"]
     pub sys_head: sys_head,
-
     #[doc = " configuration parameters of different modes see &union rpu_conf_params"]
     pub conf: rpu_conf_params,
-
     #[doc = " Packet length"]
     pub pkt_length: [::core::ffi::c_ushort; 16usize],
-
     #[doc = " Packet ddr pointer"]
     pub ddr_ptrs: [::core::ffi::c_uint; 16usize],
 }
-
 #[doc = " @brief This structure represents the parameters required to initialize a radio test.\n"]
 #[repr(C, packed)]
 #[derive(Debug, Copy, Clone)]
-
 pub struct radio_test_init_info {
     #[doc = " An array containing RF & baseband control params"]
     pub rf_params: [::core::ffi::c_uchar; 200usize],
-
     #[doc = " Channel related info viz, channel, bandwidth, primary 20 offset"]
     pub chan: chan_params,
-
     #[doc = " Phy threshold value to be sent to LMAC in channel programming"]
     pub phy_threshold: ::core::ffi::c_schar,
-
     #[doc = " Calibration bit map value. refer phy_rf_params.h DEF_PHY_CALIB"]
     pub phy_calib: ::core::ffi::c_uint,
 }
-
 #[doc = " @brief This structure defines the command used to initialize a radio test.\n"]
 #[repr(C, packed)]
 #[derive(Debug, Copy, Clone)]
-
 pub struct cmd_radio_test_init {
     #[doc = " UMAC header, @ref sys_head"]
     pub sys_head: sys_head,
-
     #[doc = " radiotest init configuration parameters @ref radio_test_init_info"]
     pub conf: radio_test_init_info,
 }
-
 #[doc = " @brief This structure defines the command used to enable or disable the reception (Rx).\n  It allows controlling the radio hardware's receive functionality to start or stop listening\n  for incoming data frames."]
 #[repr(C, packed)]
 #[derive(Debug, Copy, Clone)]
-
 pub struct cmd_rx {
     #[doc = " UMAC header, @ref sys_head"]
     pub sys_head: sys_head,
-
     #[doc = " rx configuration parameters @ref rpu_conf_rx_radio_test_params"]
     pub conf: rpu_conf_rx_radio_test_params,
 }
-
 #[doc = " @brief This structure defines the command used to retrieve statistics from the RPU.\n"]
 #[repr(C, packed)]
 #[derive(Debug, Copy, Clone)]
-
 pub struct cmd_get_stats {
     #[doc = " UMAC header, @ref sys_head"]
     pub sys_head: sys_head,
-
     #[doc = " Statistics type &enum rpu_stats_type"]
     pub stats_type: ::core::ffi::c_int,
-
     #[doc = " Production mode or FCM mode"]
     pub op_mode: ::core::ffi::c_int,
 }
-
 #[doc = " @brief This structure defines the command used to clear or reset statistics.\n\n"]
 #[repr(C, packed)]
 #[derive(Debug, Copy, Clone)]
-
 pub struct cmd_clear_stats {
     #[doc = " UMAC header, @ref sys_head"]
     pub sys_head: sys_head,
-
     #[doc = " Type of statistics to clear &enum rpu_stats_type"]
     pub stats_type: ::core::ffi::c_int,
 }
-
 #[doc = " @brief This structure represents the command used to obtain power monitor information\n  specific to different data types.\n"]
 #[repr(C, packed)]
 #[derive(Debug, Copy, Clone)]
-
 pub struct cmd_pwr {
     #[doc = " UMAC header, @ref sys_head"]
     pub sys_head: sys_head,
-
     #[doc = " Type of Control info that host need"]
     pub data_type: ::core::ffi::c_int,
 }
-
 #[doc = " @brief Structure for coexistence (coex) switch configuration.\n"]
 #[repr(C, packed)]
 #[derive(Debug, Copy, Clone)]
-
 pub struct coex_wlan_switch_ctrl {
     #[doc = " Host to coexistence manager message id"]
     pub rpu_msg_id: ::core::ffi::c_int,
-
     #[doc = " Switch configuration value"]
     pub switch_A: ::core::ffi::c_int,
 }
-
 #[doc = " @brief The structure represents the command used to configure the Wi-Fi side shared switch\n  for Bluetooth coexistence (btcoex).\n"]
 #[repr(C, packed)]
 #[derive(Debug, Copy, Clone)]
-
 pub struct cmd_btcoex {
     #[doc = " UMAC header, @ref sys_head"]
     pub sys_head: sys_head,
-
     #[doc = " Switch configuration data"]
     pub conf: coex_wlan_switch_ctrl,
 }
-
 #[doc = " @brief The structure defines the parameters used to configure the coexistence hardware.\n"]
 #[repr(C, packed)]
-
 pub struct rpu_cmd_coex_config_info {
     #[doc = " Length of coexistence configuration data"]
     pub len: ::core::ffi::c_uint,
-
     #[doc = " Coexistence configuration data"]
     pub coex_cmd: __IncompleteArrayField<::core::ffi::c_uchar>,
 }
-
 #[doc = " @brief This structure defines the command used to configure the coexistence hardware.\n"]
 #[repr(C, packed)]
-
 pub struct cmd_coex_config {
     #[doc = " UMAC header, @ref sys_head"]
     pub sys_head: sys_head,
-
     #[doc = " Coexistence configuration data. @ref rpu_cmd_coex_config_info"]
     pub coex_config_info: rpu_cmd_coex_config_info,
 }
-
 #[doc = " @brief This structure describes the coexistence configuration data received\n  in the EVENT_COEX_CONFIG event.\n"]
 #[repr(C, packed)]
-
 pub struct rpu_evnt_coex_config_info {
     #[doc = " Length of coexistence configuration data"]
     pub len: ::core::ffi::c_uint,
-
     #[doc = " Coexistence configuration data"]
     pub coex_event: __IncompleteArrayField<::core::ffi::c_uchar>,
 }
-
 #[doc = " @brief This structure defines the event used to represent coexistence configuration.\n"]
 #[repr(C, packed)]
-
 pub struct event_coex_config {
     #[doc = " UMAC header, @ref sys_head"]
     pub sys_head: sys_head,
-
     #[doc = " Coexistence configuration data in the event. @ref rpu_evnt_coex_config_info"]
     pub coex_config_info: rpu_evnt_coex_config_info,
 }
-
 #[doc = " @brief This structure defines the command used to fix the transmission (Tx) data rate.\n  The command allows setting a specific data rate for data transmission, ensuring that the\n  system uses the designated rate instead of dynamically adapting to changing channel conditions.\n"]
 #[repr(C, packed)]
 #[derive(Debug, Copy, Clone)]
-
 pub struct cmd_fix_tx_rate {
     #[doc = " UMAC header, @ref sys_head"]
     pub sys_head: sys_head,
-
     #[doc = " refer see &enum rpu_tput_mode"]
     pub rate_flags: ::core::ffi::c_uchar,
-
     #[doc = " fixed_rate: -1 Disable fixed rate and use ratecontrol selected rate\n  fixed rate: >0 legacy rates: 1,2,55,11,6,9,12,18,24,36,48,54\n\t\t  11N VHT HE  : MCS index 0 to 7."]
     pub fixed_rate: ::core::ffi::c_int,
 }
-
 #[doc = " @brief This structure describes rf test command information.\n"]
 #[repr(C, packed)]
-
 pub struct rpu_cmd_rftest_info {
     #[doc = " length of the rf test command"]
     pub len: ::core::ffi::c_uint,
-
     #[doc = " Rf test command data"]
     pub rfcmd: __IncompleteArrayField<::core::ffi::c_uchar>,
 }
-
 #[doc = " @brief This structure defines the command used for RF (Radio Frequency) testing.\n  RF test commands are specifically designed to configure and control the radio hardware\n  for conducting tests and evaluating its performance in various scenarios.\n"]
 #[repr(C, packed)]
-
 pub struct cmd_rftest {
     #[doc = " UMAC header, @ref sys_head"]
     pub sys_head: sys_head,
-
     #[doc = " @ref rpu_cmd_rftest_info"]
     pub rf_test_info: rpu_cmd_rftest_info,
 }
-
 #[doc = " @brief This structure describes rf test event information.\n"]
 #[repr(C, packed)]
-
 pub struct rpu_evnt_rftest_info {
     #[doc = " length of the rf test event"]
     pub len: ::core::ffi::c_uint,
-
     #[doc = " Rf test event data"]
     pub rfevent: __IncompleteArrayField<::core::ffi::c_uchar>,
 }
-
 #[doc = " @brief This structure describes the event generated during RF (Radio Frequency) testing.\n"]
 #[repr(C, packed)]
-
 pub struct event_rftest {
     #[doc = " UMAC header, @ref sys_head"]
     pub sys_head: sys_head,
-
     #[doc = " @ref rpu_evnt_rftest_info"]
     pub rf_test_info: rpu_evnt_rftest_info,
 }
-
 #[doc = " @brief This structure represents the power data event generated in response to\n  the CMD_PWR command.\n\n  The CMD_PWR command is used to retrieve power-related data or measurements\n  from the radio hardware.\n"]
 #[repr(C, packed)]
 #[derive(Debug, Copy, Clone)]
-
 pub struct event_pwr_data {
     #[doc = " UMAC header, @ref sys_head"]
     pub sys_head: sys_head,
-
     #[doc = " Power monitor command status info"]
     pub mon_status: ::core::ffi::c_int,
-
     #[doc = " Data"]
     pub data_type: ::core::ffi::c_int,
-
     #[doc = " Data that host may want to read from Power IP"]
     pub data: rpu_pwr_data,
 }
-
 #[doc = " @brief This structure is a comprehensive combination of all the firmware statistics\n  that the RPU (Radio Processing Unit) can provide.\n"]
 #[repr(C, packed)]
 #[derive(Debug, Copy, Clone)]
-
 pub struct rpu_fw_stats {
     #[doc = " PHY statistics  @ref rpu_phy_stats"]
     pub phy: rpu_phy_stats,
-
     #[doc = " LMAC statistics @ref rpu_lmac_stats"]
     pub lmac: rpu_lmac_stats,
-
     #[doc = " UMAC statistics @ref rpu_umac_stats"]
     pub umac: rpu_umac_stats,
 }
-
 #[doc = " @brief This structure represents the event that provides RPU statistics in response\n  to the command CMD_GET_STATS in a wireless communication system.\n\n  The CMD_GET_STATS command is used to request various statistics from the RPU.\n"]
 #[repr(C, packed)]
 #[derive(Debug, Copy, Clone)]
-
 pub struct umac_event_stats {
     #[doc = " UMAC header, @ref sys_head"]
     pub sys_head: sys_head,
-
     #[doc = " All the statistics that the firmware can provide @ref rpu_fw_stats"]
     pub fw: rpu_fw_stats,
 }
-
 #[repr(i32)]
 #[doc = " @brief This enum defines various error status values that may occur during a radio test.\n"]
-#[derive(Debug, Copy, Clone, Hash, PartialEq, Eq)]
-#[derive(num_enum::TryFromPrimitive)]
+#[derive(Debug, Copy, Clone, Hash, PartialEq, Eq, num_enum::TryFromPrimitive)]
 pub enum radio_test_err_status {
     #[doc = " Command success"]
     UMAC_CMD_SUCCESS = 1,
-
     #[doc = " Invalid channel error"]
     UMAC_INVALID_CHNL = 2,
 }
-
 #[doc = " @brief This structure defines an event that indicates the error status values that may occur\n  during a radio test. It serves as a response to the radio test commands.\n"]
 #[repr(C, packed)]
 #[derive(Debug, Copy, Clone)]
-
 pub struct umac_event_err_status {
     #[doc = " UMAC header, @ref sys_head"]
     pub sys_head: sys_head,
-
     #[doc = " status of the command, Fail/success &enum radio_test_err_status"]
     pub status: ::core::ffi::c_uint,
 }
-
 #[doc = " @brief This structure represents the UMAC initialization done event.\n  The event is sent by the RPU (Radio Processing Unit) in response to\n  the CMD_INIT command, indicating that the RPU initialization\n  process has been completed successfully."]
 #[repr(C, packed)]
 #[derive(Debug, Copy, Clone)]
-
 pub struct event_init_done {
     #[doc = " UMAC header, @ref sys_head"]
     pub sys_head: sys_head,
 }
-
 #[doc = " @brief structure for UMAC memory pool information.\n"]
 #[repr(C, packed)]
 #[derive(Debug, Copy, Clone)]
-
 pub struct pool_data_to_host {
     #[doc = " Size of the memory buffer"]
     pub buffer_size: ::core::ffi::c_uint,
-
     #[doc = " Number of pool items available for the above memory buffer"]
     pub num_pool_items: ::core::ffi::c_uchar,
-
     #[doc = " Maximum pools allocated at any point of time"]
     pub items_num_max_allocated: ::core::ffi::c_uchar,
-
     #[doc = " Currently allocated pools"]
     pub items_num_cur_allocated: ::core::ffi::c_uchar,
-
     #[doc = " Total number of pool allocated"]
     pub items_num_total_allocated: ::core::ffi::c_uint,
-
     #[doc = " Number of times this memory pool is full"]
     pub items_num_not_allocated: ::core::ffi::c_uint,
 }
-
 #[doc = " @brief This structure represents the event that provides UMAC (Upper MAC) internal\n  memory statistics in response to the CMD_UMAC_INT_STATS command.\n"]
 #[repr(C, packed)]
 #[derive(Debug, Copy, Clone)]
-
 pub struct umac_int_stats {
     #[doc = " UMAC header, @ref sys_head"]
     pub sys_head: sys_head,
-
     #[doc = " See @ref pool_data_to_host"]
     pub scratch_dynamic_memory_info: [pool_data_to_host; 56usize],
-
     #[doc = " See @ref pool_data_to_host"]
     pub retention_dynamic_memory_info: [pool_data_to_host; 56usize],
 }
-
 #[doc = " @brief This structure represents the event that indicates the completion of UMAC\n  deinitialization. The RPU sends this event as a response to the CMD_DEINIT\n  command, signaling that the UMAC has been successfully deinitialized."]
 #[repr(C, packed)]
 #[derive(Debug, Copy, Clone)]
-
 pub struct event_deinit_done {
     #[doc = " UMAC header, @ref sys_head"]
     pub sys_head: sys_head,
 }
-
 #[repr(i32)]
 #[doc = " @brief UMAC data interface commands and events.\n"]
-#[derive(Debug, Copy, Clone, Hash, PartialEq, Eq)]
-#[derive(num_enum::TryFromPrimitive)]
+#[derive(Debug, Copy, Clone, Hash, PartialEq, Eq, num_enum::TryFromPrimitive)]
 pub enum umac_data_commands {
     #[doc = " Unused."]
     CMD_MGMT_BUFF_CONFIG = 0,
-
     #[doc = " Transmit data packet @ref tx_buff"]
     CMD_TX_BUFF = 1,
-
     #[doc = " TX done event @ref tx_buff_done"]
     CMD_TX_BUFF_DONE = 2,
-
     #[doc = " RX packet event @ref rx_buff"]
     CMD_RX_BUFF = 3,
-
     #[doc = " Event to indicate interface is operational\n  @ref data_carrier_state"]
     CMD_CARRIER_ON = 4,
-
     #[doc = " Event to indicate interface is non-operational\n  @ref data_carrier_state"]
     CMD_CARRIER_OFF = 5,
-
     #[doc = " Event to indicate softap client's power save mode\n  If client is in power save mode, host should start buffering\n  packets until it receives CMD_PS_GET_FRAMES event."]
     CMD_PM_MODE = 6,
-
     #[doc = " Event to indicate to start sending buffered packets for\n  softap client @ref sap_ps_get_frames."]
     CMD_PS_GET_FRAMES = 7,
 }
-
 #[doc = " @brief Data interface Command and Event header.\n"]
 #[repr(C, packed)]
 #[derive(Debug, Copy, Clone)]
-
 pub struct umac_head {
     #[doc = " Command or Event id see &enum umac_data_commands"]
     pub cmd: ::core::ffi::c_uint,
-
     #[doc = " length"]
     pub len: ::core::ffi::c_uint,
 }
-
 #[doc = " @brief Tx mac80211 header information.\n"]
 #[repr(C, packed)]
 #[derive(Debug, Copy, Clone)]
-
 pub struct tx_mac_hdr_info {
     #[doc = " Unused"]
     pub umac_fill_flags: ::core::ffi::c_int,
-
     #[doc = " frame control"]
     pub fc: ::core::ffi::c_ushort,
-
     #[doc = " source Mac header"]
     pub dest: [::core::ffi::c_uchar; 6usize],
-
     #[doc = " destination Mac address"]
     pub src: [::core::ffi::c_uchar; 6usize],
-
     #[doc = " Ethernet type"]
     pub etype: ::core::ffi::c_ushort,
-
     #[doc = " Type of Service"]
     pub dscp_or_tos: ::core::ffi::c_uint,
-
     #[doc = " more frames queued"]
     pub more_data: ::core::ffi::c_uchar,
-
     #[doc = " End Of Service Period flag(applicable in U-APSD)"]
     pub eosp: ::core::ffi::c_uchar,
 }
-
 #[doc = " @brief This structure provides the information of each packet in the tx command.\n"]
 #[repr(C, packed)]
 #[derive(Debug, Copy, Clone)]
-
 pub struct tx_buff_info {
     #[doc = " Tx packet length"]
     pub pkt_length: ::core::ffi::c_ushort,
-
     #[doc = " Tx packet address"]
     pub ddr_ptr: ::core::ffi::c_uint,
 }
-
 #[doc = " @brief This structure provides the parameters for the tx command.\n"]
 #[repr(C, packed)]
-
 pub struct tx_buff {
     #[doc = " Command header @ref umac_head"]
     pub umac_head: umac_head,
-
     #[doc = " Interface id"]
     pub wdev_id: ::core::ffi::c_uchar,
-
     #[doc = " Descriptor id"]
     pub tx_desc_num: ::core::ffi::c_uchar,
-
     #[doc = " Common mac header for all packets in this command\n  @ref tx_mac_hdr_info"]
     pub mac_hdr_info: tx_mac_hdr_info,
-
     #[doc = " Pending buffer size at host to encode queue size\n  in qos control field of mac header in TWT enable case"]
     pub pending_buf_size: ::core::ffi::c_uint,
-
     #[doc = " Number of packets sending in this command"]
     pub num_tx_pkts: ::core::ffi::c_uchar,
-
     #[doc = " Each packets information @ref tx_buff_info"]
     pub tx_buff_info: __IncompleteArrayField<tx_buff_info>,
 }
-
 #[doc = " @brief This structure represents the Tx done event(CMD_TX_BUFF_DONE).\n"]
 #[repr(C, packed)]
-
 pub struct tx_buff_done {
     #[doc = " Header @ref umac_head"]
     pub umac_head: umac_head,
-
     #[doc = " Descriptor id"]
     pub tx_desc_num: ::core::ffi::c_uchar,
-
     #[doc = " Number of packets in this Tx done event"]
     pub num_tx_status_code: ::core::ffi::c_uchar,
-
     #[doc = " Frame sent time at Phy"]
     pub timestamp_t1: [::core::ffi::c_uchar; 6usize],
-
     #[doc = " Frame ack received time at Phy"]
     pub timestamp_t4: [::core::ffi::c_uchar; 6usize],
-
     #[doc = " Status of Tx packet. Maximum of MAX_TX_AGG_SIZE"]
     pub tx_status_code: __IncompleteArrayField<::core::ffi::c_uchar>,
 }
-
 #[repr(i32)]
 #[doc = " @brief This structure defines the type of received packet.\n"]
-#[derive(Debug, Copy, Clone, Hash, PartialEq, Eq)]
-#[derive(num_enum::TryFromPrimitive)]
+#[derive(Debug, Copy, Clone, Hash, PartialEq, Eq, num_enum::TryFromPrimitive)]
 pub enum rx_pkt_type {
     #[doc = " The Rx packet is of type data"]
     RX_PKT_DATA = 0,
-
     #[doc = " RX packet is beacon or probe response"]
     RX_PKT_BCN_PRB_RSP = 1,
 }
-
 #[doc = " @brief This structure provides information about the parameters in the RX data event.\n"]
 #[repr(C, packed)]
 #[derive(Debug, Copy, Clone)]
-
 pub struct rx_buff_info {
     #[doc = " Descriptor id"]
     pub descriptor_id: ::core::ffi::c_ushort,
-
     #[doc = " Rx packet length"]
     pub rx_pkt_len: ::core::ffi::c_ushort,
-
     #[doc = " type PKT_TYPE_MPDU/PKT_TYPE_MSDU_WITH_MAC/PKT_TYPE_MSDU"]
     pub pkt_type: ::core::ffi::c_uchar,
-
     #[doc = " Frame received time at Phy"]
     pub timestamp_t2: [::core::ffi::c_uchar; 6usize],
-
     #[doc = " Ack sent time at Phy"]
     pub timestamp_t3: [::core::ffi::c_uchar; 6usize],
 }
-
 #[doc = " @brief This structure represents RX data event(CMD_RX_BUFF).\n"]
 #[repr(C, packed)]
-
 pub struct rx_buff {
     #[doc = " Header @ref umac_head"]
     pub umac_head: umac_head,
-
     #[doc = " Rx packet type. see &enum rx_pkt_type"]
     pub rx_pkt_type: ::core::ffi::c_int,
-
     #[doc = " Interface id"]
     pub wdev_id: ::core::ffi::c_uchar,
-
     #[doc = " Number of packets in this event"]
     pub rx_pkt_cnt: ::core::ffi::c_uchar,
-
     #[doc = " Depricated"]
     pub reserved: ::core::ffi::c_uchar,
-
     #[doc = " MAC header length. Same for all packets in this event"]
     pub mac_header_len: ::core::ffi::c_uchar,
-
     #[doc = " Frequency on which this packet received"]
     pub frequency: ::core::ffi::c_ushort,
-
     #[doc = " signal strength"]
     pub signal: ::core::ffi::c_short,
-
     #[doc = " Information of each packet. @ref rx_buff_info"]
     pub rx_buff_info: __IncompleteArrayField<rx_buff_info>,
 }
-
 #[doc = " @brief This structure provides information about the carrier (interface) state.\n"]
 #[repr(C, packed)]
 #[derive(Debug, Copy, Clone)]
-
 pub struct data_carrier_state {
     #[doc = " Header @ref umac_head"]
     pub umac_head: umac_head,
-
     #[doc = " Interface id"]
     pub wdev_id: ::core::ffi::c_uint,
 }
-
 #[doc = " @brief This structure describes an event related to the power save state of the softap's client.\n  When the client is in PS mode (CLIENT_PS_MODE), the host should queue Tx packets.\n  When the client is in wakeup mode (CLIENT_ACTIVE), the host should send all\n  buffered and upcoming Tx packets.\n"]
 #[repr(C, packed)]
 #[derive(Debug, Copy, Clone)]
-
 pub struct sap_client_pwrsave {
     #[doc = " Header @ref umac_head"]
     pub umac_head: umac_head,
-
     #[doc = " Interface id"]
     pub wdev_id: ::core::ffi::c_uint,
-
     #[doc = " state CLIENT_ACTIVE or CLIENT_PS_MODE"]
     pub sta_ps_state: ::core::ffi::c_uchar,
-
     #[doc = " STA MAC Address"]
     pub mac_addr: [::core::ffi::c_uchar; 6usize],
 }
-
 #[doc = " @brief This structure represents an event that instructs the host to transmit a specific\n  number of frames that host queued when softap's client is in power save mode.\n  This event is primarily used when Softap's client operates in legacy power save mode.\n  In this scenario, the access point (AP) is required to send a single packet for every PS POLL\n  frame it receives from the client. Additionally, this mechanism will also be utilized in\n  UAPSD power save.\n"]
 #[repr(C, packed)]
 #[derive(Debug, Copy, Clone)]
-
 pub struct sap_ps_get_frames {
     #[doc = " Header @ref umac_head"]
     pub umac_head: umac_head,
-
     #[doc = " Interface id"]
     pub wdev_id: ::core::ffi::c_uint,
-
     #[doc = " STA MAC Address"]
     pub mac_addr: [::core::ffi::c_uchar; 6usize],
-
     #[doc = " Number of frames to be transmitted in this service period"]
     pub num_frames: ::core::ffi::c_schar,
 }
-
 #[repr(i32)]
 #[doc = " @brief The host can send the following commands to the RPU.\n"]
-#[derive(Debug, Copy, Clone, Hash, PartialEq, Eq)]
-#[derive(num_enum::TryFromPrimitive)]
+#[derive(Debug, Copy, Clone, Hash, PartialEq, Eq, num_enum::TryFromPrimitive)]
 pub enum umac_commands {
     #[doc = " Trigger a new scan @ref umac_cmd_scan"]
     UMAC_CMD_TRIGGER_SCAN = 0,
-
     #[doc = " Request for scan results @ref umac_cmd_get_scan_results"]
     UMAC_CMD_GET_SCAN_RESULTS = 1,
-
     #[doc = " Send authentication request to AP @ref umac_cmd_auth"]
     UMAC_CMD_AUTHENTICATE = 2,
-
     #[doc = " Send associate request to AP @ref umac_cmd_assoc"]
     UMAC_CMD_ASSOCIATE = 3,
-
     #[doc = " Send deauthentication request to AP @ref umac_cmd_disconn"]
     UMAC_CMD_DEAUTHENTICATE = 4,
-
     #[doc = " Set wiphy parameters @ref umac_cmd_set_wiphy"]
     UMAC_CMD_SET_WIPHY = 5,
-
     #[doc = " Add new key @ref umac_cmd_key"]
     UMAC_CMD_NEW_KEY = 6,
-
     #[doc = " Delete key @ref umac_cmd_key"]
     UMAC_CMD_DEL_KEY = 7,
-
     #[doc = " Set default key to use @ref umac_cmd_set_key"]
     UMAC_CMD_SET_KEY = 8,
-
     #[doc = " Unused"]
     UMAC_CMD_GET_KEY = 9,
-
     #[doc = " Unused"]
     UMAC_CMD_NEW_BEACON = 10,
-
     #[doc = " Change the beacon on an AP interface @ref umac_cmd_set_beacon"]
     UMAC_CMD_SET_BEACON = 11,
-
     #[doc = " Set the BSS @ref umac_cmd_set_bss"]
     UMAC_CMD_SET_BSS = 12,
-
     #[doc = " Start soft AP operation on an AP interface @ref umac_cmd_start_ap"]
     UMAC_CMD_START_AP = 13,
-
     #[doc = " Stop soft AP operation @ref umac_cmd_stop_ap"]
     UMAC_CMD_STOP_AP = 14,
-
     #[doc = " Create new interface @ref umac_cmd_add_vif"]
     UMAC_CMD_NEW_INTERFACE = 15,
-
     #[doc = " Change interface configuration @ref umac_cmd_chg_vif_attr"]
     UMAC_CMD_SET_INTERFACE = 16,
-
     #[doc = " Delete interface @ref umac_cmd_del_vif"]
     UMAC_CMD_DEL_INTERFACE = 17,
-
     #[doc = " Change interface flags @ref umac_cmd_chg_vif_state"]
     UMAC_CMD_SET_IFFLAGS = 18,
-
     #[doc = " Add a new station @ref umac_cmd_add_sta"]
     UMAC_CMD_NEW_STATION = 19,
-
     #[doc = " Delete station @ref umac_cmd_del_sta"]
     UMAC_CMD_DEL_STATION = 20,
-
     #[doc = " Change station info @ref umac_cmd_chg_sta"]
     UMAC_CMD_SET_STATION = 21,
-
     #[doc = " Get station info @ref umac_cmd_get_sta"]
     UMAC_CMD_GET_STATION = 22,
-
     #[doc = " Start the P2P device @ref cmd_start_p2p"]
     UMAC_CMD_START_P2P_DEVICE = 23,
-
     #[doc = " Stop the P2P device @ref umac_cmd_stop_p2p_dev"]
     UMAC_CMD_STOP_P2P_DEVICE = 24,
-
     #[doc = " Remain awake on the specified channel @ref umac_cmd_remain_on_channel"]
     UMAC_CMD_REMAIN_ON_CHANNEL = 25,
-
     #[doc = " Cancel a pending ROC duration @ref umac_cmd_cancel_remain_on_channel"]
     UMAC_CMD_CANCEL_REMAIN_ON_CHANNEL = 26,
-
     #[doc = " Unused"]
     UMAC_CMD_SET_CHANNEL = 27,
-
     #[doc = " Unused"]
     UMAC_CMD_RADAR_DETECT = 28,
-
     #[doc = " Whitelist filter based on frame types @ref umac_cmd_mgmt_frame_reg"]
     UMAC_CMD_REGISTER_FRAME = 29,
-
     #[doc = " Send a management frame @ref umac_cmd_mgmt_tx"]
     UMAC_CMD_FRAME = 30,
-
     #[doc = " Unused"]
     UMAC_CMD_JOIN_IBSS = 31,
-
     #[doc = " Unused"]
     UMAC_CMD_WIN_STA_CONNECT = 32,
-
     #[doc = " Power save Enable/Disable @ref umac_cmd_set_power_save"]
     UMAC_CMD_SET_POWER_SAVE = 33,
-
     #[doc = " Unused"]
     UMAC_CMD_SET_WOWLAN = 34,
-
     #[doc = " Unused"]
     UMAC_CMD_SUSPEND = 35,
-
     #[doc = " Unused"]
     UMAC_CMD_RESUME = 36,
-
     #[doc = " QOS map @ref umac_cmd_set_qos_map"]
     UMAC_CMD_SET_QOS_MAP = 37,
-
     #[doc = " Get Channel info @ref umac_cmd_get_channel"]
     UMAC_CMD_GET_CHANNEL = 38,
-
     #[doc = " Get Tx power level @ref umac_cmd_get_tx_power"]
     UMAC_CMD_GET_TX_POWER = 39,
-
     #[doc = " Get interface @ref cmd_get_interface"]
     UMAC_CMD_GET_INTERFACE = 40,
-
     #[doc = " Get Wiphy info @ref cmd_get_wiphy"]
     UMAC_CMD_GET_WIPHY = 41,
-
     #[doc = " Get hardware address @ref cmd_get_ifhwaddr"]
     UMAC_CMD_GET_IFHWADDR = 42,
-
     #[doc = " Set hardware address @ref cmd_set_ifhwaddr"]
     UMAC_CMD_SET_IFHWADDR = 43,
-
     #[doc = " Get regulatory domain @ref umac_cmd_get_reg"]
     UMAC_CMD_GET_REG = 44,
-
     #[doc = " Unused"]
     UMAC_CMD_SET_REG = 45,
-
     #[doc = " Set regulatory domain @ref  cmd_req_set_reg"]
     UMAC_CMD_REQ_SET_REG = 46,
-
     #[doc = " Config UAPSD @ref umac_cmd_config_uapsd"]
     UMAC_CMD_CONFIG_UAPSD = 47,
-
     #[doc = " Config TWT @ref umac_cmd_config_twt"]
     UMAC_CMD_CONFIG_TWT = 48,
-
     #[doc = " Teardown TWT @ref umac_cmd_teardown_twt"]
     UMAC_CMD_TEARDOWN_TWT = 49,
-
     #[doc = " Abort scan @ref umac_cmd_abort_scan"]
     UMAC_CMD_ABORT_SCAN = 50,
-
     #[doc = " Multicast filter @ref umac_cmd_mcast_filter"]
     UMAC_CMD_MCAST_FILTER = 51,
-
     #[doc = " Change macaddress @ref umac_cmd_change_macaddr"]
     UMAC_CMD_CHANGE_MACADDR = 52,
-
     #[doc = " Set powersave timeout @ref umac_cmd_set_power_save_timeout"]
     UMAC_CMD_SET_POWER_SAVE_TIMEOUT = 53,
-
     #[doc = " Get connection information @ref umac_cmd_conn_info"]
     UMAC_CMD_GET_CONNECTION_INFO = 54,
-
     #[doc = " Get power save information @ref umac_cmd_get_power_save_info"]
     UMAC_CMD_GET_POWER_SAVE_INFO = 55,
-
     #[doc = " Set listen interval @ref umac_cmd_set_listen_interval"]
     UMAC_CMD_SET_LISTEN_INTERVAL = 56,
-
     #[doc = " Configure extended power save @ref umac_cmd_config_extended_ps"]
     UMAC_CMD_CONFIG_EXTENDED_PS = 57,
 }
-
 #[repr(i32)]
 #[doc = " @brief The host can receive the following events from the RPU.\n"]
-#[derive(Debug, Copy, Clone, Hash, PartialEq, Eq)]
-#[derive(num_enum::TryFromPrimitive)]
+#[derive(Debug, Copy, Clone, Hash, PartialEq, Eq, num_enum::TryFromPrimitive)]
 pub enum umac_events {
     UMAC_EVENT_UNSPECIFIED = 256,
-
     #[doc = " Indicate scan started @ref umac_event_trigger_scan"]
     UMAC_EVENT_TRIGGER_SCAN_START = 257,
-
     #[doc = " Unused"]
     UMAC_EVENT_SCAN_ABORTED = 258,
-
     #[doc = " Indicate scan done @ref umac_event_scan_done"]
     UMAC_EVENT_SCAN_DONE = 259,
-
     #[doc = " Scan result event @ref umac_event_new_scan_results"]
     UMAC_EVENT_SCAN_RESULT = 260,
-
     #[doc = " Authentication status @ref umac_event_mlme"]
     UMAC_EVENT_AUTHENTICATE = 261,
-
     #[doc = " Association status @ref umac_event_mlme"]
     UMAC_EVENT_ASSOCIATE = 262,
-
     #[doc = " Unused"]
     UMAC_EVENT_CONNECT = 263,
-
     #[doc = " Station deauth event @ref umac_event_mlme"]
     UMAC_EVENT_DEAUTHENTICATE = 264,
-
     #[doc = " Station disassoc event @ref umac_event_mlme"]
     UMAC_EVENT_DISASSOCIATE = 265,
-
     #[doc = " Station added indication @ref umac_event_new_station"]
     UMAC_EVENT_NEW_STATION = 266,
-
     #[doc = " Station added indication @ref umac_event_new_station"]
     UMAC_EVENT_DEL_STATION = 267,
-
     #[doc = " Station info indication @ref umac_event_new_station"]
     UMAC_EVENT_GET_STATION = 268,
-
     #[doc = " remain on channel event @ref event_remain_on_channel"]
     UMAC_EVENT_REMAIN_ON_CHANNEL = 269,
-
     #[doc = " Unused"]
     UMAC_EVENT_CANCEL_REMAIN_ON_CHANNEL = 270,
-
     #[doc = " Unused"]
     UMAC_EVENT_DISCONNECT = 271,
-
     #[doc = " RX management frame @ref umac_event_mlme"]
     UMAC_EVENT_FRAME = 272,
-
     #[doc = " Cookie mapping for UMAC_CMD_FRAME @ref umac_event_cookie_rsp"]
     UMAC_EVENT_COOKIE_RESP = 273,
-
     #[doc = " TX management frame transmitted @ref umac_event_mlme"]
     UMAC_EVENT_FRAME_TX_STATUS = 274,
-
     #[doc = " @ref umac_event_vif_state"]
     UMAC_EVENT_IFFLAGS_STATUS = 275,
-
     #[doc = " Send Tx power @ref umac_event_get_tx_power"]
     UMAC_EVENT_GET_TX_POWER = 276,
-
     #[doc = " Send Channel info @ref umac_event_get_channel"]
     UMAC_EVENT_GET_CHANNEL = 277,
-
     #[doc = " @ref umac_event_set_interface"]
     UMAC_EVENT_SET_INTERFACE = 278,
-
     #[doc = " @ref umac_event_mlme"]
     UMAC_EVENT_UNPROT_DEAUTHENTICATE = 279,
-
     #[doc = " @ref umac_event_mlme"]
     UMAC_EVENT_UNPROT_DISASSOCIATE = 280,
-
     #[doc = " @ref interface_info"]
     UMAC_EVENT_NEW_INTERFACE = 281,
-
     #[doc = " @ref event_get_wiphy"]
     UMAC_EVENT_NEW_WIPHY = 282,
-
     #[doc = " Unused"]
     UMAC_EVENT_GET_IFHWADDR = 283,
-
     #[doc = " Get regulatory @ref reg"]
     UMAC_EVENT_GET_REG = 284,
-
     #[doc = " Unused"]
     UMAC_EVENT_SET_REG = 285,
-
     #[doc = " Unused"]
     UMAC_EVENT_REQ_SET_REG = 286,
-
     #[doc = " Unused"]
     UMAC_EVENT_GET_KEY = 287,
-
     #[doc = " Unused"]
     UMAC_EVENT_BEACON_HINT = 288,
-
     #[doc = " Unused"]
     UMAC_EVENT_REG_CHANGE = 289,
-
     #[doc = " Unused"]
     UMAC_EVENT_WIPHY_REG_CHANGE = 290,
-
     #[doc = " Display scan result @ref umac_event_new_scan_display_results"]
     UMAC_EVENT_SCAN_DISPLAY_RESULT = 291,
-
     #[doc = " @ref umac_event_cmd_status"]
     UMAC_EVENT_CMD_STATUS = 292,
-
     #[doc = " @ref umac_event_new_scan_results"]
     UMAC_EVENT_BSS_INFO = 293,
-
     #[doc = " Send TWT response information @ref umac_cmd_config_twt"]
     UMAC_EVENT_CONFIG_TWT = 294,
-
     #[doc = " Send TWT teardown information @ref umac_cmd_teardown_twt"]
     UMAC_EVENT_TEARDOWN_TWT = 295,
-
     #[doc = " Send block or unblock state @ref umac_event_twt_sleep"]
     UMAC_EVENT_TWT_SLEEP = 296,
-
     #[doc = " Unused"]
     UMAC_EVENT_COALESCING = 297,
-
     #[doc = " Unused"]
     UMAC_EVENT_MCAST_FILTER = 298,
-
     #[doc = " send connection information @ref umac_event_conn_info."]
     UMAC_EVENT_GET_CONNECTION_INFO = 299,
-
     #[doc = " @ref umac_event_power_save_info"]
     UMAC_EVENT_GET_POWER_SAVE_INFO = 300,
 }
-
 #[repr(i32)]
 #[doc = " @brief Represents the values that can be used to specify the frequency band.\n"]
-#[derive(Debug, Copy, Clone, Hash, PartialEq, Eq)]
-#[derive(num_enum::TryFromPrimitive)]
+#[derive(Debug, Copy, Clone, Hash, PartialEq, Eq, num_enum::TryFromPrimitive)]
 pub enum band {
     #[doc = " 2.4 GHz ISM band"]
     BAND_2GHZ = 0,
-
     #[doc = " Around 5 GHz band (4.9 - 5.7 GHz)"]
     BAND_5GHZ = 1,
-
     #[doc = " Unused"]
     BAND_60GHZ = 2,
-
     #[doc = " Invalid"]
     BAND_INVALID = 3,
 }
-
 #[repr(i32)]
 #[doc = " @brief Enable or Disable Management Frame Protection.\n"]
-#[derive(Debug, Copy, Clone, Hash, PartialEq, Eq)]
-#[derive(num_enum::TryFromPrimitive)]
+#[derive(Debug, Copy, Clone, Hash, PartialEq, Eq, num_enum::TryFromPrimitive)]
 pub enum mfp {
     #[doc = " Management frame protection not used"]
     MFP_NO = 0,
-
     #[doc = " Management frame protection required"]
     MFP_REQUIRED = 1,
 }
-
 #[repr(i32)]
 #[doc = " @brief Enumerates the various categories of security keys.\n"]
-#[derive(Debug, Copy, Clone, Hash, PartialEq, Eq)]
-#[derive(num_enum::TryFromPrimitive)]
+#[derive(Debug, Copy, Clone, Hash, PartialEq, Eq, num_enum::TryFromPrimitive)]
 pub enum key_type {
     #[doc = " Group (broadcast/multicast) key"]
     KEYTYPE_GROUP = 0,
-
     #[doc = " Pairwise (unicast/individual) key"]
     KEYTYPE_PAIRWISE = 1,
-
     #[doc = " Peer key (DLS)"]
     KEYTYPE_PEERKEY = 2,
-
     #[doc = " Number of defined key types"]
     NUM_KEYTYPES = 3,
 }
-
 impl auth_type {
     pub const AUTHTYPE_MAX: auth_type = auth_type::__AUTHTYPE_NUM;
 }
-
 #[repr(i32)]
 #[doc = " @brief Enumerates the various types of authentication mechanisms.\n"]
-#[derive(Debug, Copy, Clone, Hash, PartialEq, Eq)]
-#[derive(num_enum::TryFromPrimitive)]
+#[derive(Debug, Copy, Clone, Hash, PartialEq, Eq, num_enum::TryFromPrimitive)]
 pub enum auth_type {
     #[doc = " Open System authentication"]
     AUTHTYPE_OPEN_SYSTEM = 0,
-
     #[doc = " Shared Key authentication (WEP only)"]
     AUTHTYPE_SHARED_KEY = 1,
-
     #[doc = " Fast BSS Transition (IEEE 802.11r)"]
     AUTHTYPE_FT = 2,
-
     #[doc = " Network EAP (some Cisco APs and mainly LEAP)"]
     AUTHTYPE_NETWORK_EAP = 3,
-
     #[doc = " Simultaneous authentication of equals"]
     AUTHTYPE_SAE = 4,
-
     #[doc = " Internal"]
     __AUTHTYPE_NUM = 5,
-
     #[doc = " Determine automatically (if necessary by trying multiple times)"]
     AUTHTYPE_AUTOMATIC = 6,
 }
-
 #[repr(i32)]
 #[doc = " @brief Represents the interface's status concerning this BSS (Basic Service Set).\n"]
-#[derive(Debug, Copy, Clone, Hash, PartialEq, Eq)]
-#[derive(num_enum::TryFromPrimitive)]
+#[derive(Debug, Copy, Clone, Hash, PartialEq, Eq, num_enum::TryFromPrimitive)]
 pub enum bss_status {
     #[doc = " Authenticated with this BSS\n Note that this is no longer used since cfg80211 no longer\n keeps track of whether or not authentication was done with\n a given BSS."]
     BSS_STATUS_AUTHENTICATED = 0,
-
     #[doc = " Associated with this BSS"]
     BSS_STATUS_ASSOCIATED = 1,
-
     #[doc = " Joined to this IBSS"]
     BSS_STATUS_IBSS_JOINED = 2,
 }
-
 #[repr(i32)]
 #[doc = " @brief Enumerates the various categories of channels.\n"]
-#[derive(Debug, Copy, Clone, Hash, PartialEq, Eq)]
-#[derive(num_enum::TryFromPrimitive)]
+#[derive(Debug, Copy, Clone, Hash, PartialEq, Eq, num_enum::TryFromPrimitive)]
 pub enum channel_type {
     #[doc = " 20 MHz, non-HT channel"]
     CHAN_NO_HT = 0,
-
     #[doc = " 20 MHz HT channel"]
     CHAN_HT20 = 1,
-
     #[doc = " HT40 channel, secondary channel below the control channel"]
     CHAN_HT40MINUS = 2,
-
     #[doc = " HT40 channel, secondary channel above the control channel"]
     CHAN_HT40PLUS = 3,
 }
-
 #[repr(i32)]
 #[doc = " @brief Enumerates the various channel widths available.\n"]
-#[derive(Debug, Copy, Clone, Hash, PartialEq, Eq)]
-#[derive(num_enum::TryFromPrimitive)]
+#[derive(Debug, Copy, Clone, Hash, PartialEq, Eq, num_enum::TryFromPrimitive)]
 pub enum chan_width {
     #[doc = " 20 MHz, non-HT channel"]
     CHAN_WIDTH_20_NOHT = 0,
-
     #[doc = " 20 MHz HT channel"]
     CHAN_WIDTH_20 = 1,
-
     #[doc = " 40 MHz channel, the @ref %ATTR_CENTER_FREQ1 must be provided as well"]
     CHAN_WIDTH_40 = 2,
-
     #[doc = " 80 MHz channel, the @ref %ATTR_CENTER_FREQ1 must be provided as well"]
     CHAN_WIDTH_80 = 3,
-
     #[doc = " 80+80 MHz channel, the @ref %ATTR_CENTER_FREQ1 and\n  @ref %ATTR_CENTER_FREQ2 must be provided as well"]
     CHAN_WIDTH_80P80 = 4,
-
     #[doc = " 160 MHz channel, the %ATTR_CENTER_FREQ1 must be provided as well"]
     CHAN_WIDTH_160 = 5,
-
     #[doc = "  5 MHz OFDM channel"]
     CHAN_WIDTH_5 = 6,
-
     #[doc = " 10 MHz OFDM channel"]
     CHAN_WIDTH_10 = 7,
 }
-
 impl iftype {
     pub const IFTYPE_MAX: iftype = iftype::IFTYPE_OCB;
 }
-
 #[repr(i32)]
 #[doc = " @brief Interface types based on functionality.\n"]
-#[derive(Debug, Copy, Clone, Hash, PartialEq, Eq)]
-#[derive(num_enum::TryFromPrimitive)]
+#[derive(Debug, Copy, Clone, Hash, PartialEq, Eq, num_enum::TryFromPrimitive)]
 pub enum iftype {
     #[doc = " Unspecified type, driver decides"]
     IFTYPE_UNSPECIFIED = 0,
-
     #[doc = " Not Supported"]
     IFTYPE_ADHOC = 1,
-
     #[doc = " Managed BSS member"]
     IFTYPE_STATION = 2,
-
     #[doc = " Access point"]
     IFTYPE_AP = 3,
-
     #[doc = " Not Supported"]
     IFTYPE_AP_VLAN = 4,
-
     #[doc = " Not Supported"]
     IFTYPE_WDS = 5,
-
     #[doc = " Not Supported"]
     IFTYPE_MONITOR = 6,
-
     #[doc = " Not Supported"]
     IFTYPE_MESH_POINT = 7,
-
     #[doc = " P2P client"]
     IFTYPE_P2P_CLIENT = 8,
-
     #[doc = " P2P group owner"]
     IFTYPE_P2P_GO = 9,
-
     #[doc = " P2P device use the @ref %UMAC_CMD_START_P2P_DEVICE &\n  @ref %UMAC_CMD_STOP_P2P_DEVICE commands to create and destroy one"]
     IFTYPE_P2P_DEVICE = 10,
-
     #[doc = " Not Supported"]
     IFTYPE_OCB = 11,
-
     #[doc = " Highest interface type number currently defined"]
     NUM_IFTYPES = 12,
 }
-
 #[repr(i32)]
 #[doc = " @brief Powersave state.\n"]
-#[derive(Debug, Copy, Clone, Hash, PartialEq, Eq)]
-#[derive(num_enum::TryFromPrimitive)]
+#[derive(Debug, Copy, Clone, Hash, PartialEq, Eq, num_enum::TryFromPrimitive)]
 pub enum ps_state {
     #[doc = " powersave is disabled"]
     PS_DISABLED = 0,
-
     #[doc = " powersave is enabled"]
     PS_ENABLED = 1,
 }
-
 #[repr(i32)]
 #[doc = " @brief WLAN security types.\n"]
-#[derive(Debug, Copy, Clone, Hash, PartialEq, Eq)]
-#[derive(num_enum::TryFromPrimitive)]
+#[derive(Debug, Copy, Clone, Hash, PartialEq, Eq, num_enum::TryFromPrimitive)]
 pub enum security_type {
     #[doc = " OPEN"]
     OPEN = 0,
-
     #[doc = " WEP"]
     WEP = 1,
-
     #[doc = " WPA"]
     WPA = 2,
-
     #[doc = " WPA2"]
     WPA2 = 3,
-
     #[doc = " WPA3"]
     WPA3 = 4,
-
     #[doc = " WAPI"]
     WAPI = 5,
-
     #[doc = " Enterprise mode"]
     EAP = 6,
-
     #[doc = " WPA2 sha 256"]
     WPA2_256 = 7,
 }
-
 #[repr(i32)]
 #[doc = " @brief Denotes the originator of a regulatory domain request.\n"]
-#[derive(Debug, Copy, Clone, Hash, PartialEq, Eq)]
-#[derive(num_enum::TryFromPrimitive)]
+#[derive(Debug, Copy, Clone, Hash, PartialEq, Eq, num_enum::TryFromPrimitive)]
 pub enum reg_initiator {
     #[doc = " Core queried CRDA for a dynamic world regulatory domain"]
     REGDOM_SET_BY_CORE = 0,
-
     #[doc = " User asked the wireless core to set the regulatory domain"]
     REGDOM_SET_BY_USER = 1,
-
     #[doc = " A wireless drivers has hinted to the wireless core it thinks\n its knows the regulatory domain we should be in"]
     REGDOM_SET_BY_DRIVER = 2,
-
     #[doc = " the wireless core has received an\n 802.11 country information element with regulatory information it\n thinks we should consider. cfg80211 only processes the country\n code from the IE, and relies on the regulatory domain information\n structure passed by userspace (CRDA) from our wireless-regdb\n If a channel is enabled but the country code indicates it should\n be disabled we disable the channel and re-enable it upon disassociation"]
     REGDOM_SET_BY_COUNTRY_IE = 3,
 }
-
 #[repr(i32)]
 #[doc = " @brief Specifies the type of regulatory domain.\n"]
-#[derive(Debug, Copy, Clone, Hash, PartialEq, Eq)]
-#[derive(num_enum::TryFromPrimitive)]
+#[derive(Debug, Copy, Clone, Hash, PartialEq, Eq, num_enum::TryFromPrimitive)]
 pub enum reg_type {
     #[doc = " the regulatory domain set is one that pertains\n to a specific country. When this is set you can count on the\n ISO / IEC 3166 alpha2 country code being valid.\n"]
     REGDOM_TYPE_COUNTRY = 0,
-
     #[doc = " the regulatory set domain is the world regulatory domain"]
     REGDOM_TYPE_WORLD = 1,
-
     #[doc = " the regulatory domain set is a custom\n driver specific world regulatory domain. These do not apply system-wide\n and are only applicable to the individual devices which have requested\n them to be applied."]
     REGDOM_TYPE_CUSTOM_WORLD = 2,
-
     #[doc = " the regulatory domain set is the product\n of an intersection between two regulatory domains -- the previously\n set regulatory domain on the system and the last accepted regulatory\n domain request to be processed."]
     REGDOM_TYPE_INTERSECTION = 3,
 }
-
 #[doc = " @brief This structure provides details about the SSID.\n"]
 #[repr(C, packed)]
 #[derive(Debug, Copy, Clone)]
-
 pub struct ssid {
     #[doc = " length of SSID"]
     pub ssid_len: ::core::ffi::c_uchar,
-
     #[doc = " SSID string"]
     pub ssid: [::core::ffi::c_uchar; 32usize],
 }
-
 #[doc = " @brief This structure contains data related to the Information Elements (IEs).\n"]
 #[repr(C, packed)]
 #[derive(Debug, Copy, Clone)]
-
 pub struct ie {
     #[doc = " length of IE"]
     pub ie_len: ::core::ffi::c_ushort,
-
     #[doc = " Information element data"]
     pub ie: [::core::ffi::c_schar; 400usize],
 }
-
 #[doc = " @brief Transmit key sequence number.\n"]
 #[repr(C, packed)]
 #[derive(Debug, Copy, Clone)]
-
 pub struct seq {
     #[doc = " Length of the seq parameter"]
     pub seq_len: ::core::ffi::c_int,
-
     #[doc = " Key sequence number data"]
     pub seq: [::core::ffi::c_uchar; 256usize],
 }
-
 #[doc = " @brief This structure holds information related to a security key.\n"]
 #[repr(C, packed)]
 #[derive(Debug, Copy, Clone)]
-
 pub struct key {
     #[doc = " Length of the key data"]
     pub key_len: ::core::ffi::c_uint,
-
     #[doc = " Key data"]
     pub key: [::core::ffi::c_uchar; 256usize],
 }
-
 #[doc = " @brief This structure represents SAE elements in Authentication frame.\n"]
 #[repr(C, packed)]
 #[derive(Debug, Copy, Clone)]
-
 pub struct sae {
     #[doc = " Length of SAE element data"]
     pub sae_data_len: ::core::ffi::c_int,
-
     #[doc = " SAE element data"]
     pub sae_data: [::core::ffi::c_uchar; 256usize],
 }
-
 #[doc = " @brief This structure defines the frame that is intended for transmission.\n"]
 #[repr(C, packed)]
 #[derive(Debug, Copy, Clone)]
-
 pub struct frame {
     #[doc = " Length of the frame"]
     pub frame_len: ::core::ffi::c_int,
-
     #[doc = " frame data"]
     pub frame: [::core::ffi::c_schar; 400usize],
 }
-
 #[doc = " @brief This structure contains details about the interface information.\n"]
 #[repr(C, packed)]
 #[derive(Debug, Copy, Clone)]
-
 pub struct index_ids {
     #[doc = " Indicate which properties below are set"]
     pub valid_fields: ::core::ffi::c_uint,
-
     #[doc = " wdev id"]
     pub ifaceindex: ::core::ffi::c_int,
-
     #[doc = " Unused"]
     pub wiphy_idx: ::core::ffi::c_int,
-
     #[doc = " Unused"]
     pub wdev_id: ::core::ffi::c_ulonglong,
 }
-
 #[doc = " @brief This structure provides information about the rate parameters.\n"]
 #[repr(C, packed)]
 #[derive(Debug, Copy, Clone)]
-
 pub struct supp_rates {
     #[doc = " Indicate which of the following parameters are valid"]
     pub valid_fields: ::core::ffi::c_uint,
-
     #[doc = " Frequency band, see &enum band"]
     pub band: ::core::ffi::c_int,
-
     #[doc = " Number of values in rates parameter"]
     pub num_rates: ::core::ffi::c_int,
-
     #[doc = " List of supported rates as defined by IEEE 802.11 7.3.2.2"]
     pub rates: [::core::ffi::c_uchar; 60usize],
 }
-
 #[doc = " @brief This structure contains details about a channel's information.\n"]
 #[repr(C, packed)]
 #[derive(Debug, Copy, Clone)]
-
 pub struct channel {
     #[doc = " band this channel belongs to"]
     pub band: ::core::ffi::c_int,
-
     #[doc = " center frequency in MHz"]
     pub center_frequency: ::core::ffi::c_uint,
-
     #[doc = " channel flags from see &enum channel_flags"]
     pub flags: ::core::ffi::c_uint,
-
     #[doc = " maximum antenna gain in dBi"]
     pub max_antenna_gain: ::core::ffi::c_int,
-
     #[doc = " maximum transmission power (in dBm)"]
     pub max_power: ::core::ffi::c_int,
-
     #[doc = " maximum regulatory transmission power (in dBm)"]
     pub max_reg_power: ::core::ffi::c_int,
-
     #[doc = " channel flags at registration time, used by regulatory\n  code to support devices with additional restrictions"]
     pub orig_flags: ::core::ffi::c_uint,
-
     #[doc = " internal use"]
     pub orig_mag: ::core::ffi::c_int,
-
     #[doc = " internal use"]
     pub orig_mpwr: ::core::ffi::c_int,
-
     #[doc = " hardware-specific value for the channel"]
     pub hw_value: ::core::ffi::c_ushort,
-
     #[doc = " helper to regulatory code to indicate when a beacon\n  has been found on this channel. Use regulatory_hint_found_beacon()\n  to enable this, this is useful only on 5 GHz band."]
     pub beacon_found: ::core::ffi::c_schar,
 }
-
 #[doc = " @brief This structure provides details about the parameters required for a scan request.\n"]
 #[repr(C, packed)]
-
 pub struct scan_params {
     #[doc = " If 0x1, RPU force passive scan on all channels"]
     pub passive_scan: ::core::ffi::c_ushort,
-
     #[doc = " Number of ssid's in scan_ssids parameter"]
     pub num_scan_ssids: ::core::ffi::c_uchar,
-
     #[doc = " Specific SSID's to scan for"]
     pub scan_ssids: [ssid; 2usize],
-
     #[doc = " used to send probe requests at non CCK rate in 2GHz band"]
     pub no_cck: ::core::ffi::c_uchar,
-
     #[doc = "  Bitmap of bands to be scanned. Value Zero will scan both 2.4 and 5 GHZ"]
     pub bands: ::core::ffi::c_uchar,
-
     #[doc = " Information element(s) data @ref ie"]
     pub ie: ie,
-
     #[doc = " MAC address"]
     pub mac_addr: [::core::ffi::c_uchar; 6usize],
-
     #[doc = " Max scan duration in active scan. If zero rpu programs 50msec"]
     pub dwell_time_active: ::core::ffi::c_ushort,
-
     #[doc = " Max scan duration in passive scan. If zero rpu programs 150msec"]
     pub dwell_time_passive: ::core::ffi::c_ushort,
-
     #[doc = " Number of channels to be scanned"]
     pub num_scan_channels: ::core::ffi::c_ushort,
-
     #[doc = " specific channels to be scanned"]
     pub center_frequency: __IncompleteArrayField<::core::ffi::c_uint>,
 }
-
 #[doc = " @brief This structure contains specific information about the VHT (Very High Throughput)\n  and HT ((High Throughput)) capabilities.\n"]
 #[repr(C, packed)]
 #[derive(Debug, Copy, Clone)]
-
 pub struct ht_vht_capabilities {
     #[doc = " Indicate which of the following parameters are valid"]
     pub valid_fields: ::core::ffi::c_uint,
-
     #[doc = " Indicate which capabilities have been specified"]
     pub flags: ::core::ffi::c_ushort,
-
     #[doc = " HT Capability information element (from association request when\n  used with UMAC_CMD_NEW_STATION)."]
     pub ht_capability: [::core::ffi::c_uchar; 256usize],
-
     #[doc = " Specify which bits of the ht_capability are masked"]
     pub ht_capability_mask: [::core::ffi::c_uchar; 256usize],
-
     #[doc = " VHT Capability information element"]
     pub vht_capability: [::core::ffi::c_uchar; 256usize],
-
     #[doc = " Specify which bits in vht_capability to which attention should be paid"]
     pub vht_capability_mask: [::core::ffi::c_uchar; 256usize],
 }
-
 #[doc = " @brief This structure represents information related to the signal strength.\n"]
 #[repr(C, packed)]
 #[derive(Copy, Clone)]
-
 pub struct signal {
     #[doc = " MBM or unspecified"]
     pub signal_type: ::core::ffi::c_uint,
-
     pub signal: signal__bindgen_ty_1,
 }
-
 #[doc = " signal"]
 #[repr(C, packed)]
 #[derive(Copy, Clone)]
-
 pub union signal__bindgen_ty_1 {
     #[doc = " If MBM signal strength of probe response/beacon\n  in mBm (100 * dBm) (s32)"]
     pub mbm_signal: ::core::ffi::c_uint,
-
     #[doc = " If unspecified signal strength of the probe response/beacon\n  in unspecified units, scaled to 0..100 (u8)."]
     pub unspec_signal: ::core::ffi::c_uchar,
 }
-
 #[doc = " @brief This structure contains parameters related to the connection.\n"]
 #[repr(C, packed)]
 #[derive(Debug, Copy, Clone)]
-
 pub struct connect_common_info {
     #[doc = " Indicate which of the following parameters are valid"]
     pub valid_fields: ::core::ffi::c_uint,
-
     #[doc = " Frequency of the selected channel in MHz"]
     pub frequency: ::core::ffi::c_uint,
-
     #[doc = " Frequency of the recommended initial BSS"]
     pub freq_hint: ::core::ffi::c_uint,
-
     #[doc = " Indicates which WPA version(s)"]
     pub wpa_versions: ::core::ffi::c_uint,
-
     #[doc = " Number of pairwise cipher suites"]
     pub num_cipher_suites_pairwise: ::core::ffi::c_int,
-
     #[doc = " For crypto settings, indicates which pairwise cipher suites are used"]
     pub cipher_suites_pairwise: [::core::ffi::c_uint; 7usize],
-
     #[doc = " For crypto settings, indicates which group cipher suite is used"]
     pub cipher_suite_group: ::core::ffi::c_uint,
-
     #[doc = " Number of groupwise cipher suites"]
     pub num_akm_suites: ::core::ffi::c_uint,
-
     #[doc = " Indicate which key management algorithm(s) to use"]
     pub akm_suites: [::core::ffi::c_uint; 2usize],
-
     #[doc = " Whether management frame protection (IEEE 802.11w) is used for the association"]
     pub use_mfp: ::core::ffi::c_int,
-
     #[doc = " Flag for indicating whether the current connection\n  shall support Radio Resource Measurements (11k)"]
     pub flags: ::core::ffi::c_uint,
-
     #[doc = " Background scan period in seconds or 0 to disable background scan"]
     pub bg_scan_period: ::core::ffi::c_ushort,
-
     #[doc = " MAC address"]
     pub mac_addr: [::core::ffi::c_uchar; 6usize],
-
     #[doc = " MAC address recommendation as initial BSS"]
     pub mac_addr_hint: [::core::ffi::c_uchar; 6usize],
-
     #[doc = " SSID (binary attribute, 0..32 octets)"]
     pub ssid: ssid,
-
     #[doc = " IE's @ref ie"]
     pub wpa_ie: ie,
-
     #[doc = " VHT Capability information element @ref ht_vht_capabilities"]
     pub ht_vht_capabilities: ht_vht_capabilities,
-
     #[doc = " A 16-bit value indicating the ethertype that will be used for key negotiation.\n  If it is not specified, the value defaults to 0x888E."]
     pub control_port_ether_type: ::core::ffi::c_ushort,
-
     #[doc = " When included along with control_port_ether_type, indicates that the custom\n  ethertype frames used for key negotiation must not be encrypted."]
     pub control_port_no_encrypt: ::core::ffi::c_uchar,
-
     #[doc = " Indicating whether user space controls IEEE 802.1X port, If set, the RPU will\n  assume that the port is unauthorized until authorized by user space.\n  Otherwise, port is marked authorized by default in station mode."]
     pub control_port: ::core::ffi::c_schar,
-
     #[doc = " previous BSSID, used to specify a request to reassociate\n  within an ESS that is, to use Reassociate Request frame (with the value of\n  this attribute in the Current AP address field) instead of Association\n  Request frame which is used for the initial association to an ESS."]
     pub prev_bssid: [::core::ffi::c_uchar; 6usize],
-
     #[doc = " Bss max idle timeout value in sec which will be encapsulated into\n  BSS MAX IDLE IE in assoc request frame."]
     pub maxidle_insec: ::core::ffi::c_ushort,
 }
-
 #[doc = " @brief This structure provides information about beacon and probe data.\n"]
 #[repr(C, packed)]
 #[derive(Debug, Copy, Clone)]
-
 pub struct beacon_data {
     #[doc = " length of head"]
     pub head_len: ::core::ffi::c_uint,
-
     #[doc = " length of tail"]
     pub tail_len: ::core::ffi::c_uint,
-
     #[doc = " length of probe response template (probe_resp)"]
     pub probe_resp_len: ::core::ffi::c_uint,
-
     #[doc = "  head portion of beacon (before TIM IE) or %NULL if not changed"]
     pub head: [::core::ffi::c_uchar; 256usize],
-
     #[doc = " tail portion of beacon (after TIM IE) or %NULL if not changed"]
     pub tail: [::core::ffi::c_uchar; 512usize],
-
     #[doc = " probe response template"]
     pub probe_resp: [::core::ffi::c_uchar; 400usize],
 }
-
 #[doc = " @brief This structure provides information regarding station flags.\n"]
 #[repr(C, packed)]
 #[derive(Debug, Copy, Clone)]
-
 pub struct sta_flag_update {
     #[doc = " Mask of station flags to set"]
     pub mask: ::core::ffi::c_uint,
-
     #[doc = " Values to set them to. STA_FLAG_AUTHORIZED"]
     pub set: ::core::ffi::c_uint,
 }
-
 #[doc = " @brief This structure contains information about rate parameters.\n"]
 #[repr(C, packed)]
 #[derive(Debug, Copy, Clone)]
-
 pub struct rate_info {
     #[doc = " Valid fields with in this structure"]
     pub valid_fields: ::core::ffi::c_uint,
-
     #[doc = " bitrate"]
     pub bitrate: ::core::ffi::c_uint,
-
     #[doc = " Bitrate compatible"]
     pub bitrate_compat: ::core::ffi::c_ushort,
-
     #[doc = " Modulation and Coding Scheme(MCS)"]
     pub mcs: ::core::ffi::c_uchar,
-
     #[doc = " MCS related to VHT"]
     pub vht_mcs: ::core::ffi::c_uchar,
-
     #[doc = " NSS related to VHT"]
     pub vht_nss: ::core::ffi::c_uchar,
-
     #[doc = " Rate flags RATE_INFO_0_MHZ_WIDTH"]
     pub flags: ::core::ffi::c_uint,
 }
-
 #[doc = " @brief This structure provides information about the Basic Service Set (BSS)\n  parameters for the attached station.\n"]
 #[repr(C, packed)]
 #[derive(Debug, Copy, Clone)]
-
 pub struct sta_bss_parameters {
     #[doc = " bitfields of flags BSS_PARAM_FLAGS_CTS_PROT"]
     pub flags: ::core::ffi::c_uchar,
-
     #[doc = " DTIM period for the BSS"]
     pub dtim_period: ::core::ffi::c_uchar,
-
     #[doc = " beacon interval"]
     pub beacon_interval: ::core::ffi::c_ushort,
 }
-
 #[doc = " @brief This structure contains information about a Station (STA).\n"]
 #[repr(C, packed)]
 #[derive(Debug, Copy, Clone)]
-
 pub struct sta_info {
     #[doc = " Valid fields with in this structure"]
     pub valid_fields: ::core::ffi::c_uint,
-
     #[doc = " time since the station is last connected"]
     pub connected_time: ::core::ffi::c_uint,
-
     #[doc = " time since last activity, in msec"]
     pub inactive_time: ::core::ffi::c_uint,
-
     #[doc = " total received bytes from this station"]
     pub rx_bytes: ::core::ffi::c_uint,
-
     #[doc = " total transmitted bytes to this station"]
     pub tx_bytes: ::core::ffi::c_uint,
-
     #[doc = " per-chain signal mask value"]
     pub chain_signal_mask: ::core::ffi::c_uint,
-
     #[doc = " per-chain signal strength of last PPDU"]
     pub chain_signal: [::core::ffi::c_uchar; 4usize],
-
     #[doc = " per-chain signal strength average mask value"]
     pub chain_signal_avg_mask: ::core::ffi::c_uint,
-
     #[doc = " per-chain signal strength average"]
     pub chain_signal_avg: [::core::ffi::c_uchar; 4usize],
-
     #[doc = "@ref rate_info"]
     pub tx_bitrate: rate_info,
-
     #[doc = "@ref rate_info"]
     pub rx_bitrate: rate_info,
-
     #[doc = " Not used"]
     pub llid: ::core::ffi::c_ushort,
-
     #[doc = " Not used"]
     pub plid: ::core::ffi::c_ushort,
-
     #[doc = " Not used"]
     pub plink_state: ::core::ffi::c_uchar,
-
     #[doc = " signal strength of last received PPDU, in dbm"]
     pub signal: ::core::ffi::c_int,
-
     #[doc = " signal strength average, in dbm"]
     pub signal_avg: ::core::ffi::c_int,
-
     #[doc = " total received packet from this station"]
     pub rx_packets: ::core::ffi::c_uint,
-
     #[doc = " total transmitted packets to this station"]
     pub tx_packets: ::core::ffi::c_uint,
-
     #[doc = " total retries to this station"]
     pub tx_retries: ::core::ffi::c_uint,
-
     #[doc = " total failed packets to this station"]
     pub tx_failed: ::core::ffi::c_uint,
-
     #[doc = " expected throughput in kbps"]
     pub expected_throughput: ::core::ffi::c_uint,
-
     #[doc = " count of times beacon loss was detected"]
     pub beacon_loss_count: ::core::ffi::c_uint,
-
     #[doc = " Not used"]
     pub local_pm: ::core::ffi::c_uint,
-
     #[doc = " Not used"]
     pub peer_pm: ::core::ffi::c_uint,
-
     #[doc = " Not used"]
     pub nonpeer_pm: ::core::ffi::c_uint,
-
     #[doc = " station flags @ref sta_flag_update"]
     pub sta_flags: sta_flag_update,
-
     #[doc = " timing offset with respect to this STA"]
     pub t_offset: ::core::ffi::c_ulonglong,
-
     #[doc = " count of times other(non beacon) loss was detected"]
     pub rx_dropped_misc: ::core::ffi::c_ulonglong,
-
     #[doc = " count of times beacon"]
     pub rx_beacon: ::core::ffi::c_ulonglong,
-
     #[doc = " average of beacon signal"]
     pub rx_beacon_signal_avg: ::core::ffi::c_longlong,
-
     #[doc = " Station connected BSS params. @ref sta_bss_parameters"]
     pub bss_param: sta_bss_parameters,
 }
-
 #[doc = " @brief The command header expected by UMAC to handle requests from the control interface.\n"]
 #[repr(C, packed)]
 #[derive(Debug, Copy, Clone)]
-
 pub struct umac_hdr {
     #[doc = " unused"]
     pub portid: ::core::ffi::c_uint,
-
     #[doc = " unused"]
     pub seq: ::core::ffi::c_uint,
-
     #[doc = " UMAC command/event value see &enum umac_commands\n  see &enum umac_events"]
     pub cmd_evnt: ::core::ffi::c_uint,
-
     #[doc = " unused"]
     pub rpu_ret_val: ::core::ffi::c_int,
-
     #[doc = " Interface information @ref index_ids"]
     pub ids: index_ids,
 }
-
 #[doc = " @brief This structure contains information about a security key.\n"]
 #[repr(C, packed)]
 #[derive(Debug, Copy, Clone)]
-
 pub struct umac_key_info {
     #[doc = " Indicate which of the following parameters are valid"]
     pub valid_fields: ::core::ffi::c_uint,
-
     #[doc = " Key cipher suite (as defined by IEEE 802.11 section 7.3.2.25.1)"]
     pub cipher_suite: ::core::ffi::c_uint,
-
     #[doc = " Specify what a key should be set as default as example KEY_DEFAULT_MGMT"]
     pub flags: ::core::ffi::c_ushort,
-
     #[doc = " Key Type, see &enum key_type"]
     pub key_type: ::core::ffi::c_int,
-
     #[doc = " Key data @ref key"]
     pub key: key,
-
     #[doc = " Transmit key sequence number (IV/PN) for TKIP and CCMP keys,\n  each six bytes in little endian @ref seq"]
     pub seq: seq,
-
     #[doc = " Key ID (0-3)"]
     pub key_idx: ::core::ffi::c_uchar,
 }
-
 #[repr(i32)]
 #[doc = " @brief This enum describes the different types of scan.\n"]
-#[derive(Debug, Copy, Clone, Hash, PartialEq, Eq)]
-#[derive(num_enum::TryFromPrimitive)]
+#[derive(Debug, Copy, Clone, Hash, PartialEq, Eq, num_enum::TryFromPrimitive)]
 pub enum scan_reason {
     #[doc = " scan for display purpose in user space"]
     SCAN_DISPLAY = 0,
-
     #[doc = " scan for connection purpose"]
     SCAN_CONNECT = 1,
 }
-
 #[doc = " @brief This structure contains details about scan request information.\n"]
 #[repr(C, packed)]
-
 pub struct umac_scan_info {
     #[doc = " scan type see &enum scan_reason"]
     pub scan_reason: ::core::ffi::c_int,
-
     #[doc = " scan parameters @ref scan_params"]
     pub scan_params: scan_params,
 }
-
 #[doc = " @brief This structure defines a command scan request.\n"]
 #[repr(C, packed)]
-
 pub struct umac_cmd_scan {
     #[doc = " Header @ref umac_hdr"]
     pub umac_hdr: umac_hdr,
-
     #[doc = " @ref umac_scan_info"]
     pub info: umac_scan_info,
 }
-
 #[doc = " @brief This structure defines a command to abort a scan request.\n"]
 #[repr(C, packed)]
 #[derive(Debug, Copy, Clone)]
-
 pub struct umac_cmd_abort_scan {
     #[doc = " Header @ref umac_hdr"]
     pub umac_hdr: umac_hdr,
 }
-
 #[doc = " @brief TThis structure defines a command to request scan results.\n This command should be executed only if we have received a\n UMAC_EVENT_SCAN_DONE event for a previous scan.\n"]
 #[repr(C, packed)]
 #[derive(Debug, Copy, Clone)]
-
 pub struct umac_cmd_get_scan_results {
     #[doc = " Header @ref umac_hdr"]
     pub umac_hdr: umac_hdr,
-
     #[doc = " scan type see &enum scan_reason"]
     pub scan_reason: ::core::ffi::c_int,
 }
-
 #[doc = " @brief This structure provides details about the \"Scan Done\" event.\n"]
 #[repr(C, packed)]
 #[derive(Debug, Copy, Clone)]
-
 pub struct umac_event_scan_done {
     #[doc = " Header @ref umac_hdr"]
     pub umac_hdr: umac_hdr,
-
     #[doc = " status, 0=Scan successful & 1=Scan aborted"]
     pub status: ::core::ffi::c_int,
-
     #[doc = " scan type see &enum scan_reason"]
     pub scan_type: ::core::ffi::c_uint,
 }
-
 #[doc = " @brief This structure represents the parameters used to configure the multicast address filter.\n"]
 #[repr(C, packed)]
 #[derive(Debug, Copy, Clone)]
-
 pub struct umac_mcast_cfg {
     #[doc = " Add (0) or Delete (1)"]
     pub type_: ::core::ffi::c_uint,
-
     #[doc = " multicast address to be added/deleted"]
     pub mac_addr: [::core::ffi::c_uchar; 6usize],
 }
-
 #[doc = " @brief This structure defines a command used to set multicast (mcast) addresses.\n"]
 #[repr(C, packed)]
 #[derive(Debug, Copy, Clone)]
-
 pub struct umac_cmd_mcast_filter {
     #[doc = " Header @ref umac_hdr"]
     pub umac_hdr: umac_hdr,
-
     #[doc = " @ref umac_mcast_cfg"]
     pub info: umac_mcast_cfg,
 }
-
 #[doc = " @brief This structure represents the parameters used to change the MAC address.\n"]
 #[repr(C, packed)]
 #[derive(Debug, Copy, Clone)]
-
 pub struct umac_change_macaddr_info {
     #[doc = " MAC address to be set"]
     pub mac_addr: [::core::ffi::c_uchar; 6usize],
 }
-
 #[doc = " @brief This structure describes command to change MAC address.\n  This has to be used only when the interface is down.\n"]
 #[repr(C, packed)]
 #[derive(Debug, Copy, Clone)]
-
 pub struct umac_cmd_change_macaddr {
     #[doc = " Header @ref umac_hdr"]
     pub umac_hdr: umac_hdr,
-
     #[doc = " @ref umac_change_macaddr_info"]
     pub macaddr_info: umac_change_macaddr_info,
 }
-
 #[doc = " @brief This structure specifies the parameters to be used when sending an authentication request.\n"]
 #[repr(C, packed)]
 #[derive(Debug, Copy, Clone)]
-
 pub struct umac_auth_info {
     #[doc = " Frequency of the selected channel in MHz"]
     pub frequency: ::core::ffi::c_uint,
-
     #[doc = " Flag attribute to indicate that a command is requesting a local\n  authentication/association state change without invoking actual management\n  frame exchange. This can be used with UMAC_CMD_AUTHENTICATE\n  UMAC_CMD_DEAUTHENTICATE."]
     pub flags: ::core::ffi::c_ushort,
-
     #[doc = " Authentication type. see &enum auth_type"]
     pub auth_type: ::core::ffi::c_int,
-
     #[doc = " Key information"]
     pub key_info: umac_key_info,
-
     #[doc = " SSID (binary attribute, 0..32 octets)"]
     pub ssid: ssid,
-
     #[doc = " Information element(s) data"]
     pub ie: ie,
-
     #[doc = " SAE elements in Authentication frames. This starts\n  with the Authentication transaction sequence number field."]
     pub sae: sae,
-
     #[doc = " MAC address (various uses)"]
     pub bssid: [::core::ffi::c_uchar; 6usize],
-
     #[doc = " The following parameters will be used to construct bss database in case of\n cfg80211 offload to host case.\n/\n/** scanning width"]
     pub scan_width: ::core::ffi::c_int,
-
     #[doc = " Signal strength"]
     pub signal: ::core::ffi::c_int,
-
     #[doc = " Received elements from beacon or probe response"]
     pub from_beacon: ::core::ffi::c_int,
-
     #[doc = " BSS information element data"]
     pub bss_ie: ie,
-
     #[doc = " BSS capability"]
     pub capability: ::core::ffi::c_ushort,
-
     #[doc = " Beacon interval(ms)"]
     pub beacon_interval: ::core::ffi::c_ushort,
-
     #[doc = " Beacon tsf"]
     pub tsf: ::core::ffi::c_ulonglong,
 }
-
 #[doc = " @brief This structure defines a command used to send an authentication request.\n"]
 #[repr(C, packed)]
 #[derive(Debug, Copy, Clone)]
-
 pub struct umac_cmd_auth {
     #[doc = " Header @ref umac_hdr"]
     pub umac_hdr: umac_hdr,
-
     #[doc = " Indicate which of the following parameters are valid"]
     pub valid_fields: ::core::ffi::c_uint,
-
     #[doc = " Information to be passed in the authentication command @ref umac_auth_info"]
     pub info: umac_auth_info,
 }
-
 #[doc = " @brief This structure specifies the parameters to be used when sending an association request.\n"]
 #[repr(C, packed)]
 #[derive(Debug, Copy, Clone)]
-
 pub struct umac_assoc_info {
     #[doc = " Frequency of the selected channel in MHz"]
     pub center_frequency: ::core::ffi::c_uint,
-
     #[doc = " ssid @ref ssid"]
     pub ssid: ssid,
-
     #[doc = " MAC address (various uses)"]
     pub bssid: [::core::ffi::c_uchar; 6usize],
-
     #[doc = "  WPA information element data. @ref ie"]
     pub wpa_ie: ie,
-
     #[doc = " Whether management frame protection (IEEE 802.11w) is used for the association"]
     pub use_mfp: ::core::ffi::c_uchar,
-
     #[doc = " Indicating whether user space controls IEEE 802.1X port. If set, the RPU will\n  assume that the port is unauthorized until authorized by user space.\n  Otherwise, port is marked authorized by default in station mode."]
     pub control_port: ::core::ffi::c_schar,
-
     #[doc = " Previous BSSID used in flag"]
     pub prev_bssid_flag: ::core::ffi::c_uint,
-
     #[doc = " Previous BSSID used in Re-assoc."]
     pub prev_bssid: [::core::ffi::c_uchar; 6usize],
-
     #[doc = " Bss max idle timeout value in sec wich will be encapsulated into\n  BSS MAX IDLE IE in assoc request frame."]
     pub bss_max_idle_time: ::core::ffi::c_ushort,
 }
-
 #[doc = " @brief This structure specifies the parameters to be used when sending an association request.\n"]
 #[repr(C, packed)]
 #[derive(Debug, Copy, Clone)]
-
 pub struct umac_cmd_assoc {
     #[doc = " Header @ref umac_hdr"]
     pub umac_hdr: umac_hdr,
-
     #[doc = " Indicate which of the following parameters are valid"]
     pub valid_fields: ::core::ffi::c_uint,
-
     #[doc = " @ref connect_common_info"]
     pub connect_common_info: connect_common_info,
-
     #[doc = " Previous BSSID, to be used by in ASSOCIATE commands to specify\n using a reassociate frame."]
     pub mac_addr: [::core::ffi::c_uchar; 6usize],
 }
-
 #[doc = " @brief This structure specifies the parameters to be passed while sending a\n  deauthentication request (UMAC_CMD_DEAUTHENTICATE).\n"]
 #[repr(C, packed)]
 #[derive(Debug, Copy, Clone)]
-
 pub struct umac_disconn_info {
     #[doc = " Indicates that a command is requesting a local deauthentication/disassociation\n  state change without invoking actual management frame exchange."]
     pub flags: ::core::ffi::c_ushort,
-
     #[doc = " Reason code for disassociation or deauthentication"]
     pub reason_code: ::core::ffi::c_ushort,
-
     #[doc = " MAC address (various uses)"]
     pub mac_addr: [::core::ffi::c_uchar; 6usize],
 }
-
 #[doc = " @brief This structure specifies the parameters to be used when sending a disconnect request.\n"]
 #[repr(C, packed)]
 #[derive(Debug, Copy, Clone)]
-
 pub struct umac_cmd_disconn {
     #[doc = " Header @ref umac_hdr"]
     pub umac_hdr: umac_hdr,
-
     #[doc = " Indicate which of the following parameters are valid"]
     pub valid_fields: ::core::ffi::c_uint,
-
     #[doc = " @ref umac_disconn_info"]
     pub info: umac_disconn_info,
 }
-
 #[doc = " @brief This structure contains the information to be passed to the RPU\n  to create a new virtual interface using the UMAC_CMD_NEW_INTERFACE command.\n"]
 #[repr(C, packed)]
 #[derive(Debug, Copy, Clone)]
-
 pub struct umac_add_vif_info {
     #[doc = " Interface type, see enum sys_iftype"]
     pub iftype: ::core::ffi::c_int,
-
     #[doc = " Use 4-address frames on a virtual interface"]
     pub use_4addr: ::core::ffi::c_int,
-
     #[doc = " Unused"]
     pub mon_flags: ::core::ffi::c_uint,
-
     #[doc = " MAC Address"]
     pub mac_addr: [::core::ffi::c_uchar; 6usize],
-
     #[doc = " Interface name"]
     pub ifacename: [::core::ffi::c_schar; 16usize],
 }
-
 #[doc = " @brief This structure defines a command used to create a new virtual interface\n  using the UMAC_CMD_NEW_INTERFACE command.\n"]
 #[repr(C, packed)]
 #[derive(Debug, Copy, Clone)]
-
 pub struct umac_cmd_add_vif {
     #[doc = " Header @ref umac_hdr"]
     pub umac_hdr: umac_hdr,
-
     #[doc = " Indicate which of the following parameters are valid"]
     pub valid_fields: ::core::ffi::c_uint,
-
     #[doc = " VIF specific information to be passed to the RPU @ref umac_add_vif_info"]
     pub info: umac_add_vif_info,
 }
-
 #[doc = " @brief This structure defines a command used to delete a virtual interface.\n  However, this command is not allowed on the default interface.\n"]
 #[repr(C, packed)]
 #[derive(Debug, Copy, Clone)]
-
 pub struct umac_cmd_del_vif {
     #[doc = " Header @ref umac_hdr"]
     pub umac_hdr: umac_hdr,
 }
-
 #[doc = " @brief This structure represents the data of management frame that must be matched for\n  processing in userspace.\n"]
 #[repr(C, packed)]
 #[derive(Debug, Copy, Clone)]
-
 pub struct umac_frame_match {
     #[doc = " Length of data"]
     pub frame_match_len: ::core::ffi::c_uint,
-
     #[doc = " Data to match"]
     pub frame_match: [::core::ffi::c_uchar; 8usize],
 }
-
 #[doc = " @brief This structure contains information about the type of management frame\n  that should be passed to the driver for processing in userspace.\n"]
 #[repr(C, packed)]
 #[derive(Debug, Copy, Clone)]
-
 pub struct umac_mgmt_frame_info {
     #[doc = " Frame type/subtype"]
     pub frame_type: ::core::ffi::c_ushort,
-
     #[doc = " Match information Refer &struct umac_frame_match"]
     pub frame_match: umac_frame_match,
 }
-
 #[doc = " @brief This structure defines a command to inform the RPU to register a management frame,\n  which must not be filtered by the RPU and should instead be passed to the host for\n  userspace processing.\n"]
 #[repr(C, packed)]
 #[derive(Debug, Copy, Clone)]
-
 pub struct umac_cmd_mgmt_frame_reg {
     #[doc = " Header @ref umac_hdr"]
     pub umac_hdr: umac_hdr,
-
     #[doc = " Management frame specific information to be passed to the RPU.\n @ref umac_mgmt_frame_info"]
     pub info: umac_mgmt_frame_info,
 }
-
 #[doc = " @brief This structure represents command to add a new key.\n"]
 #[repr(C, packed)]
 #[derive(Debug, Copy, Clone)]
-
 pub struct umac_cmd_key {
     #[doc = " Header @ref umac_hdr"]
     pub umac_hdr: umac_hdr,
-
     #[doc = " Indicate which of the following parameters are valid"]
     pub valid_fields: ::core::ffi::c_uint,
-
     #[doc = " Key information. @ref umac_key_info"]
     pub key_info: umac_key_info,
-
     #[doc = " MAC address associated with the key"]
     pub mac_addr: [::core::ffi::c_uchar; 6usize],
 }
-
 #[doc = " @brief This structure defines a command that is used to add a new key.\n"]
 #[repr(C, packed)]
 #[derive(Debug, Copy, Clone)]
-
 pub struct umac_cmd_set_key {
     #[doc = " Header @ref umac_hdr"]
     pub umac_hdr: umac_hdr,
-
     #[doc = " Key information , @ref umac_key_info"]
     pub key_info: umac_key_info,
 }
-
 #[doc = " @brief This structure contains parameters that describe the BSS (Basic Service Set) information.\n"]
 #[repr(C, packed)]
 #[derive(Debug, Copy, Clone)]
-
 pub struct umac_bss_info {
     #[doc = " P2P GO Client Traffic Window, used with\n  the START_AP and SET_BSS commands."]
     pub p2p_go_ctwindow: ::core::ffi::c_uint,
-
     #[doc = " P2P GO opportunistic PS, used with the\n  START_AP and SET_BSS commands. This can have the values 0 or 1;\n  if not given in START_AP 0 is assumed, if not given in SET_BSS\n  no change is made."]
     pub p2p_opp_ps: ::core::ffi::c_uint,
-
     #[doc = " Number of basic rate elements"]
     pub num_basic_rates: ::core::ffi::c_uint,
-
     #[doc = " HT operation mode"]
     pub ht_opmode: ::core::ffi::c_ushort,
-
     #[doc = " Whether CTS protection is enabled (0 or 1)"]
     pub cts: ::core::ffi::c_uchar,
-
     #[doc = " Whether short preamble is enabled (0 or 1)"]
     pub preamble: ::core::ffi::c_uchar,
-
     #[doc = " Whether short slot time enabled (0 or 1)"]
     pub slot: ::core::ffi::c_uchar,
-
     #[doc = " (AP mode) Do not forward traffic between stations connected to this BSS"]
     pub ap_isolate: ::core::ffi::c_uchar,
-
     #[doc = " Basic rates, array of basic rates in format defined by IEEE 802.11 7.3.2.2"]
     pub basic_rates: [::core::ffi::c_uchar; 32usize],
 }
-
 #[doc = " @brief This structure represents a command used to set BSS (Basic Service Set) parameters.\n"]
 #[repr(C, packed)]
 #[derive(Debug, Copy, Clone)]
-
 pub struct umac_cmd_set_bss {
     #[doc = " Header @ref umac_hdr"]
     pub umac_hdr: umac_hdr,
-
     #[doc = " Indicate which of the following parameters are valid"]
     pub valid_fields: ::core::ffi::c_uint,
-
     #[doc = " BSS specific information to be passed to the RPU @ref umac_bss_info"]
     pub bss_info: umac_bss_info,
 }
-
 #[doc = " @brief This structure contains information about frequency parameters.\n"]
 #[repr(C, packed)]
 #[derive(Debug, Copy, Clone)]
-
 pub struct freq_params {
     #[doc = " Indicate which of the following parameters are valid"]
     pub valid_fields: ::core::ffi::c_uint,
-
     #[doc = " Value in MHz"]
     pub frequency: ::core::ffi::c_int,
-
     #[doc = " Width of the channel @see &enu chan_width"]
     pub channel_width: ::core::ffi::c_int,
-
     #[doc = " Unused"]
     pub center_frequency1: ::core::ffi::c_int,
-
     #[doc = " Unused"]
     pub center_frequency2: ::core::ffi::c_int,
-
     #[doc = " Type of channel see &enum channel_type"]
     pub channel_type: ::core::ffi::c_int,
 }
-
 #[doc = " @brief This structure contains information about transmit queue parameters.\n"]
 #[repr(C, packed)]
 #[derive(Debug, Copy, Clone)]
-
 pub struct txq_params {
     #[doc = " Transmit oppurtunity"]
     pub txop: ::core::ffi::c_ushort,
-
     #[doc = " Minimum contention window"]
     pub cwmin: ::core::ffi::c_ushort,
-
     #[doc = " Maximum contention window"]
     pub cwmax: ::core::ffi::c_ushort,
-
     #[doc = " Arbitration interframe spacing"]
     pub aifs: ::core::ffi::c_uchar,
-
     #[doc = " Access category"]
     pub ac: ::core::ffi::c_uchar,
 }
-
 #[repr(i32)]
 #[doc = " @brief Types of transmit power settings.\n"]
-#[derive(Debug, Copy, Clone, Hash, PartialEq, Eq)]
-#[derive(num_enum::TryFromPrimitive)]
+#[derive(Debug, Copy, Clone, Hash, PartialEq, Eq, num_enum::TryFromPrimitive)]
 pub enum tx_power_type {
     #[doc = " Automatically determine transmit power"]
     TX_POWER_AUTOMATIC = 0,
-
     #[doc = " Limit TX power by the mBm parameter"]
     TX_POWER_LIMITED = 1,
-
     #[doc = " Fix TX power to the mBm parameter"]
     TX_POWER_FIXED = 2,
 }
-
 #[doc = " @brief This structure contains the parameters related to the transmit power setting.\n"]
 #[repr(C, packed)]
 #[derive(Debug, Copy, Clone)]
-
 pub struct tx_power_setting {
     #[doc = " Indicate which of the following parameters are valid"]
     pub valid_fields: ::core::ffi::c_uint,
-
     #[doc = " Power value type, see tx_power_type"]
     pub type_: ::core::ffi::c_int,
-
     #[doc = " Transmit power level in signed mBm units"]
     pub tx_power_level: ::core::ffi::c_int,
 }
-
 #[doc = " @brief This structure contains information about the configuration parameters\n  needed to set up and configure the wireless Physical Layer.\n"]
 #[repr(C, packed)]
 #[derive(Debug, Copy, Clone)]
-
 pub struct umac_set_wiphy_info {
     #[doc = " RTS threshold, TX frames with length larger than or equal to this use RTS/CTS handshake\n  allowed range: 0..65536, disable with -1."]
     pub rts_threshold: ::core::ffi::c_uint,
-
     #[doc = " Fragmentation threshold, maximum length in octets for frames.\n  allowed range: 256..8000, disable fragmentation with (u32)-1."]
     pub frag_threshold: ::core::ffi::c_uint,
-
     #[doc = " Bitmap of allowed antennas for transmitting. This can be used to mask out\n  antennas which are not attached or should not be used for transmitting.\n  If an antenna is not selected in this bitmap the hardware is not allowed\n  to transmit on this antenna."]
     pub antenna_tx: ::core::ffi::c_uint,
-
     #[doc = " Bitmap of allowed antennas for receiving. This can be used to mask out antennas\n  which are not attached or should not be used for receiving. If an antenna is\n  not selected in this bitmap the hardware should not be configured to receive\n  on this antenna."]
     pub antenna_rx: ::core::ffi::c_uint,
-
     #[doc = " Frequency information of the a channel see &struct freq_params"]
     pub freq_params: freq_params,
-
     #[doc = " TX queue parameters @ref txq_params"]
     pub txq_params: txq_params,
-
     #[doc = " Tx power settings @ref tx_power_setting @ref tx_power_setting"]
     pub tx_power_setting: tx_power_setting,
-
     #[doc = " TX retry limit for frames whose length is less than or equal to the RTS threshold\n  allowed range: 1..255."]
     pub retry_short: ::core::ffi::c_uchar,
-
     #[doc = " TX retry limit for frames whose length is greater than the RTS threshold\n  allowed range: 1..255."]
     pub retry_long: ::core::ffi::c_uchar,
-
     #[doc = " Unused"]
     pub coverage_class: ::core::ffi::c_uchar,
-
     #[doc = " WIPHY name (used for renaming)"]
     pub wiphy_name: [::core::ffi::c_schar; 32usize],
 }
-
 #[doc = " @brief This structure defines the command to set the wireless PHY configuration.\n"]
 #[repr(C, packed)]
 #[derive(Debug, Copy, Clone)]
-
 pub struct umac_cmd_set_wiphy {
     #[doc = " Header @ref umac_hdr"]
     pub umac_hdr: umac_hdr,
-
     #[doc = " Indicates which of the following parameters are valid"]
     pub valid_fields: ::core::ffi::c_uint,
-
     #[doc = " @ref umac_set_wiphy_info"]
     pub info: umac_set_wiphy_info,
 }
-
 #[doc = " @brief This structure contains the parameters to delete a station.\n"]
 #[repr(C, packed)]
 #[derive(Debug, Copy, Clone)]
-
 pub struct umac_del_sta_info {
     #[doc = " MAC address of the station"]
     pub mac_addr: [::core::ffi::c_uchar; 6usize],
-
     #[doc = " Management frame subtype"]
     pub mgmt_subtype: ::core::ffi::c_uchar,
-
     #[doc = " Reason code for DEAUTHENTICATION and DISASSOCIATION"]
     pub reason_code: ::core::ffi::c_ushort,
 }
-
 #[doc = " @brief This structure defines the command to delete a station.\n"]
 #[repr(C, packed)]
 #[derive(Debug, Copy, Clone)]
-
 pub struct umac_cmd_del_sta {
     #[doc = " Header @ref umac_hdr"]
     pub umac_hdr: umac_hdr,
-
     #[doc = " Indicate which of the following parameters are valid"]
     pub valid_fields: ::core::ffi::c_uint,
-
     #[doc = " Information regarding the station to be deleted @ref umac_del_sta_info"]
     pub info: umac_del_sta_info,
 }
-
 #[doc = " @brief This structure contains the information required for obtaining station details.\n"]
 #[repr(C, packed)]
 #[derive(Debug, Copy, Clone)]
-
 pub struct umac_get_sta_info {
     #[doc = " MAC address of the station"]
     pub mac_addr: [::core::ffi::c_uchar; 6usize],
 }
-
 #[doc = " @brief This structure defines the command to get station information.\n"]
 #[repr(C, packed)]
 #[derive(Debug, Copy, Clone)]
-
 pub struct umac_cmd_get_sta {
     #[doc = " Header @ref umac_hdr"]
     pub umac_hdr: umac_hdr,
-
     #[doc = " Information regarding the station to get @ref umac_get_sta_info"]
     pub info: umac_get_sta_info,
 }
-
 #[doc = " @brief Extended capability information."]
 #[repr(C, packed)]
 #[derive(Debug, Copy, Clone)]
-
 pub struct ext_capability {
     #[doc = " length"]
     pub ext_capability_len: ::core::ffi::c_uint,
-
     #[doc = " Extended capability info"]
     pub ext_capability: [::core::ffi::c_uchar; 32usize],
 }
-
 #[doc = " @brief Supported channels."]
 #[repr(C, packed)]
 #[derive(Debug, Copy, Clone)]
-
 pub struct supported_channels {
     #[doc = " number of channels"]
     pub supported_channels_len: ::core::ffi::c_uint,
-
     #[doc = " channels info"]
     pub supported_channels: [::core::ffi::c_uchar; 64usize],
 }
-
 #[doc = " @brief Operating classes information."]
 #[repr(C, packed)]
 #[derive(Debug, Copy, Clone)]
-
 pub struct supported_oper_classes {
     #[doc = " length"]
     pub supported_oper_classes_len: ::core::ffi::c_uint,
-
     #[doc = " oper_class info"]
     pub supported_oper_classes: [::core::ffi::c_uchar; 64usize],
 }
-
 #[doc = " @brief Station flags."]
 #[repr(C, packed)]
 #[derive(Debug, Copy, Clone)]
-
 pub struct sta_flags2 {
     #[doc = " length"]
     pub sta_flags2_len: ::core::ffi::c_uint,
-
     #[doc = " flags"]
     pub sta_flags2: [::core::ffi::c_uchar; 64usize],
 }
-
 #[doc = " @brief This structure represents the information needed to update a station entry\n in the RPU.\n"]
 #[repr(C, packed)]
 #[derive(Debug, Copy, Clone)]
-
 pub struct umac_chg_sta_info {
     #[doc = " Listen interval as defined by IEEE 802.11 7.3.1.6"]
     pub listen_interval: ::core::ffi::c_int,
-
     #[doc = " Unused"]
     pub sta_vlan: ::core::ffi::c_uint,
-
     #[doc = " AID or zero for no change"]
     pub aid: ::core::ffi::c_ushort,
-
     #[doc = " Unused"]
     pub peer_aid: ::core::ffi::c_ushort,
-
     #[doc = " Station capability"]
     pub sta_capability: ::core::ffi::c_ushort,
-
     #[doc = " Unused"]
     pub spare: ::core::ffi::c_ushort,
-
     #[doc = " Supported rates in IEEE 802.11 format @ref supp_rates"]
     pub supp_rates: supp_rates,
-
     #[doc = " Extended capabilities of the station @ref ext_capability"]
     pub ext_capability: ext_capability,
-
     #[doc = " Supported channels in IEEE 802.11 format @ref supported_channels"]
     pub supported_channels: supported_channels,
-
     #[doc = " Supported oper classes in IEEE 802.11 format @ref supported_oper_classes"]
     pub supported_oper_classes: supported_oper_classes,
-
     #[doc = " station flags mask/set @ref sta_flag_update @ref sta_flag_update"]
     pub sta_flags2: sta_flag_update,
-
     #[doc = " HT capabilities of station"]
     pub ht_capability: [::core::ffi::c_uchar; 256usize],
-
     #[doc = " VHT capabilities of station"]
     pub vht_capability: [::core::ffi::c_uchar; 256usize],
-
     #[doc = " Station mac address"]
     pub mac_addr: [::core::ffi::c_uchar; 6usize],
-
     #[doc = " Information if operating mode field is used"]
     pub opmode_notif: ::core::ffi::c_uchar,
-
     #[doc = " Bitmap of queues configured for uapsd. Same format\n  as the AC bitmap in the QoS info field."]
     pub wme_uapsd_queues: ::core::ffi::c_uchar,
-
     #[doc = " Max Service Period. same format as the MAX_SP in the\n  QoS info field (but already shifted down)."]
     pub wme_max_sp: ::core::ffi::c_uchar,
 }
-
 #[doc = " @brief This structure defines the command for updating the parameters of a station entry.\n"]
 #[repr(C, packed)]
 #[derive(Debug, Copy, Clone)]
-
 pub struct umac_cmd_chg_sta {
     #[doc = " Header @ref umac_hdr"]
     pub umac_hdr: umac_hdr,
-
     #[doc = " Indicate which of the following parameters are valid"]
     pub valid_fields: ::core::ffi::c_uint,
-
     #[doc = " @ref umac_chg_sta_info"]
     pub info: umac_chg_sta_info,
 }
-
 #[doc = " @brief This structure describes the parameters for adding a new station entry to the RPU.\n"]
 #[repr(C, packed)]
 #[derive(Debug, Copy, Clone)]
-
 pub struct umac_add_sta_info {
     #[doc = " Listen interval as defined by IEEE 802.11 7.3.1.6"]
     pub listen_interval: ::core::ffi::c_int,
-
     #[doc = " Unused"]
     pub sta_vlan: ::core::ffi::c_uint,
-
     #[doc = " AID or zero for no change"]
     pub aid: ::core::ffi::c_ushort,
-
     #[doc = " Unused"]
     pub peer_aid: ::core::ffi::c_ushort,
-
     #[doc = " Station capability"]
     pub sta_capability: ::core::ffi::c_ushort,
-
     #[doc = " Unused"]
     pub spare: ::core::ffi::c_ushort,
-
     #[doc = " Supported rates in IEEE 802.11 format @ref supp_rates"]
     pub supp_rates: supp_rates,
-
     #[doc = " Extended capabilities of the station @ref ext_capability"]
     pub ext_capability: ext_capability,
-
     #[doc = " Supported channels in IEEE 802.11 format @ref supported_channels"]
     pub supported_channels: supported_channels,
-
     #[doc = " Supported oper classes in IEEE 802.11 format @ref supported_oper_classes"]
     pub supported_oper_classes: supported_oper_classes,
-
     #[doc = " station flags mask/set @ref sta_flag_update"]
     pub sta_flags2: sta_flag_update,
-
     #[doc = " HT capabilities of station"]
     pub ht_capability: [::core::ffi::c_uchar; 256usize],
-
     #[doc = " VHT capabilities of station"]
     pub vht_capability: [::core::ffi::c_uchar; 256usize],
-
     #[doc = " Station mac address"]
     pub mac_addr: [::core::ffi::c_uchar; 6usize],
-
     #[doc = " Information if operating mode field is used"]
     pub opmode_notif: ::core::ffi::c_uchar,
-
     #[doc = " Bitmap of queues configured for uapsd. same format\n  as the AC bitmap in the QoS info field."]
     pub wme_uapsd_queues: ::core::ffi::c_uchar,
-
     #[doc = " Max Service Period. same format as the MAX_SP in the\n  QoS info field (but already shifted down)."]
     pub wme_max_sp: ::core::ffi::c_uchar,
 }
-
 #[doc = " @brief This structure defines the command for adding a new station entry.\n"]
 #[repr(C, packed)]
 #[derive(Debug, Copy, Clone)]
-
 pub struct umac_cmd_add_sta {
     #[doc = " Header @ref umac_hdr"]
     pub umac_hdr: umac_hdr,
-
     #[doc = " Indicate which of the following parameters are valid"]
     pub valid_fields: ::core::ffi::c_uint,
-
     #[doc = " @ref umac_add_sta_info"]
     pub info: umac_add_sta_info,
 }
-
 #[doc = " @brief This structure describes the parameters required to be passed to the RPU when\n  initiating a SoftAP (Soft Access Point).\n"]
 #[repr(C, packed)]
 #[derive(Debug, Copy, Clone)]
-
 pub struct umac_start_ap_info {
     #[doc = " Beacon frame interval"]
     pub beacon_interval: ::core::ffi::c_ushort,
-
     #[doc = " DTIM count"]
     pub dtim_period: ::core::ffi::c_uchar,
-
     #[doc = " Send beacons with wildcard sssid"]
     pub hidden_ssid: ::core::ffi::c_int,
-
     #[doc = " Authentication type, see &enum auth_type"]
     pub auth_type: ::core::ffi::c_int,
-
     #[doc = " Unused"]
     pub smps_mode: ::core::ffi::c_int,
-
     #[doc = " Beacon info flags"]
     pub flags: ::core::ffi::c_uint,
-
     #[doc = " Beacon frame, @ref beacon_data"]
     pub beacon_data: beacon_data,
-
     #[doc = " SSID string, @ref ssid"]
     pub ssid: ssid,
-
     #[doc = " Connect params, @ref connect_common_info"]
     pub connect_common_info: connect_common_info,
-
     #[doc = " Channel info, see &struct freq_params"]
     pub freq_params: freq_params,
-
     #[doc = " Time to stop ap after inactivity period"]
     pub inactivity_timeout: ::core::ffi::c_ushort,
-
     #[doc = " P2P GO Client Traffic Window"]
     pub p2p_go_ctwindow: ::core::ffi::c_uchar,
-
     #[doc = " Opportunistic power save allows P2P Group Owner to save power\n  when all its associated clients are sleeping."]
     pub p2p_opp_ps: ::core::ffi::c_uchar,
 }
-
 #[doc = " @brief This structure defines the command for starting the SoftAP using\n  UMAC_CMD_NEW_BEACON and UMAC_CMD_START_AP.\n"]
 #[repr(C, packed)]
 #[derive(Debug, Copy, Clone)]
-
 pub struct umac_cmd_start_ap {
     #[doc = " Header @ref umac_hdr"]
     pub umac_hdr: umac_hdr,
-
     #[doc = " Indicate which of the following parameters are valid"]
     pub valid_fields: ::core::ffi::c_uint,
-
     #[doc = " Parameters that need to be passed to the RPU when starting a SoftAP.\n  @ref umac_start_ap_info"]
     pub info: umac_start_ap_info,
 }
-
 #[doc = " @brief This structure defines the command used to stop Soft AP operation.\n"]
 #[repr(C, packed)]
 #[derive(Debug, Copy, Clone)]
-
 pub struct umac_cmd_stop_ap {
     #[doc = " Header @ref umac_hdr"]
     pub umac_hdr: umac_hdr,
 }
-
 #[doc = " @brief This structure represents the parameters that must be passed to the RPU when\n  configuring Beacon and Probe response data.\n"]
 #[repr(C, packed)]
 #[derive(Debug, Copy, Clone)]
-
 pub struct umac_set_beacon_info {
     #[doc = " Beacon frame, @ref beacon_data"]
     pub beacon_data: beacon_data,
 }
-
 #[doc = " @brief This structure defines the command for setting the beacon data using\n  UMAC_CMD_SET_BEACON.\n"]
 #[repr(C, packed)]
 #[derive(Debug, Copy, Clone)]
-
 pub struct umac_cmd_set_beacon {
     #[doc = " Header @ref umac_hdr"]
     pub umac_hdr: umac_hdr,
-
     #[doc = " @ref umac_set_beacon_info"]
     pub info: umac_set_beacon_info,
 }
-
 #[doc = " @brief This structure contains the information that needs to be provided to the RPU\n  when modifying the attributes of a virtual interface.\n"]
 #[repr(C, packed)]
 #[derive(Debug, Copy, Clone)]
-
 pub struct umac_chg_vif_attr_info {
     #[doc = " Interface type, see &enum iftype"]
     pub iftype: ::core::ffi::c_int,
-
     #[doc = " Unused"]
     pub use_4addr: ::core::ffi::c_int,
 }
-
 #[doc = " @brief This structure defines the command used to change the interface.\n"]
 #[repr(C, packed)]
 #[derive(Debug, Copy, Clone)]
-
 pub struct umac_cmd_chg_vif_attr {
     #[doc = " Header @ref umac_hdr"]
     pub umac_hdr: umac_hdr,
-
     #[doc = " Indicate which of the following parameters are valid"]
     pub valid_fields: ::core::ffi::c_uint,
-
     #[doc = " Interface attributes to be changed @ref umac_chg_vif_attr_info"]
     pub info: umac_chg_vif_attr_info,
 }
-
 #[doc = " @brief This structure contains the information that needs to be passed to the RPU\n  when changing the interface state, specifically when bringing it up or down\n"]
 #[repr(C, packed)]
 #[derive(Debug, Copy, Clone)]
-
 pub struct umac_chg_vif_state_info {
     #[doc = " Interface state (1 = UP / 0 = DOWN)"]
     pub state: ::core::ffi::c_int,
-
     #[doc = " Interface name"]
     pub ifacename: [::core::ffi::c_schar; 16usize],
 }
-
 #[doc = " @brief This structure defines the command used to change the interface state.\n"]
 #[repr(C, packed)]
 #[derive(Debug, Copy, Clone)]
-
 pub struct umac_cmd_chg_vif_state {
     #[doc = " Header @ref umac_hdr"]
     pub umac_hdr: umac_hdr,
-
     #[doc = " @ref umac_chg_vif_state_info"]
     pub info: umac_chg_vif_state_info,
 }
-
 #[doc = " @brief This structure defines an event-to-command mapping for UMAC_CMD_SET_IFFLAGS.\n"]
 #[repr(C, packed)]
 #[derive(Debug, Copy, Clone)]
-
 pub struct umac_event_vif_state {
     #[doc = " Header @ref umac_hdr"]
     pub umac_hdr: umac_hdr,
-
     #[doc = " Status to command UMAC_CMD_SET_IFFLAGS"]
     pub status: ::core::ffi::c_int,
 }
-
 #[doc = " @brief This structure defines the command used to start P2P (Peer-to-Peer) mode on an interface."]
 #[repr(C, packed)]
 #[derive(Debug, Copy, Clone)]
-
 pub struct cmd_start_p2p {
     #[doc = " Header @ref umac_hdr"]
     pub umac_hdr: umac_hdr,
 }
-
 #[doc = " @brief This structure represents the command for stopping P2P mode on an interface.\n"]
 #[repr(C, packed)]
 #[derive(Debug, Copy, Clone)]
-
 pub struct umac_cmd_stop_p2p_dev {
     #[doc = " Header @ref umac_hdr"]
     pub umac_hdr: umac_hdr,
 }
-
 #[doc = " @brief This structure describes the parameters required to transmit a\n  management frame from the host.\n"]
 #[repr(C, packed)]
 #[derive(Debug, Copy, Clone)]
-
 pub struct umac_mgmt_tx_info {
     #[doc = " OFFCHANNEL_TX_OK, NO_CCK_RATE, DONT_WAIT_FOR_ACK"]
     pub flags: ::core::ffi::c_uint,
-
     #[doc = " Channel frequency"]
     pub frequency: ::core::ffi::c_uint,
-
     #[doc = " Duration field value"]
     pub dur: ::core::ffi::c_uint,
-
     #[doc = " Management frame to transmit, @ref frame"]
     pub frame: frame,
-
     #[doc = " Frequency configuration, see &struct freq_params"]
     pub freq_params: freq_params,
-
     #[doc = " Identifier to be used for processing event,\n  UMAC_EVENT_FRAME_TX_STATUS."]
     pub host_cookie: ::core::ffi::c_ulonglong,
 }
-
 #[doc = " @brief This structure defines the command used to transmit a management frame.\n"]
 #[repr(C, packed)]
 #[derive(Debug, Copy, Clone)]
-
 pub struct umac_cmd_mgmt_tx {
     #[doc = " Header @ref umac_hdr"]
     pub umac_hdr: umac_hdr,
-
     #[doc = " Indicate which of the following parameters are valid"]
     pub valid_fields: ::core::ffi::c_uint,
-
     #[doc = " Information about the management frame to be transmitted.\n  @ref umac_mgmt_tx_info"]
     pub info: umac_mgmt_tx_info,
 }
-
 #[doc = " @brief This structure represents the information regarding the power save state.\n"]
 #[repr(C, packed)]
 #[derive(Debug, Copy, Clone)]
-
 pub struct umac_set_power_save_info {
     #[doc = " power save is disabled or enabled, see enum ps_state"]
     pub ps_state: ::core::ffi::c_int,
 }
-
 #[doc = " @brief This structure represents the command used to enable or disable the power save\n  functionality.\n"]
 #[repr(C, packed)]
 #[derive(Debug, Copy, Clone)]
-
 pub struct umac_cmd_set_power_save {
     #[doc = " Header @ref umac_hdr"]
     pub umac_hdr: umac_hdr,
-
     #[doc = " Power save setting parameters.\n @ref umac_set_power_save_info"]
     pub info: umac_set_power_save_info,
 }
-
 #[doc = " @brief This structure represents the command to configure power save timeout value.\n"]
 #[repr(C, packed)]
 #[derive(Debug, Copy, Clone)]
-
 pub struct umac_cmd_set_power_save_timeout {
     #[doc = " Header @ref umac_hdr"]
     pub umac_hdr: umac_hdr,
-
     #[doc = " Timeout value in milli seconds\n if timeout < 0 RPU will set timeout to 100ms"]
     pub timeout: ::core::ffi::c_int,
 }
-
 #[doc = " @brief This structure represents the information of qos_map.\n"]
 #[repr(C, packed)]
 #[derive(Debug, Copy, Clone)]
-
 pub struct umac_qos_map_info {
     #[doc = " length of qos_map info field"]
     pub qos_map_info_len: ::core::ffi::c_uint,
-
     #[doc = " contains qos_map info as received from stack"]
     pub qos_map_info: [::core::ffi::c_uchar; 256usize],
 }
-
 #[doc = " @brief This structure represents the information related to the Quality of Service (QoS) map.\n"]
 #[repr(C, packed)]
 #[derive(Debug, Copy, Clone)]
-
 pub struct umac_cmd_set_qos_map {
     #[doc = " Header @ref umac_hdr"]
     pub umac_hdr: umac_hdr,
-
     #[doc = " qos map info. @ref umac_qos_map_info"]
     pub info: umac_qos_map_info,
 }
-
 #[doc = " @brief This structure defines the command used to retrieve the transmit power information.\n"]
 #[repr(C, packed)]
 #[derive(Debug, Copy, Clone)]
-
 pub struct umac_cmd_get_tx_power {
     #[doc = " Header @ref umac_hdr"]
     pub umac_hdr: umac_hdr,
 }
-
 #[doc = " @brief This structure defines the command used to obtain the regulatory domain information.\n"]
 #[repr(C, packed)]
 #[derive(Debug, Copy, Clone)]
-
 pub struct umac_cmd_get_reg {
     #[doc = " Header @ref umac_hdr"]
     pub umac_hdr: umac_hdr,
 }
-
 #[doc = " @brief This structure defines the command used to retrieve channel information.\n"]
 #[repr(C, packed)]
 #[derive(Debug, Copy, Clone)]
-
 pub struct umac_cmd_get_channel {
     #[doc = " Header @ref umac_hdr"]
     pub umac_hdr: umac_hdr,
 }
-
 #[repr(i32)]
 #[doc = " @brief TWT setup commands and events.\n"]
-#[derive(Debug, Copy, Clone, Hash, PartialEq, Eq)]
-#[derive(num_enum::TryFromPrimitive)]
+#[derive(Debug, Copy, Clone, Hash, PartialEq, Eq, num_enum::TryFromPrimitive)]
 pub enum twt_setup_cmd_type {
     #[doc = " STA requests to join a TWT without specifying a target wake time"]
     REQUEST_TWT = 0,
-
     #[doc = " STA requests to join a TWT with specifying a target wake time and\n  other params, these values can change during negotiation."]
     SUGGEST_TWT = 1,
-
     #[doc = " requests to join a TWT with demanded a target wake time\n and other params. STA rejects if AP not scheduling those params."]
     DEMAND_TWT = 2,
-
     #[doc = " Response to the STA request(suggest/demand), these may be different params"]
     GROUPING_TWT = 3,
-
     #[doc = " AP accept the STA requested params"]
     ACCEPT_TWT = 4,
-
     #[doc = " AP may suggest the params, these may be different from STA requested"]
     ALTERNATE_TWT = 5,
-
     #[doc = " AP may suggest the params, these may be different from STA requested"]
     DICTATE_TWT = 6,
-
     #[doc = " AP may reject the STA requested params"]
     REJECT_TWT = 7,
 }
-
 #[doc = " @brief This structure describes the TWT information.\n"]
 #[repr(C, packed)]
 #[derive(Debug, Copy, Clone)]
-
 pub struct umac_config_twt_info {
     #[doc = " TWT flow Id"]
     pub twt_flow_id: ::core::ffi::c_uchar,
-
     #[doc = " Negotiation type\n  TWT_NEGOTIATION_TYPE_INDIVIDUAL or\n  TWT_NEGOTIATION_TYPE_BROADAST"]
     pub neg_type: ::core::ffi::c_uchar,
-
     #[doc = " see &enum twt_setup_cmd_type"]
     pub setup_cmd: ::core::ffi::c_int,
-
     #[doc = " indicating AP to initiate a trigger frame (ps_poll/Null) before data transfer"]
     pub ap_trigger_frame: ::core::ffi::c_uchar,
-
     #[doc = " 1->implicit(same negotiated values to be used),\n  0->AP sends new calculated TWT values for every service period."]
     pub is_implicit: ::core::ffi::c_uchar,
-
     #[doc = " Whether STA has to send the PS-Poll/Null frame\n  indicating that it's in wake period(TWT_FLOW_TYPE_ANNOUNCED)"]
     pub twt_flow_type: ::core::ffi::c_uchar,
-
     #[doc = " wake interval exponent value"]
     pub twt_target_wake_interval_exponent: ::core::ffi::c_uchar,
-
     #[doc = " wake interval mantissa value"]
     pub twt_target_wake_interval_mantissa: ::core::ffi::c_ushort,
-
     #[doc = " start of the waketime value after successful TWT negotiation"]
     pub target_wake_time: ::core::ffi::c_ulonglong,
-
     #[doc = " min TWT wake duration"]
     pub nominal_min_twt_wake_duration: ::core::ffi::c_uint,
-
     #[doc = " dialog_token of twt frame"]
     pub dialog_token: ::core::ffi::c_uchar,
-
     #[doc = " 0->not received 1->received"]
     pub twt_resp_status: ::core::ffi::c_uchar,
 }
-
 #[doc = " @brief This structure defines the parameters required for setting up TWT session.\n"]
 #[repr(C, packed)]
 #[derive(Debug, Copy, Clone)]
-
 pub struct umac_cmd_config_twt {
     #[doc = " Header @ref umac_hdr"]
     pub umac_hdr: umac_hdr,
-
     #[doc = " TWT configuration info @ref umac_config_twt_info"]
     pub info: umac_config_twt_info,
 }
-
 #[doc = " @brief This structure represents the TWT delete information.\n"]
 #[repr(C, packed)]
 #[derive(Debug, Copy, Clone)]
-
 pub struct umac_teardown_twt_info {
     #[doc = " TWT flow Id"]
     pub twt_flow_id: ::core::ffi::c_uchar,
-
     #[doc = " reason for teardown"]
     pub reason_code: ::core::ffi::c_uchar,
 }
-
 #[doc = " @brief This structure defines the command used to delete or remove a TWT session\n"]
 #[repr(C, packed)]
 #[derive(Debug, Copy, Clone)]
-
 pub struct umac_cmd_teardown_twt {
     #[doc = " Header @ref umac_hdr"]
     pub umac_hdr: umac_hdr,
-
     #[doc = " @ref umac_teardown_twt_info"]
     pub info: umac_teardown_twt_info,
 }
-
 #[doc = " @brief This structure represents the information related to Tx (transmit) block/unblock.\n"]
 #[repr(C, packed)]
 #[derive(Debug, Copy, Clone)]
-
 pub struct twt_sleep_info {
     #[doc = " value for blocking/unblocking TX\n  (TWT_BLOCK_TX or TWT_UNBLOCK_TX)"]
     pub type_: ::core::ffi::c_uint,
 }
-
 #[doc = " @brief This structure defines an event used to indicate to the host whether to block or\n  unblock Tx (transmit) packets in TWT communication.\n"]
 #[repr(C, packed)]
 #[derive(Debug, Copy, Clone)]
-
 pub struct umac_event_twt_sleep {
     #[doc = " Header @ref umac_hdr"]
     pub umac_hdr: umac_hdr,
-
     #[doc = " @ref twt_sleep_info"]
     pub info: twt_sleep_info,
 }
-
 #[doc = " @brief This structure represents the information about UAPSD queues.\n"]
 #[repr(C, packed)]
 #[derive(Debug, Copy, Clone)]
-
 pub struct umac_uapsd_info {
     #[doc = " UAPSD-Q value"]
     pub uapsd_queue: ::core::ffi::c_uint,
 }
-
 #[doc = " @brief This structure defines the command used to configure the UAPSD-Q value.\n"]
 #[repr(C, packed)]
 #[derive(Debug, Copy, Clone)]
-
 pub struct umac_cmd_config_uapsd {
     #[doc = " Header @ref umac_hdr"]
     pub umac_hdr: umac_hdr,
-
     #[doc = " @ref umac_uapsd_info"]
     pub info: umac_uapsd_info,
 }
-
 #[doc = " @brief This structure represents the event used to indicate that a scan has started.\n"]
 #[repr(C, packed)]
 #[derive(Debug, Copy, Clone)]
-
 pub struct umac_event_trigger_scan {
     #[doc = " Header @ref umac_hdr"]
     pub umac_hdr: umac_hdr,
-
     #[doc = " Indicate which of the following parameters are valid"]
     pub valid_fields: ::core::ffi::c_uint,
-
     #[doc = " Scan request control flags (u32). Bit values\n (SCAN_FLAG_LOW_PRIORITY/SCAN_FLAG_RANDOM_ADDR...)"]
     pub scan_flags: ::core::ffi::c_uint,
-
     #[doc = " No.of ssids in scan request"]
     pub num_scan_ssid: ::core::ffi::c_uchar,
-
     #[doc = " No.of frequencies in scan request"]
     pub num_scan_frequencies: ::core::ffi::c_uchar,
-
     #[doc = " center frequencies"]
     pub scan_frequencies: [::core::ffi::c_ushort; 64usize],
-
     #[doc = " @ref ssid"]
     pub scan_ssid: [ssid; 2usize],
-
     #[doc = " @ref ie"]
     pub ie: ie,
 }
-
 #[doc = " @brief This structure serves as a response to the command UMAC_CMD_GET_SCAN_RESULTS.\n  It contains scan results for each entry. RPU sends multiple events of this type for every\n  scan entry, and when umac_hdr->seq == 0, it indicates the last scan entry.\n"]
 #[repr(C, packed)]
-
 pub struct umac_event_new_scan_results {
     #[doc = " Header @ref umac_hdr"]
     pub umac_hdr: umac_hdr,
-
     #[doc = " Indicate which of the following parameters are valid"]
     pub valid_fields: ::core::ffi::c_uint,
-
     #[doc = " Unused"]
     pub generation: ::core::ffi::c_uint,
-
     #[doc = " Frequency in MHz"]
     pub frequency: ::core::ffi::c_uint,
-
     #[doc = " Channel width of the control channel"]
     pub chan_width: ::core::ffi::c_uint,
-
     #[doc = " Age of this BSS entry in ms"]
     pub seen_ms_ago: ::core::ffi::c_uint,
-
     #[doc = " Unused"]
     pub flags: ::core::ffi::c_uint,
-
     #[doc = " Status, if this BSS is \"used\""]
     pub status: ::core::ffi::c_int,
-
     #[doc = " TSF of the received probe response/beacon (u64)"]
     pub ies_tsf: ::core::ffi::c_ulonglong,
-
     #[doc = " TSF of the last received beacon\n  (not present if no beacon frame has been received yet)."]
     pub beacon_ies_tsf: ::core::ffi::c_ulonglong,
-
     #[doc = " Beacon interval of BSS"]
     pub beacon_interval: ::core::ffi::c_ushort,
-
     #[doc = " Capability field"]
     pub capability: ::core::ffi::c_ushort,
-
     #[doc = " Signal strength, @ref signal"]
     pub signal: signal,
-
     #[doc = " BSSID of the BSS (6 octets)"]
     pub mac_addr: [::core::ffi::c_uchar; 6usize],
-
     #[doc = " Indicates length of IE's present at the starting of ies[0]"]
     pub ies_len: ::core::ffi::c_uint,
-
     #[doc = " Indicates length of beacon_ies present after ies+ies_len"]
     pub beacon_ies_len: ::core::ffi::c_uint,
-
     #[doc = " contains raw information elements from the probe response/beacon.\n If beacon_ies are not present then the IEs here are from a Probe Response\n frame; otherwise they are from a Beacon frame."]
     pub ies: __IncompleteArrayField<::core::ffi::c_uchar>,
 }
-
 #[doc = " @brief This structure represents the response for UMAC_CMD_GET_SCAN_RESULTS.\n  It contains the displayed scan result.\n"]
 #[repr(C, packed)]
 #[derive(Copy, Clone)]
-
 pub struct umac_display_results {
     #[doc = " Network SSID @ref ssid"]
     pub ssid: ssid,
-
     #[doc = " BSSID of the BSS (6 octets)"]
     pub mac_addr: [::core::ffi::c_uchar; 6usize],
-
     #[doc = " Network band of operation, refer &enum band"]
     pub nwk_band: ::core::ffi::c_int,
-
     #[doc = " Network channel number"]
     pub nwk_channel: ::core::ffi::c_uint,
-
     #[doc = "  Protocol type (IEEE_802_11A)"]
     pub protocol_flags: ::core::ffi::c_uchar,
-
     #[doc = " Network security mode, refer &enum security_type"]
     pub security_type: ::core::ffi::c_int,
-
     #[doc = " Beacon interval of the BSS"]
     pub beacon_interval: ::core::ffi::c_ushort,
-
     #[doc = " Capability field"]
     pub capability: ::core::ffi::c_ushort,
-
     #[doc = " Signal strength. Refer &struct signal"]
     pub signal: signal,
-
     #[doc = " TWT support"]
     pub twt_support: ::core::ffi::c_uchar,
-
     #[doc = " management frame protection MFP_REQUIRED/MFP_CAPABLE"]
     pub mfp_flag: ::core::ffi::c_uchar,
-
     #[doc = " reserved"]
     pub reserved3: ::core::ffi::c_uchar,
-
     #[doc = " reserved"]
     pub reserved4: ::core::ffi::c_uchar,
 }
-
 #[doc = " @brief This structure serves as a response to the command UMAC_CMD_GET_SCAN_RESULTS\n  of display scan type. It contains a maximum of DISPLAY_BSS_TOHOST_PEREVENT scan results\n  in each event. When umac_hdr->seq == 0, it indicates the last scan event.\n"]
 #[repr(C, packed)]
 #[derive(Copy, Clone)]
-
 pub struct umac_event_new_scan_display_results {
     #[doc = " Header @ref umac_hdr"]
     pub umac_hdr: umac_hdr,
-
     #[doc = " Number of scan results in the current event"]
     pub event_bss_count: ::core::ffi::c_uchar,
-
     #[doc = " Display scan results info @ref umac_display_results"]
     pub display_results: [umac_display_results; 8usize],
 }
-
 #[doc = " @brief This structure represent different responses received from the access point during\n  various stages of the connection process like Authentication Response and Association Response.\n"]
 #[repr(C, packed)]
-
 pub struct umac_event_mlme {
     #[doc = " Header @ref umac_hdr"]
     pub umac_hdr: umac_hdr,
-
     #[doc = " Indicate which of the following parameters are valid"]
     pub valid_fields: ::core::ffi::c_uint,
-
     #[doc = " Frequency of the channel in MHz"]
     pub frequency: ::core::ffi::c_uint,
-
     #[doc = " Signal strength in dBm"]
     pub rx_signal_dbm: ::core::ffi::c_uint,
-
     #[doc = " Indicate whether the frame was acked or timed out"]
     pub flags: ::core::ffi::c_uint,
-
     #[doc = " cookie identifier"]
     pub cookie: ::core::ffi::c_ulonglong,
-
     #[doc = " Frame data, including frame header and body @ref frame"]
     pub frame: frame,
-
     #[doc = " BSSID of the BSS"]
     pub mac_addr: [::core::ffi::c_uchar; 6usize],
-
     #[doc = " Bitmap of uapsd queues"]
     pub wme_uapsd_queues: ::core::ffi::c_uchar,
-
     #[doc = " Request(AUTH/ASSOC) ie length"]
     pub req_ie_len: ::core::ffi::c_uint,
-
     #[doc = " ie's"]
     pub req_ie: __IncompleteArrayField<::core::ffi::c_uchar>,
 }
-
 #[doc = " @brief This structure represents an event that is generated when a station is added or removed.\n"]
 #[repr(C, packed)]
 #[derive(Debug, Copy, Clone)]
-
 pub struct umac_event_new_station {
     #[doc = " Header @ref umac_hdr"]
     pub umac_hdr: umac_hdr,
-
     #[doc = " Indicate if assoc_req ies is valid"]
     pub valid_fields: ::core::ffi::c_uint,
-
     #[doc = " set to 1: STA supports QoS/WME"]
     pub wme: ::core::ffi::c_uchar,
-
     #[doc = " Set to 1 if STA is Legacy(a/b/g)"]
     pub is_sta_legacy: ::core::ffi::c_uchar,
-
     #[doc = " Station mac address"]
     pub mac_addr: [::core::ffi::c_uchar; 6usize],
-
     #[doc = " generation number"]
     pub generation: ::core::ffi::c_uint,
-
     #[doc = " Station information @ref sta_info"]
     pub sta_info: sta_info,
-
     #[doc = " @ref ie"]
     pub assoc_req_ies: ie,
 }
-
 #[doc = " @brief This structure specifies the cookie response event, which is used to receive an\n  RPU cookie associated with the host cookie passed during UMAC_CMD_FRAME.\n"]
 #[repr(C, packed)]
 #[derive(Debug, Copy, Clone)]
-
 pub struct umac_event_cookie_rsp {
     #[doc = " Header @ref umac_hdr"]
     pub umac_hdr: umac_hdr,
-
     #[doc = " Indicate if assoc_req ies is valid"]
     pub valid_fields: ::core::ffi::c_uint,
-
     #[doc = " Identifier passed during UMAC_CMD_FRAME"]
     pub host_cookie: ::core::ffi::c_ulonglong,
-
     #[doc = " Cookie used to indicate TX done in UMAC_EVENT_FRAME_TX_STATUS"]
     pub cookie: ::core::ffi::c_ulonglong,
-
     #[doc = " Mac address"]
     pub mac_addr: [::core::ffi::c_uchar; 6usize],
 }
-
 #[doc = " @brief This structure represents the event that corresponds to the command\n  UMAC_CMD_GET_TX_POWER. It is used to retrieve the transmit power\n  information from the device\n"]
 #[repr(C, packed)]
 #[derive(Debug, Copy, Clone)]
-
 pub struct umac_event_get_tx_power {
     #[doc = " Header @ref umac_hdr"]
     pub umac_hdr: umac_hdr,
-
     #[doc = " Tx power in dbm"]
     pub txpwr_level: ::core::ffi::c_int,
 }
-
 #[doc = " @brief This structure represents the response to the command UMAC_CMD_SET_INTERFACE.\n  It contains the necessary information indicating the result or status of the interface\n  configuration operation after the command has been executed.\n"]
 #[repr(C, packed)]
 #[derive(Debug, Copy, Clone)]
-
 pub struct umac_event_set_interface {
     #[doc = " Header @ref umac_hdr"]
     pub umac_hdr: umac_hdr,
-
     #[doc = " return value"]
     pub return_value: ::core::ffi::c_int,
 }
-
 #[repr(i32)]
 #[doc = " @brief channel flags.\n\n Channel flags set by the regulatory control code.\n"]
-#[derive(Debug, Copy, Clone, Hash, PartialEq, Eq)]
-#[derive(num_enum::TryFromPrimitive)]
+#[derive(Debug, Copy, Clone, Hash, PartialEq, Eq, num_enum::TryFromPrimitive)]
 pub enum channel_flags {
     #[doc = " This channel is disabled"]
     CHAN_DISABLED = 1,
-
     #[doc = " do not initiate radiation, this includes sending probe requests or beaconing"]
     CHAN_NO_IR = 2,
-
     #[doc = " Radar detection is required on this channel hole at 1<<2"]
     CHAN_RADAR = 8,
-
     #[doc = " extension channel above this channel is not permitted"]
     CHAN_NO_HT40PLUS = 16,
-
     #[doc = " extension channel below this channel is not permitted"]
     CHAN_NO_HT40MINUS = 32,
-
     #[doc = " OFDM is not allowed on this channel"]
     CHAN_NO_OFDM = 64,
-
     #[doc = " If the driver supports 80 MHz on the band,\n this flag indicates that an 80 MHz channel cannot use this\n channel as the control or any of the secondary channels.\n This may be due to the driver or due to regulatory bandwidth\n restrictions."]
     CHAN_NO_80MHZ = 128,
-
     #[doc = " If the driver supports 160 MHz on the band,\n this flag indicates that an 160 MHz channel cannot use this\n channel as the control or any of the secondary channels.\n This may be due to the driver or due to regulatory bandwidth\n restrictions."]
     CHAN_NO_160MHZ = 256,
-
     #[doc = " @ref NL80211_FREQUENCY_ATTR_INDOOR_ONLY"]
     CHAN_INDOOR_ONLY = 512,
-
     #[doc = " @ref NL80211_FREQUENCY_ATTR_GO_CONCURRENT"]
     CHAN_GO_CONCURRENT = 1024,
-
     #[doc = " 20 MHz bandwidth is not permitted on this channel"]
     CHAN_NO_20MHZ = 2048,
-
     #[doc = " 10 MHz bandwidth is not permitted on this channel"]
     CHAN_NO_10MHZ = 4096,
 }
-
 #[doc = " @brief channel definition.\n"]
 #[repr(C, packed)]
 #[derive(Debug, Copy, Clone)]
-
 pub struct chan_definition {
     #[doc = " Frequency of the selected channel in MHz"]
     pub chan: channel,
-
     #[doc = " channel width"]
     pub width: ::core::ffi::c_int,
-
     #[doc = " center frequency of first segment"]
     pub center_frequency1: ::core::ffi::c_uint,
-
     #[doc = " center frequency of second segment (only with 80+80 MHz)"]
     pub center_frequency2: ::core::ffi::c_uint,
 }
-
 #[doc = " @brief This structure represents channel information and serves as the event for the\n  command UMAC_CMD_GET_CHANNEL.\n"]
 #[repr(C, packed)]
 #[derive(Debug, Copy, Clone)]
-
 pub struct umac_event_get_channel {
     #[doc = " Header @ref umac_hdr"]
     pub umac_hdr: umac_hdr,
-
     #[doc = " Channel information.@ref chan_definition"]
     pub chan_def: chan_definition,
 }
-
 #[doc = " @brief This structure represents the command used to retrieve connection information.\n"]
 #[repr(C, packed)]
 #[derive(Debug, Copy, Clone)]
-
 pub struct umac_cmd_conn_info {
     #[doc = " Header @ref umac_hdr"]
     pub umac_hdr: umac_hdr,
 }
-
 #[repr(i32)]
-#[derive(Debug, Copy, Clone, Hash, PartialEq, Eq)]
-#[derive(num_enum::TryFromPrimitive)]
+#[derive(Debug, Copy, Clone, Hash, PartialEq, Eq, num_enum::TryFromPrimitive)]
 pub enum link_mode {
     MODE_11B = 1,
-
     MODE_11A = 2,
-
     MODE_11G = 3,
-
     MODE_11N = 4,
-
     MODE_11AC = 5,
-
     MODE_11AX = 6,
 }
-
 #[doc = " @brief This structure represents the information related to the connection of a station.\n"]
 #[repr(C, packed)]
 #[derive(Debug, Copy, Clone)]
-
 pub struct umac_event_conn_info {
     #[doc = " Header @ref umac_hdr"]
     pub umac_hdr: umac_hdr,
-
     #[doc = " Beacon interval"]
     pub beacon_interval: ::core::ffi::c_ushort,
-
     #[doc = " DTIM interval"]
     pub dtim_interval: ::core::ffi::c_uchar,
-
     #[doc = " Station association state"]
     pub associated: ::core::ffi::c_uchar,
-
     #[doc = " TWT supported or not"]
     pub twt_capable: ::core::ffi::c_uchar,
-
     #[doc = " Refer &enum link_mode"]
     pub linkmode: ::core::ffi::c_uchar,
 }
-
 #[doc = " @brief This structure defines the command used to retrieve power save information.\n"]
 #[repr(C, packed)]
 #[derive(Debug, Copy, Clone)]
-
 pub struct umac_cmd_get_power_save_info {
     #[doc = " Header @ref umac_hdr"]
     pub umac_hdr: umac_hdr,
 }
-
 #[doc = " @brief This structure defines the command used to set the listen interval period.\n  It determines how frequently a device wakes up to check for any pending data or traffic\n  from the access point. By setting the listen interval, devices can adjust their power-saving\n  behavior to balance power efficiency and responsiveness to incoming data.\n"]
 #[repr(C, packed)]
 #[derive(Debug, Copy, Clone)]
-
 pub struct umac_cmd_set_listen_interval {
     #[doc = " Header @ref umac_hdr"]
     pub umac_hdr: umac_hdr,
-
     #[doc = " listen interval"]
     pub listen_interval: ::core::ffi::c_ushort,
 }
-
 #[doc = " @brief This structure represents the command used to enable or disable extended power save mode.\n  When enabled, the RPU wakes up based on the listen interval, allowing the device to spend more\n  time in a lower power state. When disabled, the RPU wakes up based on the DTIM period, which\n  may require more frequent wake-ups but can provide better responsiveness for receiving\n  multicast/broadcast traffic.\n"]
 #[repr(C, packed)]
 #[derive(Debug, Copy, Clone)]
-
 pub struct umac_cmd_config_extended_ps {
     #[doc = " Header @ref umac_hdr"]
     pub umac_hdr: umac_hdr,
-
     #[doc = " 1=enable 0=disable"]
     pub enable_extended_ps: ::core::ffi::c_uchar,
 }
-
 #[doc = " @brief This structure represents an event that provides information about the RPU power save\n  mode. It contains details regarding the current power save mode and its settings.\n"]
 #[repr(C, packed)]
-
 pub struct umac_event_power_save_info {
     #[doc = " Header @ref umac_hdr"]
     pub umac_hdr: umac_hdr,
-
     #[doc = " Power save mode. PS_MODE_LEGACY/PS_MODE_WMM"]
     pub ps_mode: ::core::ffi::c_uchar,
-
     #[doc = " Power save enable flag"]
     pub enabled: ::core::ffi::c_uchar,
-
     #[doc = " Extended power save ON(1)/OFF(0)"]
     pub extended_ps: ::core::ffi::c_uchar,
-
     #[doc = " Is TWT responder"]
     pub twt_responder: ::core::ffi::c_uchar,
-
     #[doc = " Power save timed out value"]
     pub ps_timeout: ::core::ffi::c_uint,
-
     #[doc = " Listen interval value"]
     pub listen_interval: ::core::ffi::c_ushort,
-
     #[doc = " Number TWT flows"]
     pub num_twt_flows: ::core::ffi::c_uchar,
-
     #[doc = " TWT info of each flow @ref umac_config_twt_info"]
     pub twt_flow_info: __IncompleteArrayField<umac_config_twt_info>,
 }
-
 #[doc = " @brief This structure contains information relevant to the \"Remain on Channel\" operation.\n  It is used to specify the details related to the duration and channel on which a device\n  needs to stay without regular data transmission or reception.\n"]
 #[repr(C, packed)]
 #[derive(Debug, Copy, Clone)]
-
 pub struct remain_on_channel_info {
     #[doc = " Amount of time to remain on specified channel"]
     pub dur: ::core::ffi::c_uint,
-
     #[doc = " Frequency configuration, see &struct freq_params"]
     pub freq_params: freq_params,
-
     #[doc = " Identifier to be used for processing UMAC_EVENT_COOKIE_RESP event"]
     pub host_cookie: ::core::ffi::c_ulonglong,
-
     #[doc = " Unused"]
     pub cookie: ::core::ffi::c_ulonglong,
 }
-
 #[doc = " @brief This structure represents the command used to keep the device awake on the specified\n  channel for a designated period. The command initiates the \"Remain on Channel\" operation.\n"]
 #[repr(C, packed)]
 #[derive(Debug, Copy, Clone)]
-
 pub struct umac_cmd_remain_on_channel {
     #[doc = " Header @ref umac_hdr"]
     pub umac_hdr: umac_hdr,
-
     #[doc = " Indicate which of the following parameters are valid"]
     pub valid_fields: ::core::ffi::c_uint,
-
     #[doc = " Information about channel parameters.@ref remain_on_channel_info"]
     pub info: remain_on_channel_info,
 }
-
 #[doc = " @brief This structure represents the command to cancel \"Remain on Channel\" operation.\n"]
 #[repr(C, packed)]
 #[derive(Debug, Copy, Clone)]
-
 pub struct umac_cmd_cancel_remain_on_channel {
     #[doc = " Header @ref umac_hdr"]
     pub umac_hdr: umac_hdr,
-
     #[doc = " Indicate which of the following parameters are valid"]
     pub valid_fields: ::core::ffi::c_uint,
-
     #[doc = " cookie to identify remain on channel"]
     pub cookie: ::core::ffi::c_ulonglong,
 }
-
 #[doc = " @brief This structure represents the response to command \"Remain on Channel\".\n"]
 #[repr(C, packed)]
 #[derive(Debug, Copy, Clone)]
-
 pub struct event_remain_on_channel {
     #[doc = " Header @ref umac_hdr"]
     pub umac_hdr: umac_hdr,
-
     #[doc = " Indicate which of the following parameters are valid"]
     pub valid_fields: ::core::ffi::c_uint,
-
     #[doc = " Frequency of the channel"]
     pub frequency: ::core::ffi::c_uint,
-
     #[doc = " duration that can be requested with the remain-on-channel operation(ms)"]
     pub dur: ::core::ffi::c_uint,
-
     #[doc = " see &enum channel_type"]
     pub ch_type: ::core::ffi::c_uint,
-
     #[doc = " cookie to identify remain on channel"]
     pub cookie: ::core::ffi::c_ulonglong,
 }
-
 #[doc = " @brief This structure defines the command used to retrieve interface information.\n"]
 #[repr(C, packed)]
 #[derive(Debug, Copy, Clone)]
-
 pub struct cmd_get_interface {
     #[doc = " Header @ref umac_hdr"]
     pub umac_hdr: umac_hdr,
 }
-
 #[doc = " @brief This structure represents an event that contains information about a network interface.\n"]
 #[repr(C, packed)]
 #[derive(Debug, Copy, Clone)]
-
 pub struct interface_info {
     #[doc = " Header @ref umac_hdr"]
     pub umac_hdr: umac_hdr,
-
     #[doc = " Indicate which of the following parameters are valid"]
     pub valid_fields: ::core::ffi::c_uint,
-
     #[doc = " Interface type, see &enum iftype"]
     pub iftype: ::core::ffi::c_int,
-
     #[doc = " Interface name"]
     pub ifacename: [::core::ffi::c_schar; 16usize],
-
     #[doc = " Mac address"]
     pub eth_addr: [::core::ffi::c_uchar; 6usize],
-
     #[doc = " @ref chan_definition"]
     pub chan_def: chan_definition,
-
     #[doc = " @ref ssid"]
     pub ssid: ssid,
 }
-
 #[doc = " @brief MCS information.\n"]
 #[repr(C, packed)]
 #[derive(Debug, Copy, Clone)]
-
 pub struct event_mcs_info {
     #[doc = " Highest supported RX rate"]
     pub rx_highest: ::core::ffi::c_ushort,
-
     #[doc = " RX mask"]
     pub rx_mask: [::core::ffi::c_uchar; 10usize],
-
     #[doc = " TX parameters"]
     pub tx_params: ::core::ffi::c_uchar,
-
     #[doc = " reserved"]
     pub reserved: [::core::ffi::c_uchar; 3usize],
 }
-
 #[doc = " @brief This structure represents HT capability parameters.\n"]
 #[repr(C, packed)]
 #[derive(Debug, Copy, Clone)]
-
 pub struct event_sta_ht_cap {
     #[doc = " 1 indicates HT Supported"]
     pub ht_supported: ::core::ffi::c_int,
-
     #[doc = " HT capabilities, as in the HT information IE"]
     pub cap: ::core::ffi::c_ushort,
-
     #[doc = " MCS information. @ref event_mcs_info"]
     pub mcs: event_mcs_info,
-
     #[doc = " A-MPDU factor, as in 11n"]
     pub ampdu_factor: ::core::ffi::c_uchar,
-
     #[doc = " A-MPDU density, as in 11n"]
     pub ampdu_density: ::core::ffi::c_uchar,
 }
-
 #[doc = " @brief This structure represents channel parameters."]
 #[repr(C, packed)]
 #[derive(Debug, Copy, Clone)]
-
 pub struct event_channel {
     #[doc = " channel flags CHAN_FLAG_FREQUENCY_ATTR_NO_IBSS"]
     pub flags: ::core::ffi::c_ushort,
-
     #[doc = " maximum transmission power (in dBm)"]
     pub max_power: ::core::ffi::c_int,
-
     #[doc = " DFS state time"]
     pub time: ::core::ffi::c_uint,
-
     #[doc = " DFS CAC time in ms"]
     pub dfs_cac_msec: ::core::ffi::c_uint,
-
     #[doc = " Channel parameters are valid or not 1=valid"]
     pub ch_valid: ::core::ffi::c_schar,
-
     #[doc = " Channel center frequency"]
     pub center_frequency: ::core::ffi::c_ushort,
-
     #[doc = " Current dfs state"]
     pub dfs_state: ::core::ffi::c_schar,
 }
-
 #[doc = " @brief This structure represents rate information."]
 #[repr(C, packed)]
 #[derive(Debug, Copy, Clone)]
-
 pub struct event_rate {
     #[doc = " EVENT_GET_WIPHY_FLAG_RATE_SHORT_PREAMBLE"]
     pub flags: ::core::ffi::c_ushort,
-
     #[doc = " Bitrate in units of 100 kbps"]
     pub bitrate: ::core::ffi::c_ushort,
 }
-
 #[doc = " @brief VHT MCS information.\n"]
 #[repr(C, packed)]
 #[derive(Debug, Copy, Clone)]
-
 pub struct event_vht_mcs_info {
     #[doc = " RX MCS map 2 bits for each stream, total 8 streams"]
     pub rx_mcs_map: ::core::ffi::c_ushort,
-
     #[doc = " Indicates highest long GI VHT PPDU data rate\n  STA can receive. Rate expressed in units of 1 Mbps.\n  If this field is 0 this value should not be used to\n  consider the highest RX data rate supported."]
     pub rx_highest: ::core::ffi::c_ushort,
-
     #[doc = " TX MCS map 2 bits for each stream, total 8 streams"]
     pub tx_mcs_map: ::core::ffi::c_ushort,
-
     #[doc = " Indicates highest long GI VHT PPDU data rate\n  STA can transmit. Rate expressed in units of 1 Mbps.\n  If this field is 0 this value should not be used to\n  consider the highest TX data rate supported."]
     pub tx_highest: ::core::ffi::c_ushort,
 }
-
 #[doc = " @brief This structure represents VHT capability parameters.\n"]
 #[repr(C, packed)]
 #[derive(Debug, Copy, Clone)]
-
 pub struct event_sta_vht_cap {
     #[doc = " 1 indicates VHT Supported"]
     pub vht_supported: ::core::ffi::c_schar,
-
     #[doc = " VHT capability info"]
     pub cap: ::core::ffi::c_uint,
-
     #[doc = " Refer @ref event_vht_mcs_info"]
     pub vht_mcs: event_vht_mcs_info,
 }
-
 #[doc = " @brief Frequency band information.\n"]
 #[repr(C, packed)]
 #[derive(Debug, Copy, Clone)]
-
 pub struct event_supported_band {
     #[doc = " No.of channels"]
     pub n_channels: ::core::ffi::c_ushort,
-
     #[doc = " No.of bitrates"]
     pub n_bitrates: ::core::ffi::c_ushort,
-
     #[doc = " Array of channels the hardware can operate in this band"]
     pub channels: [event_channel; 29usize],
-
     #[doc = " Array of bitrates the hardware can operate with in this band"]
     pub bitrates: [event_rate; 13usize],
-
     #[doc = " HT capabilities in this band"]
     pub ht_cap: event_sta_ht_cap,
-
     #[doc = " VHT capabilities in this band"]
     pub vht_cap: event_sta_vht_cap,
-
     #[doc = " the band this structure represents"]
     pub band: ::core::ffi::c_schar,
 }
-
 #[doc = " @brief Interface limits.\n"]
 #[repr(C, packed)]
 #[derive(Debug, Copy, Clone)]
-
 pub struct event_iface_limit {
     #[doc = " max interface limits"]
     pub max: ::core::ffi::c_ushort,
-
     #[doc = " types"]
     pub types: ::core::ffi::c_ushort,
 }
-
 #[doc = " @brief This structure defines an event that represents interface combinations.\n"]
 #[repr(C, packed)]
 #[derive(Debug, Copy, Clone)]
-
 pub struct event_iface_combination {
     #[doc = " channels count"]
     pub num_different_channels: ::core::ffi::c_uint,
-
     #[doc = " Unused"]
     pub beacon_int_infra_match: ::core::ffi::c_int,
-
     #[doc = " @ref event_iface_limit"]
     pub limits: [event_iface_limit; 2usize],
-
     #[doc = " Max interfaces"]
     pub max_interfaces: ::core::ffi::c_ushort,
-
     #[doc = " Not used"]
     pub radar_detect_widths: ::core::ffi::c_uchar,
-
     #[doc = " Not used"]
     pub n_limits: ::core::ffi::c_uchar,
-
     #[doc = " Not used"]
     pub radar_detect_regions: ::core::ffi::c_uchar,
-
     #[doc = " Not used"]
     pub comb_valid: ::core::ffi::c_uchar,
 }
-
 #[doc = " @brief This structure represents wiphy parameters.\n"]
 #[repr(C, packed)]
 #[derive(Debug, Copy, Clone)]
-
 pub struct event_get_wiphy {
     #[doc = " Header @ref umac_hdr"]
     pub umac_hdr: umac_hdr,
-
     #[doc = " Unused"]
     pub frag_threshold: ::core::ffi::c_uint,
-
     #[doc = " RTS threshold value"]
     pub rts_threshold: ::core::ffi::c_uint,
-
     #[doc = " Unused"]
     pub available_antennas_tx: ::core::ffi::c_uint,
-
     #[doc = " Unused"]
     pub available_antennas_rx: ::core::ffi::c_uint,
-
     #[doc = " Unused"]
     pub probe_resp_offload: ::core::ffi::c_uint,
-
     #[doc = " Unused"]
     pub tx_ant: ::core::ffi::c_uint,
-
     #[doc = " Unused"]
     pub rx_ant: ::core::ffi::c_uint,
-
     #[doc = " Unused"]
     pub split_start2_flags: ::core::ffi::c_uint,
-
     #[doc = " Maximum ROC duration"]
     pub max_remain_on_channel_duration: ::core::ffi::c_uint,
-
     #[doc = " Unused"]
     pub ap_sme_capa: ::core::ffi::c_uint,
-
     #[doc = " Unused"]
     pub features: ::core::ffi::c_uint,
-
     #[doc = " Unused"]
     pub max_acl_mac_addresses: ::core::ffi::c_uint,
-
     #[doc = " maximum number of associated stations supported in AP mode"]
     pub max_ap_assoc_sta: ::core::ffi::c_uint,
-
     #[doc = " supported cipher suites"]
     pub cipher_suites: [::core::ffi::c_uint; 30usize],
-
     #[doc = " wiphy flags EVENT_GET_WIPHY_AP_UAPSD"]
     pub get_wiphy_flags: ::core::ffi::c_uint,
-
     #[doc = " valid parameters GET_WIPHY_VALID_WIPHY_NAME"]
     pub params_valid: ::core::ffi::c_uint,
-
     #[doc = " Maximum scan IE length"]
     pub max_scan_ie_len: ::core::ffi::c_ushort,
-
     #[doc = " Unused"]
     pub max_sched_scan_ie_len: ::core::ffi::c_ushort,
-
     #[doc = " bit mask of interface value of see &enum iftype"]
     pub interface_modes: ::core::ffi::c_ushort,
-
     #[doc = " Unused"]
     pub iface_com: [event_iface_combination; 6usize],
-
     #[doc = " Unused"]
     pub supp_commands: [::core::ffi::c_schar; 40usize],
-
     #[doc = " Retry limit for short frames"]
     pub retry_short: ::core::ffi::c_uchar,
-
     #[doc = " Retry limit for long frames"]
     pub retry_long: ::core::ffi::c_uchar,
-
     #[doc = " Unused"]
     pub coverage_class: ::core::ffi::c_uchar,
-
     #[doc = " Maximum ssids supported in scan"]
     pub max_scan_ssids: ::core::ffi::c_uchar,
-
     #[doc = " Unused"]
     pub max_sched_scan_ssids: ::core::ffi::c_uchar,
-
     #[doc = " Unused"]
     pub max_match_sets: ::core::ffi::c_uchar,
-
     #[doc = " Unused"]
     pub n_cipher_suites: ::core::ffi::c_uchar,
-
     #[doc = " Unused"]
     pub max_num_pmkids: ::core::ffi::c_uchar,
-
     #[doc = " length of the extended capabilities"]
     pub extended_capabilities_len: ::core::ffi::c_uchar,
-
     #[doc = " Extended capabilities"]
     pub extended_capabilities: [::core::ffi::c_uchar; 10usize],
-
     #[doc = " Extended capabilities mask"]
     pub extended_capabilities_mask: [::core::ffi::c_uchar; 10usize],
-
     #[doc = " Unused"]
     pub ext_features: [::core::ffi::c_uchar; 8usize],
-
     #[doc = " Unused"]
     pub ext_features_len: ::core::ffi::c_uchar,
-
     #[doc = " Unused"]
     pub num_iface_com: ::core::ffi::c_schar,
-
     #[doc = " Wiphy name"]
     pub wiphy_name: [::core::ffi::c_schar; 32usize],
-
     #[doc = " Supported bands info. @ref event_supported_band"]
     pub sband: [event_supported_band; 2usize],
 }
-
 #[doc = " @brief This structure represents the command used to retrieve Wireless PHY (wiphy) information.\n"]
 #[repr(C, packed)]
 #[derive(Debug, Copy, Clone)]
-
 pub struct cmd_get_wiphy {
     #[doc = " Header @ref umac_hdr"]
     pub umac_hdr: umac_hdr,
 }
-
 #[doc = " @brief This structure represents the command to get hardware address.\n"]
 #[repr(C, packed)]
 #[derive(Debug, Copy, Clone)]
-
 pub struct cmd_get_ifhwaddr {
     #[doc = " Header @ref umac_hdr"]
     pub umac_hdr: umac_hdr,
-
     #[doc = " Interface name"]
     pub ifacename: [::core::ffi::c_schar; 16usize],
 }
-
 #[doc = " @brief This structure represents the command used to retrieve the hardware address or\n  MAC address of the device.\n"]
 #[repr(C, packed)]
 #[derive(Debug, Copy, Clone)]
-
 pub struct cmd_set_ifhwaddr {
     #[doc = " Header @ref umac_hdr"]
     pub umac_hdr: umac_hdr,
-
     #[doc = " Interface name"]
     pub ifacename: [::core::ffi::c_schar; 16usize],
-
     #[doc = " Hardware address to be set"]
     pub hwaddr: [::core::ffi::c_uchar; 6usize],
 }
-
 #[doc = " @brief This structure represents the information related to the regulatory domain\n  of a wireless device. The regulatory domain defines the specific rules and regulations\n  that govern the usage of radio frequencies in a particular geographical region.\n"]
 #[repr(C, packed)]
 #[derive(Debug, Copy, Clone)]
-
 pub struct reg_rules {
     #[doc = " Indicate which of the following parameters are valid"]
     pub valid_fields: ::core::ffi::c_uint,
-
     #[doc = " RULE_FLAGS_NO_CCK and RULE_FLAGS_NO_INDOOR"]
     pub rule_flags: ::core::ffi::c_uint,
-
     #[doc = " starting frequencry for the regulatory rule in KHz"]
     pub freq_range_start: ::core::ffi::c_uint,
-
     #[doc = " ending frequency for the regulatory rule in KHz"]
     pub freq_range_end: ::core::ffi::c_uint,
-
     #[doc = " maximum allowed bandwidth for this frequency range"]
     pub freq_range_max_bw: ::core::ffi::c_uint,
-
     #[doc = " maximum allowed EIRP mBm (100 * dBm)"]
     pub pwr_max_eirp: ::core::ffi::c_uint,
 }
-
 #[doc = " @brief This structure represents channels information like maximum power,\n  center frequency, channel supported and active or passive scan.\n"]
 #[repr(C, packed)]
 #[derive(Debug, Copy, Clone)]
-
 pub struct get_reg_chn_info {
     #[doc = " center frequency in MHz"]
     pub center_frequency: ::core::ffi::c_uint,
-
     #[doc = " maximum transmission power (in dBm)"]
     pub max_power: ::core::ffi::c_uint,
-
     #[doc = " Particular channel is supported or not"]
     pub supported: ::core::ffi::c_char,
-
     #[doc = " Particular channel is supports passive scanning or not"]
     pub passive_channel: ::core::ffi::c_char,
-
     #[doc = " Particular channel is dfs or not"]
     pub dfs: ::core::ffi::c_char,
 }
-
 #[doc = " @brief This structure represents an event that contains regulatory domain information.\n"]
 #[repr(C, packed)]
-
 pub struct reg {
     #[doc = " Header @ref umac_hdr"]
     pub umac_hdr: umac_hdr,
-
     #[doc = " Country code"]
     pub alpha2: [::core::ffi::c_uchar; 2usize],
-
     #[doc = " Number of channel list information"]
     pub num_channels: ::core::ffi::c_uint,
-
     #[doc = " channels list information"]
     pub chn_info: __IncompleteArrayField<get_reg_chn_info>,
 }
-
 #[doc = " @brief This structure represents the command used to set the regulatory domain\n  for a wireless device. It allows configuring the device to adhere to the rules\n  and regulations specific to the geographical region in which it is operating.\n"]
 #[repr(C, packed)]
 #[derive(Debug, Copy, Clone)]
-
 pub struct cmd_req_set_reg {
     #[doc = " Header @ref umac_hdr"]
     pub umac_hdr: umac_hdr,
-
     #[doc = " Indicate which of the following parameters are valid"]
     pub valid_fields: ::core::ffi::c_uint,
-
     #[doc = " Type of regulatory hint passed from userspace"]
     pub user_reg_hint_type: ::core::ffi::c_uint,
-
     #[doc = " Country code"]
     pub alpha2: [::core::ffi::c_uchar; 2usize],
 }
-
 #[doc = " @brief This structure represents the status code for a command. It is used to indicate\n  the outcome or result of executing a specific command. The status code provides valuable\n  information about the success, failure, or any errors encountered during the execution\n  of the command, helping to understand the current state of the device.\n"]
 #[repr(C, packed)]
 #[derive(Debug, Copy, Clone)]
-
 pub struct umac_event_cmd_status {
     #[doc = " Header @ref umac_hdr"]
     pub umac_hdr: umac_hdr,
-
     #[doc = " Command id. see &enum umac_commands"]
     pub cmd_id: ::core::ffi::c_uint,
-
     #[doc = " Status codes"]
     pub cmd_status: ::core::ffi::c_uint,
 }
