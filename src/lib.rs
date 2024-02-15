@@ -123,6 +123,13 @@ impl_cmd!(
     c::umac_commands::UMAC_CMD_CHANGE_MACADDR
 );
 impl_cmd!(umac, c::umac_cmd_chg_vif_state, c::umac_commands::UMAC_CMD_SET_IFFLAGS);
+impl_cmd!(umac, c::umac_cmd_scan, c::umac_commands::UMAC_CMD_TRIGGER_SCAN);
+impl_cmd!(umac, c::umac_cmd_abort_scan, c::umac_commands::UMAC_CMD_ABORT_SCAN);
+impl_cmd!(
+    umac,
+    c::umac_cmd_get_scan_results,
+    c::umac_commands::UMAC_CMD_GET_SCAN_RESULTS
+);
 
 fn sliceit<T>(t: &T) -> &[u8] {
     unsafe { slice::from_raw_parts(t as *const _ as _, size_of::<T>()) }
@@ -216,10 +223,10 @@ pub(crate) enum Processor {
     UMAC,
 }
 
-static FW_LMAC_PATCH_PRI: &[u8] = include_aligned!(Align16, "../fw/lmac_patch_pri_bimg.bin");
-static FW_LMAC_PATCH_SEC: &[u8] = include_aligned!(Align16, "../fw/lmac_patch_sec_bin.bin");
-static FW_UMAC_PATCH_PRI: &[u8] = include_aligned!(Align16, "../fw/umac_patch_pri_bimg.bin");
-static FW_UMAC_PATCH_SEC: &[u8] = include_aligned!(Align16, "../fw/umac_patch_sec_bin.bin");
+static FW_LMAC_PATCH_PRI: &[u8] = include_aligned!(Align16, "../fw/nrf_wifi_lmac_patch_pri_bimg.bin");
+static FW_LMAC_PATCH_SEC: &[u8] = include_aligned!(Align16, "../fw/nrf_wifi_lmac_patch_sec_bin.bin");
+static FW_UMAC_PATCH_PRI: &[u8] = include_aligned!(Align16, "../fw/nrf_wifi_umac_patch_pri_bimg.bin");
+static FW_UMAC_PATCH_SEC: &[u8] = include_aligned!(Align16, "../fw/nrf_wifi_umac_patch_sec_bin.bin");
 
 const SR0_WRITE_IN_PROGRESS: u8 = 0x01;
 
@@ -402,7 +409,10 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
                     Ok(c::host_rpu_msg_type::HOST_RPU_MSG_TYPE_SYSTEM) => {
                         let msg: &c::sys_head = unsliceit(buf);
                         match c::sys_events::try_from(msg.cmd_event) {
-                            Ok(c::sys_events::EVENT_INIT_DONE) => info!("======== INIT DONE!! =========="),
+                            Ok(c::sys_events::EVENT_INIT_DONE) => {
+                                info!("======== INIT DONE!! ==========");
+                                self.on_init().await;
+                            }
                             _ => warn!("unknown sys event type {:08x}", meh(msg.cmd_event)),
                         }
                     }
@@ -416,6 +426,18 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
 
             self.rpu_irq_ack().await;
         }
+    }
+
+    pub async fn on_init(&mut self) {
+        self.send_cmd(c::umac_cmd_scan {
+            umac_hdr: unsafe { zeroed() },
+            info: c::umac_scan_info {
+                scan_mode: c::scan_mode::AUTO_SCAN as _,
+                scan_reason: c::scan_reason::SCAN_DISPLAY as _,
+                scan_params: unsafe { zeroed() },
+            },
+        })
+        .await
     }
 
     async fn rpu_irq_enable(&mut self) {
@@ -493,32 +515,28 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
     }
 
     pub async fn rpu_cmd_ctrl_send(&mut self, message: &[u8]) {
-        if message.len() > c::MAX_UMAC_CMD_SIZE as usize {
-            todo!("Fragmenting commands is not yet implemented");
-        } else {
-            // Wait until we get an address to write to
-            // This queue might already be full with other messages, so we'll just have to wait a bit
-            let message_address = loop {
-                if let Some(message_address) = self
-                    .rpu_hpq_dequeue(self.rpu_info.as_ref().unwrap().hpqm_info.cmd_avl_queue)
-                    .await
-                {
-                    break message_address;
-                }
-            };
+        // Wait until we get an address to write to
+        // This queue might already be full with other messages, so we'll just have to wait a bit
+        let message_address = loop {
+            if let Some(message_address) = self
+                .rpu_hpq_dequeue(self.rpu_info.as_ref().unwrap().hpqm_info.cmd_avl_queue)
+                .await
+            {
+                break message_address;
+            }
+        };
 
-            // Write the message to the suggested address
-            self.write(message_address, None, slice32(message)).await;
+        // Write the message to the suggested address
+        self.write(message_address, None, slice32(message)).await;
 
-            // Post the updated information to the RPU
-            self.rpu_hpq_enqueue(
-                self.rpu_info.as_ref().unwrap().hpqm_info.cmd_busy_queue,
-                message_address,
-            )
-            .await;
+        // Post the updated information to the RPU
+        self.rpu_hpq_enqueue(
+            self.rpu_info.as_ref().unwrap().hpqm_info.cmd_busy_queue,
+            message_address,
+        )
+        .await;
 
-            self.rpu_msg_trigger().await;
-        }
+        self.rpu_msg_trigger().await;
     }
 
     async fn rpu_hpq_enqueue(&mut self, hpq: HostRpuHPQ, value: u32) {
@@ -555,7 +573,7 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
     async fn send_cmd<T: Command>(&mut self, mut cmd: T) {
         cmd.fill();
 
-        const MAX_CMD_SIZE: usize = 512; // TODO this is a wild guess.
+        const MAX_CMD_SIZE: usize = 1024; // TODO this is a wild guess.
 
         let mut buf = [0u32; MAX_CMD_SIZE / 4];
         let buf8 = slice8_mut(&mut buf);
@@ -777,7 +795,7 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
 
     async fn raw_read32(&mut self, mem: &MemoryRegion, offs: u32) -> u32 {
         let res = self.raw_read32_inner(mem, offs).await;
-        info!("read32 {:08x} {:08x}", mem.start + offs, res);
+        trace!("read32 {:08x} {:08x}", mem.start + offs, res);
         res
     }
 
@@ -794,7 +812,7 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
                 *val = self.raw_read32_inner(mem, offs + i as u32 * 4).await;
             }
         }
-        info!(
+        trace!(
             "read addr={:08x} len={:08x} buf={:02x}",
             mem.start + offs,
             buf.len() * 4,
@@ -807,7 +825,7 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
 
     async fn raw_write(&mut self, mem: &MemoryRegion, offs: u32, buf: &[u32]) {
         assert!(mem.start + offs + (buf.len() as u32 * 4) <= mem.end);
-        info!(
+        trace!(
             "write addr={:08x} len={:08x} buf={:02x}",
             mem.start + offs,
             buf.len() * 4,
@@ -870,40 +888,28 @@ pub trait Bus {
     async fn write_sr2(&mut self, val: u8);
 }
 
-pub struct SpiBus<T> {
-    spi: T,
-}
-
-impl<T> SpiBus<T> {
-    pub fn new(spi: T) -> Self {
-        Self { spi }
-    }
-}
-
-impl<T: SpiDevice> Bus for SpiBus<T> {
+impl<T: SpiDevice> Bus for T {
     async fn read(&mut self, addr: u32, buf: &mut [u32]) {
-        self.spi
-            .transaction(&mut [
-                Operation::Write(&[0x0B, (addr >> 16) as u8, (addr >> 8) as u8, addr as u8, 0x00]),
-                Operation::Read(slice8_mut(buf)),
-            ])
-            .await
-            .unwrap()
+        self.transaction(&mut [
+            Operation::Write(&[0x0B, (addr >> 16) as u8, (addr >> 8) as u8, addr as u8, 0x00]),
+            Operation::Read(slice8_mut(buf)),
+        ])
+        .await
+        .unwrap()
     }
 
     async fn write(&mut self, addr: u32, buf: &[u32]) {
-        self.spi
-            .transaction(&mut [
-                Operation::Write(&[0x02, (addr >> 16) as u8 | 0x80, (addr >> 8) as u8, addr as u8]),
-                Operation::Write(slice8(buf)),
-            ])
-            .await
-            .unwrap()
+        self.transaction(&mut [
+            Operation::Write(&[0x02, (addr >> 16) as u8 | 0x80, (addr >> 8) as u8, addr as u8]),
+            Operation::Write(slice8(buf)),
+        ])
+        .await
+        .unwrap()
     }
 
     async fn read_sr0(&mut self) -> u8 {
         let mut buf = [0; 2];
-        self.spi.transfer(&mut buf, &[0x05]).await.unwrap();
+        self.transfer(&mut buf, &[0x05]).await.unwrap();
         let val = buf[1];
         defmt::trace!("read sr0 = {:02x}", val);
         val
@@ -911,7 +917,7 @@ impl<T: SpiDevice> Bus for SpiBus<T> {
 
     async fn read_sr1(&mut self) -> u8 {
         let mut buf = [0; 2];
-        self.spi.transfer(&mut buf, &[0x1f]).await.unwrap();
+        self.transfer(&mut buf, &[0x1f]).await.unwrap();
         let val = buf[1];
         defmt::trace!("read sr1 = {:02x}", val);
         val
@@ -919,7 +925,7 @@ impl<T: SpiDevice> Bus for SpiBus<T> {
 
     async fn read_sr2(&mut self) -> u8 {
         let mut buf = [0; 2];
-        self.spi.transfer(&mut buf, &[0x2f]).await.unwrap();
+        self.transfer(&mut buf, &[0x2f]).await.unwrap();
         let val = buf[1];
         defmt::trace!("read sr2 = {:02x}", val);
         val
@@ -927,7 +933,7 @@ impl<T: SpiDevice> Bus for SpiBus<T> {
 
     async fn write_sr2(&mut self, val: u8) {
         defmt::trace!("write sr2 = {:02x}", val);
-        self.spi.write(&[0x3f, val]).await.unwrap();
+        self.write(&[0x3f, val]).await.unwrap();
     }
 }
 

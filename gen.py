@@ -30,6 +30,7 @@ h = h.replace("pub enum", "#[derive(num_enum::TryFromPrimitive)] pub enum")
 h = h.replace("NRF_WIFI_802", "IEEE_802")
 h = h.replace("NRF_WIFI_", "")
 h = h.replace("nrf_wifi_", "")
+h = h.replace("\n", "\n\n")
 open("fw/bindings.rs", "w").write(h)
 
 subprocess.run(

@@ -12,7 +12,6 @@ use embassy_nrf::spim::Spim;
 use embassy_nrf::{bind_interrupts, spim};
 use embassy_time::{Delay, Duration, Timer};
 use embedded_hal_bus::spi::ExclusiveDevice;
-use nrf70::SpiBus;
 use {embassy_nrf as _, panic_probe as _};
 
 bind_interrupts!(struct Irqs {
@@ -56,7 +55,6 @@ async fn main(spawner: Spawner) {
     let spim = Spim::new(p.SERIAL0, Irqs, sck, dio1, dio0, config);
     let csn = Output::new(csn, Level::High, OutputDrive::HighDrive);
     let spi = ExclusiveDevice::new(spim, csn, Delay);
-    let bus = SpiBus::new(spi);
 
     /*
     // QSPI is not working well yet.
@@ -72,7 +70,7 @@ async fn main(spawner: Spawner) {
     */
 
     let mut state = nrf70::State::new();
-    let (device, control, mut runner) = nrf70::new(&mut state, bus, bucken, iovdd_ctl, host_irq).await;
+    let (device, control, mut runner) = nrf70::new(&mut state, spi, bucken, iovdd_ctl, host_irq).await;
 
     runner.run().await;
 }
