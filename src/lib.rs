@@ -6,6 +6,7 @@ use core::mem::{align_of, size_of, size_of_val, zeroed};
 use core::slice;
 
 use align_data::{include_aligned, Align16};
+use commands::Command;
 use defmt::{assert, panic, todo, unwrap, *};
 use embassy_net_driver_channel as ch;
 use embassy_net_driver_channel::driver::LinkState;
@@ -15,6 +16,8 @@ use embedded_hal::spi::Operation;
 use embedded_hal_async::digital::Wait;
 use embedded_hal_async::spi::SpiDevice;
 use regions::*;
+
+mod commands;
 
 #[allow(unused)]
 #[allow(non_camel_case_types)]
@@ -85,51 +88,6 @@ pub struct Control<'a> {
     shared: &'a Shared,
     state_ch: ch::StateRunner<'a>,
 }
-
-trait Command {
-    const MESSAGE_TYPE: c::host_rpu_msg_type;
-    fn fill(&mut self);
-}
-
-macro_rules! impl_cmd {
-    (sys, $cmd:path, $num:expr) => {
-        impl Command for $cmd {
-            const MESSAGE_TYPE: c::host_rpu_msg_type = c::host_rpu_msg_type::HOST_RPU_MSG_TYPE_SYSTEM;
-            fn fill(&mut self) {
-                self.sys_head = c::sys_head {
-                    cmd_event: $num as _,
-                    len: size_of::<Self>() as _,
-                };
-            }
-        }
-    };
-    (umac, $cmd:path, $num:expr) => {
-        impl Command for $cmd {
-            const MESSAGE_TYPE: c::host_rpu_msg_type = c::host_rpu_msg_type::HOST_RPU_MSG_TYPE_UMAC;
-            fn fill(&mut self) {
-                self.umac_hdr = c::umac_hdr {
-                    cmd_evnt: $num as _,
-                    ..unsafe { zeroed() }
-                };
-            }
-        }
-    };
-}
-
-impl_cmd!(sys, c::cmd_sys_init, c::sys_commands::CMD_INIT);
-impl_cmd!(
-    umac,
-    c::umac_cmd_change_macaddr,
-    c::umac_commands::UMAC_CMD_CHANGE_MACADDR
-);
-impl_cmd!(umac, c::umac_cmd_chg_vif_state, c::umac_commands::UMAC_CMD_SET_IFFLAGS);
-impl_cmd!(umac, c::umac_cmd_scan, c::umac_commands::UMAC_CMD_TRIGGER_SCAN);
-impl_cmd!(umac, c::umac_cmd_abort_scan, c::umac_commands::UMAC_CMD_ABORT_SCAN);
-impl_cmd!(
-    umac,
-    c::umac_cmd_get_scan_results,
-    c::umac_commands::UMAC_CMD_GET_SCAN_RESULTS
-);
 
 fn sliceit<T>(t: &T) -> &[u8] {
     unsafe { slice::from_raw_parts(t as *const _ as _, size_of::<T>()) }
@@ -413,7 +371,6 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
                         match c::sys_events::try_from(msg.cmd_event as i32) {
                             Ok(c::sys_events::EVENT_INIT_DONE) => {
                                 info!("======== INIT DONE!! ==========");
-                                self.on_init().await;
                             }
                             _ => warn!("unknown sys event type {:08x}", meh(msg.cmd_event)),
                         }
@@ -428,18 +385,6 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
 
             self.rpu_irq_ack().await;
         }
-    }
-
-    pub async fn on_init(&mut self) {
-        self.send_cmd(c::umac_cmd_scan {
-            umac_hdr: unsafe { zeroed() },
-            info: c::umac_scan_info {
-                scan_mode: c::scan_mode::AUTO_SCAN as _,
-                scan_reason: c::scan_reason::SCAN_DISPLAY as _,
-                scan_params: unsafe { zeroed() },
-            },
-        })
-        .await
     }
 
     async fn rpu_irq_enable(&mut self) {
