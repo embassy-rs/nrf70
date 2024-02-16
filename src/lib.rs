@@ -223,10 +223,10 @@ pub(crate) enum Processor {
     UMAC,
 }
 
-static FW_LMAC_PATCH_PRI: &[u8] = include_aligned!(Align16, "../fw/nrf_wifi_lmac_patch_pri_bimg.bin");
-static FW_LMAC_PATCH_SEC: &[u8] = include_aligned!(Align16, "../fw/nrf_wifi_lmac_patch_sec_bin.bin");
-static FW_UMAC_PATCH_PRI: &[u8] = include_aligned!(Align16, "../fw/nrf_wifi_umac_patch_pri_bimg.bin");
-static FW_UMAC_PATCH_SEC: &[u8] = include_aligned!(Align16, "../fw/nrf_wifi_umac_patch_sec_bin.bin");
+static FW_LMAC_PATCH_PRI: &[u8] = include_aligned!(Align16, "../fw/lmac_patch_pri_bimg.bin");
+static FW_LMAC_PATCH_SEC: &[u8] = include_aligned!(Align16, "../fw/lmac_patch_sec_bin.bin");
+static FW_UMAC_PATCH_PRI: &[u8] = include_aligned!(Align16, "../fw/umac_patch_pri_bimg.bin");
+static FW_UMAC_PATCH_SEC: &[u8] = include_aligned!(Align16, "../fw/umac_patch_sec_bin.bin");
 
 const SR0_WRITE_IN_PROGRESS: u8 = 0x01;
 
@@ -341,7 +341,9 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
 
         info!("booting LMAC...");
         self.raw_write32(SYSBUS, 0x000, 0x01).await; // reset
-        while self.raw_read32(GRAM, 0xD50).await != 0x5A5A5A5A {}
+        while self.raw_read32(GRAM, 0xD50).await != 0x5A5A5A5A {
+            embassy_time::Timer::after_millis(10).await;
+        }
 
         info!("load UMAC firmware patches...");
         self.raw_write32(SYSBUS, 0x100, 0x01).await; // reset
@@ -405,10 +407,10 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
 
                 let buf = slice8(&buf);
                 let (msg, buf) = unsliceit2::<c::host_rpu_msg>(buf);
-                match c::host_rpu_msg_type::try_from(msg.type_ as u32) {
+                match c::host_rpu_msg_type::try_from(msg.type_ as i32) {
                     Ok(c::host_rpu_msg_type::HOST_RPU_MSG_TYPE_SYSTEM) => {
                         let msg: &c::sys_head = unsliceit(buf);
-                        match c::sys_events::try_from(msg.cmd_event) {
+                        match c::sys_events::try_from(msg.cmd_event as i32) {
                             Ok(c::sys_events::EVENT_INIT_DONE) => {
                                 info!("======== INIT DONE!! ==========");
                                 self.on_init().await;
@@ -654,7 +656,6 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
                 vbat_threshold: 0,
             },
             country_code: [0, 0],
-            mgmt_buff_offload: 0,
             op_band: 0,
             tcp_ip_checksum_offload: 0,
             tx_pwr_ctrl_params: c::tx_pwr_ctrl_params {
