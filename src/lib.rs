@@ -72,12 +72,37 @@ impl State {
 
 pub type NetDriver<'a> = ch::Device<'a, MTU>;
 
+/// Board settings, which the nRF Connect SDK takes from the devicetree and Kconfig.
+#[derive(Clone, Copy, Debug, defmt::Format)]
+pub struct Config {
+    /// The highest TX power the board may use. The RPU uses the lower of this and the chip's own
+    /// limits.
+    pub max_tx_power: TxPowerCeiling,
+    /// ISO 3166-1 alpha-2 country code of the regulatory domain, `*b"00"` for the world domain.
+    pub country_code: [u8; 2],
+}
+
+/// Highest TX power per band and modulation, in dBm (the devicetree's `wifi-max-tx-pwr-*`).
+#[derive(Clone, Copy, Debug, defmt::Format)]
+pub struct TxPowerCeiling {
+    pub dsss_2g: u8,
+    pub mcs0_2g: u8,
+    pub mcs7_2g: u8,
+    pub mcs0_5g_low: u8,
+    pub mcs7_5g_low: u8,
+    pub mcs0_5g_mid: u8,
+    pub mcs7_5g_mid: u8,
+    pub mcs0_5g_high: u8,
+    pub mcs7_5g_high: u8,
+}
+
 pub async fn new<'a, BUS, IN, OUT>(
     state: &'a mut State,
     bus: BUS,
     bucken: OUT,
     iovdd_ctl: OUT,
     host_irq: IN,
+    config: Config,
 ) -> (NetDriver<'a>, Control<'a>, Runner<'a, BUS, IN, OUT>)
 where
     BUS: Bus,
@@ -97,9 +122,10 @@ where
         host_irq,
         rpu_info: None,
         num_commands: c::RPU_CMD_START_MAGIC,
+        irq_pending_ack: false,
         scan_deadline: None,
     };
-    runner.init().await;
+    runner.init(&config).await;
 
     let control = Control {
         shared: &state.shared,
@@ -225,10 +251,16 @@ impl BssInfo {
                 Ok(c::security_type::WPA) => Security::Wpa,
                 Ok(c::security_type::WPA2) => Security::Wpa2,
                 Ok(c::security_type::WPA2_256) => Security::Wpa2Sha256,
-                Ok(c::security_type::WPA3) => Security::Wpa3,
+                Ok(
+                    c::security_type::WPA3_HNP
+                    | c::security_type::WPA3_H2E
+                    | c::security_type::WPA3_AUTO
+                    | c::security_type::WPA3_FT_SAE,
+                ) => Security::Wpa3,
                 Ok(c::security_type::WAPI) => Security::Wapi,
                 Ok(c::security_type::EAP) => Security::Eap,
-                Err(_) => Security::Unknown(security),
+                // The other EAP and SHA-384 variants, which the SDK does not map either.
+                _ => Security::Unknown(security),
             },
             beacon_interval: r.beacon_interval,
         }
@@ -309,13 +341,6 @@ fn slice8_mut(x: &mut [u32]) -> &mut [u8] {
     unsafe { slice::from_raw_parts_mut(x.as_mut_ptr() as _, len) }
 }
 
-fn slice32(x: &[u8]) -> &[u32] {
-    assert!(x.len() % 4 == 0);
-    assert!(x.as_ptr() as usize % 4 == 0);
-    let len = x.len() / 4;
-    unsafe { slice::from_raw_parts(x.as_ptr() as _, len) }
-}
-
 #[derive(Copy, Clone, Debug, defmt::Format)]
 struct MemoryRegion {
     start: u32,
@@ -336,7 +361,7 @@ pub(crate) mod regions {
 	pub(crate) const EXT_SYS_BUS  : &MemoryRegion = &MemoryRegion { start: 0x009000, end: 0x03FFFF, latency: 2, rpu_mem_start: 0,          rpu_mem_end: 0,          processor_restriction: None };
 	pub(crate) const PBUS         : &MemoryRegion = &MemoryRegion { start: 0x040000, end: 0x07FFFF, latency: 1, rpu_mem_start: 0xA5000000, rpu_mem_end: 0xA5FFFFFF, processor_restriction: None };
 	pub(crate) const PKTRAM       : &MemoryRegion = &MemoryRegion { start: 0x0C0000, end: 0x0F0FFF, latency: 0, rpu_mem_start: 0xB0000000, rpu_mem_end: 0xB0FFFFFF, processor_restriction: None };
-	pub(crate) const GRAM         : &MemoryRegion = &MemoryRegion { start: 0x080000, end: 0x092000, latency: 1, rpu_mem_start: 0xB7000000, rpu_mem_end: 0xB7FFFFFF, processor_restriction: None };
+	pub(crate) const GRAM         : &MemoryRegion = &MemoryRegion { start: 0x080000, end: 0x092000, latency: 2, rpu_mem_start: 0xB7000000, rpu_mem_end: 0xB7FFFFFF, processor_restriction: None };
 	pub(crate) const LMAC_ROM     : &MemoryRegion = &MemoryRegion { start: 0x100000, end: 0x134000, latency: 1, rpu_mem_start: 0x80000000, rpu_mem_end: 0x80033FFF, processor_restriction: Some(Processor::LMAC) }; // ROM
 	pub(crate) const LMAC_RET_RAM : &MemoryRegion = &MemoryRegion { start: 0x140000, end: 0x14C000, latency: 1, rpu_mem_start: 0x80040000, rpu_mem_end: 0x8004BFFF, processor_restriction: Some(Processor::LMAC) }; // retained RAM
 	pub(crate) const LMAC_SRC_RAM : &MemoryRegion = &MemoryRegion { start: 0x180000, end: 0x190000, latency: 1, rpu_mem_start: 0x80080000, rpu_mem_end: 0x8008FFFF, processor_restriction: Some(Processor::LMAC) }; // scratch RAM
@@ -366,10 +391,54 @@ pub(crate) enum Processor {
     UMAC,
 }
 
-static FW_LMAC_PATCH_PRI: &[u8] = include_aligned!(Align16, "../fw/lmac_patch_pri_bimg.bin");
-static FW_LMAC_PATCH_SEC: &[u8] = include_aligned!(Align16, "../fw/lmac_patch_sec_bin.bin");
-static FW_UMAC_PATCH_PRI: &[u8] = include_aligned!(Align16, "../fw/umac_patch_pri_bimg.bin");
-static FW_UMAC_PATCH_SEC: &[u8] = include_aligned!(Align16, "../fw/umac_patch_sec_bin.bin");
+/// The nRF70 firmware, in the nRF Connect SDK's `nrf70.bin` format: a header, then the UMAC and
+/// LMAC patches. `gen.py` takes it from the SDK release that `fw/bindings.rs` comes from.
+static FIRMWARE: &[u8] = include_aligned!(Align16, "../fw/nrf70.bin");
+
+/// The four patch images of an `nrf70.bin`.
+struct Firmware<'a> {
+    umac_pri: &'a [u8],
+    umac_sec: &'a [u8],
+    lmac_pri: &'a [u8],
+    lmac_sec: &'a [u8],
+}
+
+/// Splits an `nrf70.bin` into its images, after checking that it is a system (station) mode
+/// firmware of the version the bindings come from (NCS `nrf_wifi_fmac_fw_parse`).
+fn parse_firmware(fw: &[u8]) -> Firmware<'_> {
+    let word = |offset: usize| u32::from_le_bytes(unwrap!(fw[offset..offset + 4].try_into()));
+
+    assert!(word(0) == c::PATCH_SIGNATURE, "not an nRF70 firmware file");
+    assert!(word(4) == c::PATCH_NUM_IMAGES, "unexpected number of firmware images");
+    let version = word(8);
+    let expected = c::RPU_FAMILY << 24 | c::RPU_MAJOR_VERSION << 16 | c::RPU_MINOR_VERSION << 8 | c::RPU_PATCH_VERSION;
+    assert!(
+        version == expected,
+        "firmware version {:08x} does not match the bindings ({:08x})",
+        version,
+        expected
+    );
+    let system_mode = c::nrf70_feature_flags::NRF70_FEAT_SYSTEM_MODE as u32;
+    assert!(word(12) & system_mode != 0, "not a system mode firmware");
+
+    // Each image is a type and a length, then the data, in `nrf70_image_ids` order. The data is
+    // not word aligned: one image has an odd length.
+    let mut images = [&fw[..0]; 4];
+    let mut offset = size_of::<c::nrf70_fw_image_info>();
+    for image in &mut images {
+        let len = word(offset + 4) as usize;
+        let start = offset + size_of::<c::nrf70_fw_image>();
+        *image = &fw[start..start + len];
+        offset = start + len;
+    }
+    let [umac_pri, umac_sec, lmac_pri, lmac_sec] = images;
+    Firmware {
+        umac_pri,
+        umac_sec,
+        lmac_pri,
+        lmac_sec,
+    }
+}
 
 const SR0_WRITE_IN_PROGRESS: u8 = 0x01;
 
@@ -383,13 +452,23 @@ const MAX_EVENT_POOL_LEN: usize = 1000;
 /// Largest command the RPU takes in one buffer; longer ones are sent in fragments.
 const MAX_CMD_SIZE: usize = c::MAX_UMAC_CMD_SIZE as usize;
 
+/// How long a processor gets to write its boot signature (NCS `MCU_FW_BOOT_TIMEOUT_MS`).
+const FW_BOOT_TIMEOUT: Duration = Duration::from_secs(1);
+
 // ========= RF parameters
 
-const RF_PARAMS_SIZE: usize = c::RF_PARAMS_SIZE as usize;
+const _: () = core::assert!(size_of::<c::phy_rf_params>() == c::RF_PARAMS_SIZE as usize);
 
-/// Default RF parameters for the nRF7002, from the nRF Connect SDK
-/// (`NRF_WIFI_DEF_RF_PARAMS` in `phy_rf_params.h`, v2.4). Bytes past the string stay 0xFF.
-const DEF_RF_PARAMS: &str = "0000000000002A00000000030303035440403838383838380000000050EC000000FCFCF8FCF800000000007077003F032424001000002800323500000CF008087D8105010071630300EED501001F6F00003B350100F52E0000E35E0000B7B6000066EFFEFFB5F60000896200007A840200E28FFCFF080808080408120100000000A1A10178000000080050003B020726181818181A120A140E0600";
+/// What the UMAC reads out of the chip's OTP at boot.
+struct Otp {
+    info: c::host_rpu_umac_info,
+    /// One "not programmed" bit per field.
+    flags: u32,
+    /// Version of the production test program that wrote the calibration.
+    ft_prog_ver: u32,
+    /// `QFN_PACKAGE_INFO` or `CSP_PACKAGE_INFO`, or 0xFFFFFFFF if not programmed.
+    package_info: u32,
+}
 
 const fn hex_nibble(c: u8) -> u8 {
     match c {
@@ -400,117 +479,153 @@ const fn hex_nibble(c: u8) -> u8 {
     }
 }
 
-const DEF_RF_PARAMS_BYTES: [u8; RF_PARAMS_SIZE] = {
-    let s = DEF_RF_PARAMS.as_bytes();
-    core::assert!(s.len() % 2 == 0 && s.len() / 2 <= RF_PARAMS_SIZE);
-    let mut out = [0xFF; RF_PARAMS_SIZE];
-    let mut i = 0;
-    while i < s.len() / 2 {
-        out[i] = hex_nibble(s[2 * i]) << 4 | hex_nibble(s[2 * i + 1]);
-        i += 1;
-    }
-    out
-};
+/// A byte of `phy_rf_params_common.h`, which writes signed values as unsigned hex.
+const fn byte(value: u32) -> i8 {
+    value as u8 as i8
+}
 
-/// Builds the RF parameters from the defaults and the chip's OTP calibration, as the nRF Connect
-/// SDK does (`wifi_nrf_fmac_rf_params_get`). A calibration value is used only when its "not
-/// programmed" flag is clear.
-fn rf_params(otp: &c::host_rpu_umac_info, otp_flags: u32) -> [u8; RF_PARAMS_SIZE] {
-    let mut params = DEF_RF_PARAMS_BYTES;
+/// Builds the RF parameters as the nRF Connect SDK does (`nrf_wifi_sys_fmac_rf_params_get`): the
+/// defaults for the chip's package, the crystal calibration from OTP, and TX power ceilings that
+/// are the lower of the board's and the package's, less a backoff for the chip's test program.
+fn rf_params(otp: &Otp, board: &TxPowerCeiling) -> c::phy_rf_params {
+    let mut p: c::phy_rf_params = unsafe { zeroed() };
 
-    let mut calib = [0u8; 36];
-    let calib_words = otp.calib;
-    for (dst, word) in calib.chunks_exact_mut(4).zip(calib_words) {
-        dst.copy_from_slice(&word.to_le_bytes());
-    }
-
-    let programmed = |mask: i32| otp_flags & !(mask as u32) == 0;
-    let mut copy = |param_off: u32, otp_off: u32, len: u32| {
-        let (p, o, n) = (param_off as usize, otp_off as usize, len as usize);
-        params[p..p + n].copy_from_slice(&calib[o..o + n]);
+    p.pd_adjust_val = c::pd_adst_val {
+        pd_adjt_lb_chan: byte(c::PD_ADJUST_VAL),
+        pd_adjt_hb_low_chan: byte(c::PD_ADJUST_VAL),
+        pd_adjt_hb_mid_chan: byte(c::PD_ADJUST_VAL),
+        pd_adjt_hb_high_chan: byte(c::PD_ADJUST_VAL),
+    };
+    p.rx_gain_offset = c::rx_gain_offset {
+        rx_gain_lb_chan: byte(c::CTRL_PWR_OPTIMIZATIONS),
+        rx_gain_hb_low_chan: byte(c::RX_GAIN_OFFSET_HB_LOW_CHAN),
+        rx_gain_hb_mid_chan: byte(c::RX_GAIN_OFFSET_HB_MID_CHAN),
+        rx_gain_hb_high_chan: byte(c::RX_GAIN_OFFSET_HB_HIGH_CHAN),
     };
 
-    if programmed(c::CALIB_XO_FLAG_MASK) {
-        copy(c::RF_PARAMS_OFF_CALIB_X0, c::OTP_OFF_CALIB_XO, c::OTP_SZ_CALIB_XO);
-    }
-    if programmed(c::CALIB_PDADJM7_FLAG_MASK) {
-        copy(
-            c::RF_PARAMS_OFF_CALIB_PDADJM7,
-            c::OTP_OFF_CALIB_PDADJM7,
-            c::OTP_SZ_CALIB_PDADJM7,
-        );
-    }
-    if programmed(c::CALIB_PDADJM0_FLAG_MASK) {
-        copy(
-            c::RF_PARAMS_OFF_CALIB_PDADJM0,
-            c::OTP_OFF_CALIB_PDADJM0,
-            c::OTP_SZ_CALIB_PDADJM0,
-        );
-    }
-    if programmed(c::CALIB_PWR2G_FLAG_MASK) {
-        copy(
-            c::RF_PARAMS_OFF_CALIB_PWR2G,
-            c::OTP_OFF_CALIB_PWR2G,
-            c::OTP_SZ_CALIB_PWR2G,
-        );
-        copy(
-            c::RF_PARAMS_OFF_CALIB_PWR2GM0M7,
-            c::OTP_OFF_CALIB_PWR2GM0M7,
-            c::OTP_SZ_CALIB_PWR2GM0M7,
-        );
-    }
-    if programmed(c::CALIB_PWR5GM7_FLAG_MASK) {
-        copy(
-            c::RF_PARAMS_OFF_CALIB_PWR5GM7,
-            c::OTP_OFF_CALIB_PWR5GM7,
-            c::OTP_SZ_CALIB_PWR5GM7,
-        );
-    }
-    if programmed(c::CALIB_PWR5GM0_FLAG_MASK) {
-        copy(
-            c::RF_PARAMS_OFF_CALIB_PWR5GM0,
-            c::OTP_OFF_CALIB_PWR5GM0,
-            c::OTP_SZ_CALIB_PWR5GM0,
-        );
-    }
-    if programmed(c::CALIB_RXGNOFF_FLAG_MASK) {
-        copy(
-            c::RF_PARAMS_OFF_CALIB_RXGNOFF,
-            c::OTP_OFF_CALIB_RXGNOFF,
-            c::OTP_SZ_CALIB_RXGNOFF,
-        );
-    }
-    if programmed(c::CALIB_TXPOWBACKOFFT_FLAG_MASK) {
-        copy(
-            c::RF_PARAMS_OFF_CALIB_TXP_BOFF_2GH,
-            c::OTP_OFF_CALIB_TXP_BOFF_2GH,
-            c::OTP_SZ_CALIB_TXP_BOFF_2GH,
-        );
-        copy(
-            c::RF_PARAMS_OFF_CALIB_TXP_BOFF_2GL,
-            c::OTP_OFF_CALIB_TXP_BOFF_2GL,
-            c::OTP_SZ_CALIB_TXP_BOFF_2GL,
-        );
-        copy(
-            c::RF_PARAMS_OFF_CALIB_TXP_BOFF_5GH,
-            c::OTP_OFF_CALIB_TXP_BOFF_5GH,
-            c::OTP_SZ_CALIB_TXP_BOFF_5GH,
-        );
-        copy(
-            c::RF_PARAMS_OFF_CALIB_TXP_BOFF_5GL,
-            c::OTP_OFF_CALIB_TXP_BOFF_5GL,
-            c::OTP_SZ_CALIB_TXP_BOFF_5GL,
-        );
-    }
-    if programmed(c::CALIB_TXPOWBACKOFFV_FLAG_MASK) {
-        copy(
-            c::RF_PARAMS_OFF_CALIB_TXP_BOFF_V,
-            c::OTP_OFF_CALIB_TXP_BOFF_V,
-            c::OTP_SZ_CALIB_TXP_BOFF_V,
-        );
+    // A chip without package information in OTP is taken to be a QFN.
+    if otp.package_info == c::CSP_PACKAGE_INFO {
+        p.xo_offset.xo_freq_offset = c::CSP_XO_VAL as u8;
+        p.syst_tx_pwr_offset = c::tx_pwr_systm_offset {
+            syst_off_lb_chan: byte(c::CSP_SYSTEM_OFFSET_LB),
+            syst_off_hb_low_chan: byte(c::CSP_SYSTEM_OFFSET_HB_CHAN_LOW),
+            syst_off_hb_mid_chan: byte(c::CSP_SYSTEM_OFFSET_HB_CHAN_MID),
+            syst_off_hb_high_chan: byte(c::CSP_SYSTEM_OFFSET_HB_CHAN_HIGH),
+        };
+        p.max_pwr_ceil = c::tx_pwr_ceil {
+            max_dsss_pwr: byte(c::CSP_MAX_TX_PWR_DSSS),
+            max_lb_mcs7_pwr: byte(c::CSP_MAX_TX_PWR_LB_MCS7),
+            max_lb_mcs0_pwr: byte(c::CSP_MAX_TX_PWR_LB_MCS0),
+            max_hb_low_chan_mcs7_pwr: byte(c::CSP_MAX_TX_PWR_HB_LOW_CHAN_MCS7),
+            max_hb_mid_chan_mcs7_pwr: byte(c::CSP_MAX_TX_PWR_HB_MID_CHAN_MCS7),
+            max_hb_high_chan_mcs7_pwr: byte(c::CSP_MAX_TX_PWR_HB_HIGH_CHAN_MCS7),
+            max_hb_low_chan_mcs0_pwr: byte(c::CSP_MAX_TX_PWR_HB_LOW_CHAN_MCS0),
+            max_hb_mid_chan_mcs0_pwr: byte(c::CSP_MAX_TX_PWR_HB_MID_CHAN_MCS0),
+            max_hb_high_chan_mcs0_pwr: byte(c::CSP_MAX_TX_PWR_HB_HIGH_CHAN_MCS0),
+        };
+        p.temp_volt_backoff = c::temp_volt_depend_params {
+            max_chip_temp: byte(c::CSP_MAX_CHIP_TEMP),
+            min_chip_temp: byte(c::CSP_MIN_CHIP_TEMP),
+            lb_max_pwr_bkf_hi_temp: byte(c::CSP_LB_MAX_PWR_BKF_HI_TEMP),
+            lb_max_pwr_bkf_low_temp: byte(c::CSP_LB_MAX_PWR_BKF_LOW_TEMP),
+            hb_max_pwr_bkf_hi_temp: byte(c::CSP_HB_MAX_PWR_BKF_HI_TEMP),
+            hb_max_pwr_bkf_low_temp: byte(c::CSP_HB_MAX_PWR_BKF_LOW_TEMP),
+            lb_vbt_lt_vlow: byte(c::CSP_LB_VBT_LT_VLOW),
+            hb_vbt_lt_vlow: byte(c::CSP_HB_VBT_LT_VLOW),
+            lb_vbt_lt_low: byte(c::CSP_LB_VBT_LT_LOW),
+            hb_vbt_lt_low: byte(c::CSP_HB_VBT_LT_LOW),
+            reserved: [0; 4],
+        };
+    } else {
+        p.xo_offset.xo_freq_offset = c::QFN_XO_VAL as u8;
+        p.syst_tx_pwr_offset = c::tx_pwr_systm_offset {
+            syst_off_lb_chan: byte(c::QFN_SYSTEM_OFFSET_LB),
+            syst_off_hb_low_chan: byte(c::QFN_SYSTEM_OFFSET_HB_CHAN_LOW),
+            syst_off_hb_mid_chan: byte(c::QFN_SYSTEM_OFFSET_HB_CHAN_MID),
+            syst_off_hb_high_chan: byte(c::QFN_SYSTEM_OFFSET_HB_CHAN_HIGH),
+        };
+        p.max_pwr_ceil = c::tx_pwr_ceil {
+            max_dsss_pwr: byte(c::QFN_MAX_TX_PWR_DSSS),
+            max_lb_mcs7_pwr: byte(c::QFN_MAX_TX_PWR_LB_MCS7),
+            max_lb_mcs0_pwr: byte(c::QFN_MAX_TX_PWR_LB_MCS0),
+            max_hb_low_chan_mcs7_pwr: byte(c::QFN_MAX_TX_PWR_HB_LOW_CHAN_MCS7),
+            max_hb_mid_chan_mcs7_pwr: byte(c::QFN_MAX_TX_PWR_HB_MID_CHAN_MCS7),
+            max_hb_high_chan_mcs7_pwr: byte(c::QFN_MAX_TX_PWR_HB_HIGH_CHAN_MCS7),
+            max_hb_low_chan_mcs0_pwr: byte(c::QFN_MAX_TX_PWR_HB_LOW_CHAN_MCS0),
+            max_hb_mid_chan_mcs0_pwr: byte(c::QFN_MAX_TX_PWR_HB_MID_CHAN_MCS0),
+            max_hb_high_chan_mcs0_pwr: byte(c::QFN_MAX_TX_PWR_HB_HIGH_CHAN_MCS0),
+        };
+        p.temp_volt_backoff = c::temp_volt_depend_params {
+            max_chip_temp: byte(c::QFN_MAX_CHIP_TEMP),
+            min_chip_temp: byte(c::QFN_MIN_CHIP_TEMP),
+            lb_max_pwr_bkf_hi_temp: byte(c::QFN_LB_MAX_PWR_BKF_HI_TEMP),
+            lb_max_pwr_bkf_low_temp: byte(c::QFN_LB_MAX_PWR_BKF_LOW_TEMP),
+            hb_max_pwr_bkf_hi_temp: byte(c::QFN_HB_MAX_PWR_BKF_HI_TEMP),
+            hb_max_pwr_bkf_low_temp: byte(c::QFN_HB_MAX_PWR_BKF_LOW_TEMP),
+            lb_vbt_lt_vlow: byte(c::QFN_LB_VBT_LT_VLOW),
+            hb_vbt_lt_vlow: byte(c::QFN_HB_VBT_LT_VLOW),
+            lb_vbt_lt_low: byte(c::QFN_LB_VBT_LT_LOW),
+            hb_vbt_lt_low: byte(c::QFN_HB_VBT_LT_LOW),
+            reserved: [0; 4],
+        };
     }
 
-    params
+    // The PHY defaults. The band edge backoffs, antenna gains and PCB losses that follow them stay
+    // 0, the SDK's Kconfig defaults.
+    let hex = &c::SYS_DEF_RF_PARAMS[..c::SYS_DEF_RF_PARAMS.len() - 1];
+    for (dst, pair) in p.phy_params.iter_mut().zip(hex.chunks_exact(2)) {
+        *dst = hex_nibble(pair[0]) << 4 | hex_nibble(pair[1]);
+    }
+
+    if otp.flags & !(c::CALIB_XO_FLAG_MASK as u32) == 0 {
+        let calib = otp.info.calib;
+        p.xo_offset.xo_freq_offset = calib[c::OTP_OFF_CALIB_XO as usize / 4].to_le_bytes()[0];
+    }
+
+    let backoffs = match c::ft_prog_ver::try_from((otp.ft_prog_ver & c::FT_PROG_VER_MASK) >> 16) {
+        Ok(c::ft_prog_ver::FT_PROG_VER1) => [
+            c::FT_PROG_VER1_2G_DSSS_TXCEIL_BKOFF,
+            c::FT_PROG_VER1_2G_OFDM_TXCEIL_BKOFF,
+            c::FT_PROG_VER1_5G_LOW_OFDM_TXCEIL_BKOFF,
+            c::FT_PROG_VER1_5G_MID_OFDM_TXCEIL_BKOFF,
+            c::FT_PROG_VER1_5G_HIGH_OFDM_TXCEIL_BKOFF,
+        ],
+        Ok(c::ft_prog_ver::FT_PROG_VER2) => [
+            c::FT_PROG_VER2_2G_DSSS_TXCEIL_BKOFF,
+            c::FT_PROG_VER2_2G_OFDM_TXCEIL_BKOFF,
+            c::FT_PROG_VER2_5G_LOW_OFDM_TXCEIL_BKOFF,
+            c::FT_PROG_VER2_5G_MID_OFDM_TXCEIL_BKOFF,
+            c::FT_PROG_VER2_5G_HIGH_OFDM_TXCEIL_BKOFF,
+        ],
+        Ok(c::ft_prog_ver::FT_PROG_VER3) => [
+            c::FT_PROG_VER3_2G_DSSS_TXCEIL_BKOFF,
+            c::FT_PROG_VER3_2G_OFDM_TXCEIL_BKOFF,
+            c::FT_PROG_VER3_5G_LOW_OFDM_TXCEIL_BKOFF,
+            c::FT_PROG_VER3_5G_MID_OFDM_TXCEIL_BKOFF,
+            c::FT_PROG_VER3_5G_HIGH_OFDM_TXCEIL_BKOFF,
+        ],
+        Err(_) => [0; 5],
+    };
+    let [dsss_2g, ofdm_2g, ofdm_5g_low, ofdm_5g_mid, ofdm_5g_high] = backoffs.map(|b| b as i32);
+
+    // Both ceilings are in quarter dB.
+    let ceiling = |board_dbm: u8, package: i8, backoff: i32| -> i8 {
+        ((board_dbm as i32 * 4).min(package as i32) - backoff) as i8
+    };
+    let pkg = p.max_pwr_ceil;
+    p.max_pwr_ceil = c::tx_pwr_ceil {
+        max_dsss_pwr: ceiling(board.dsss_2g, pkg.max_dsss_pwr, dsss_2g),
+        max_lb_mcs7_pwr: ceiling(board.mcs7_2g, pkg.max_lb_mcs7_pwr, ofdm_2g),
+        max_lb_mcs0_pwr: ceiling(board.mcs0_2g, pkg.max_lb_mcs0_pwr, ofdm_2g),
+        max_hb_low_chan_mcs7_pwr: ceiling(board.mcs7_5g_low, pkg.max_hb_low_chan_mcs7_pwr, ofdm_5g_low),
+        max_hb_mid_chan_mcs7_pwr: ceiling(board.mcs7_5g_mid, pkg.max_hb_mid_chan_mcs7_pwr, ofdm_5g_mid),
+        max_hb_high_chan_mcs7_pwr: ceiling(board.mcs7_5g_high, pkg.max_hb_high_chan_mcs7_pwr, ofdm_5g_high),
+        max_hb_low_chan_mcs0_pwr: ceiling(board.mcs0_5g_low, pkg.max_hb_low_chan_mcs0_pwr, ofdm_5g_low),
+        max_hb_mid_chan_mcs0_pwr: ceiling(board.mcs0_5g_mid, pkg.max_hb_mid_chan_mcs0_pwr, ofdm_5g_mid),
+        max_hb_high_chan_mcs0_pwr: ceiling(board.mcs0_5g_high, pkg.max_hb_high_chan_mcs0_pwr, ofdm_5g_high),
+    };
+
+    p
 }
 
 /// The MAC address programmed in OTP (`MAC0`), if it is a valid unicast address.
@@ -617,12 +732,15 @@ pub struct Runner<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> {
 
     num_commands: u32,
 
+    /// Set when events have been read since the last interrupt acknowledgement.
+    irq_pending_ack: bool,
+
     /// Set while a display scan is running, so a lost one does not block the next.
     scan_deadline: Option<Instant>,
 }
 
 impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT> {
-    async fn init(&mut self) {
+    async fn init(&mut self, config: &Config) {
         info!("power on...");
         Timer::after(Duration::from_millis(10)).await;
         self.bucken.set_high().unwrap();
@@ -645,41 +763,28 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
         // Now enable the relevant MCU interrupt line
         self.raw_write32(SYSBUS, 0x494, 1 << 31).await;
 
-        info!("load LMAC firmware patches...");
-        self.raw_write32(SYSBUS, 0x000, 0x01).await; // reset
-        while self.raw_read32(SYSBUS, 0x0000).await & 0x01 != 0 {}
-        while self.raw_read32(SYSBUS, 0x0018).await & 0x01 != 1 {}
-        self.load_fw(LMAC_RET_RAM, 0x9000, FW_LMAC_PATCH_PRI).await;
-        self.load_fw(LMAC_RET_RAM, 0x4000, FW_LMAC_PATCH_SEC).await;
+        // Based on 'nrf_wifi_fmac_fw_load'
+        let fw = parse_firmware(FIRMWARE);
 
-        self.raw_write32(GRAM, 0xD50, 0).await;
-        self.raw_write32(SYSBUS, 0x50, 0x3c1a8000).await;
-        self.raw_write32(SYSBUS, 0x54, 0x275a0000).await;
-        self.raw_write32(SYSBUS, 0x58, 0x03400008).await;
-        self.raw_write32(SYSBUS, 0x5c, 0x00000000).await;
-        self.raw_write32(SYSBUS, 0x2C2c, 0x9000).await;
+        info!("reset processors...");
+        self.rpu_proc_reset(Processor::LMAC).await;
+        self.rpu_proc_reset(Processor::UMAC).await;
+
+        info!("load firmware patches...");
+        self.load_fw(Processor::UMAC, c::RPU_MEM_UMAC_PATCH_BIMG, fw.umac_pri)
+            .await;
+        self.load_fw(Processor::UMAC, c::RPU_MEM_UMAC_PATCH_BIN, fw.umac_sec)
+            .await;
+        self.load_fw(Processor::LMAC, c::RPU_MEM_LMAC_PATCH_BIMG, fw.lmac_pri)
+            .await;
+        self.load_fw(Processor::LMAC, c::RPU_MEM_LMAC_PATCH_BIN, fw.lmac_sec)
+            .await;
 
         info!("booting LMAC...");
-        self.raw_write32(SYSBUS, 0x000, 0x01).await; // reset
-        while self.raw_read32(GRAM, 0xD50).await != 0x5A5A5A5A {}
-
-        info!("load UMAC firmware patches...");
-        self.raw_write32(SYSBUS, 0x100, 0x01).await; // reset
-        while self.raw_read32(SYSBUS, 0x0100).await & 0x01 != 0 {}
-        while self.raw_read32(SYSBUS, 0x0118).await & 0x01 != 1 {}
-        self.load_fw(UMAC_RET_RAM, 0x14400, FW_UMAC_PATCH_PRI).await;
-        self.load_fw(UMAC_RET_RAM, 0xC000, FW_UMAC_PATCH_SEC).await;
-
-        self.raw_write32(PKTRAM, 0, 0).await;
-        self.raw_write32(SYSBUS, 0x150, 0x3c1a8000).await;
-        self.raw_write32(SYSBUS, 0x154, 0x275a0000).await;
-        self.raw_write32(SYSBUS, 0x158, 0x03400008).await;
-        self.raw_write32(SYSBUS, 0x15c, 0x00000000).await;
-        self.raw_write32(SYSBUS, 0x2C30, 0x14400).await;
+        self.rpu_proc_boot(Processor::LMAC).await;
 
         info!("booting UMAC...");
-        self.raw_write32(SYSBUS, 0x100, 0x01).await; // reset
-        while self.raw_read32(PKTRAM, 0).await != 0x5A5A5A5A {}
+        self.rpu_proc_boot(Processor::UMAC).await;
 
         let umac_ver = self.read32(c::RPU_MEM_UMAC_VER, None).await.to_be_bytes();
         let lmac_ver = self.read32(c::RPU_MEM_LMAC_VER, None).await.to_be_bytes();
@@ -692,16 +797,19 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
         self.init_rpu_info().await;
 
         info!("Reading OTP...");
-        let (otp, otp_flags) = self.read_otp().await;
-        let rf_params = rf_params(&otp, otp_flags);
-        let mac_addr = match otp_mac_address(&otp) {
+        let otp = self.read_otp().await;
+        let rf_params = rf_params(&otp, &config.max_tx_power);
+        let mac_addr = match otp_mac_address(&otp.info) {
             Some(mac) => mac,
             None => {
                 warn!("no MAC address in OTP, using a locally administered one");
                 FALLBACK_MAC_ADDRESS
             }
         };
-        info!("OTP flags {:08x}, MAC address {:02x}", otp_flags, mac_addr);
+        info!(
+            "OTP flags {:08x}, package {:08x}, test program {:08x}, MAC address {:02x}",
+            otp.flags, otp.package_info, otp.ft_prog_ver, mac_addr
+        );
 
         info!("Enabling interrupts...");
         self.rpu_irq_enable().await;
@@ -713,7 +821,7 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
         self.init_rx().await;
 
         info!("Initializing umac...");
-        self.init_umac(&rf_params).await;
+        self.init_umac(&rf_params, config).await;
         self.wait_for_event(
             "INIT_DONE",
             |event| matches!(event, Event::Sys(id) if *id == c::sys_events::EVENT_INIT_DONE as u32),
@@ -880,18 +988,23 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
             None | Some(0xAAAAAAAA) => false,
             Some(event_address) => {
                 self.rpu_event_read(event_address, buf).await;
+                self.irq_pending_ack = true;
                 true
             }
         }
     }
 
-    /// Ends an interrupt once the event queue is empty (NCS `hal_rpu_irq_process`).
+    /// Ends an interrupt once the event queue is empty (NCS `hal_rpu_irq_process`): clears a
+    /// watchdog interrupt, and acknowledges the interrupt if events were read.
     async fn rpu_irq_service_end(&mut self) {
         if self.rpu_irq_watchdog_check().await {
             debug!("RPU watchdog interrupt");
             self.rpu_irq_watchdog_ack().await;
         }
-        self.rpu_irq_ack().await;
+        if self.irq_pending_ack {
+            self.rpu_irq_ack().await;
+            self.irq_pending_ack = false;
+        }
     }
 
     async fn rpu_irq_enable(&mut self) {
@@ -938,7 +1051,12 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
     }
 
     async fn rpu_irq_watchdog_ack(&mut self) {
-        self.write32(c::RPU_REG_MIPS_MCU_TIMER_CONTROL, None, 0).await;
+        self.write32(
+            c::RPU_REG_MIPS_MCU_UCCP_INT_CLEAR,
+            None,
+            1 << c::RPU_REG_BIT_MIPS_WATCHDOG_INT_CLEAR,
+        )
+        .await;
     }
 
     async fn rpu_event_read(&mut self, event_address: u32, buf: &mut [u32]) {
@@ -1031,15 +1149,18 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
         });
     }
 
-    /// Reads the UMAC's copy of the OTP and its "not programmed" flags (NCS
-    /// `wifi_nrf_hal_otp_info_get`).
-    async fn read_otp(&mut self) -> (c::host_rpu_umac_info, u32) {
+    /// Reads the UMAC's copy of the OTP (NCS `nrf_wifi_hal_otp_info_get`,
+    /// `nrf_wifi_hal_otp_ft_prog_ver_get` and `nrf_wifi_hal_otp_pack_info_get`).
+    async fn read_otp(&mut self) -> Otp {
         const WORDS: usize = size_of::<c::host_rpu_umac_info>().div_ceil(4);
         let mut words = [0u32; WORDS];
         self.read(c::RPU_MEM_UMAC_BOOT_SIG, None, &mut words).await;
-        let info = unsafe { core::ptr::read_unaligned(words.as_ptr() as *const c::host_rpu_umac_info) };
-        let flags = self.read32(c::RPU_MEM_OTP_INFO_FLAGS, None).await;
-        (info, flags)
+        Otp {
+            info: unsafe { core::ptr::read_unaligned(words.as_ptr() as *const c::host_rpu_umac_info) },
+            flags: self.read32(c::RPU_MEM_OTP_INFO_FLAGS, None).await,
+            ft_prog_ver: self.read32(c::RPU_MEM_OTP_FT_PROG_VERSION, None).await,
+            package_info: self.read32(c::RPU_MEM_OTP_PACKAGE_TYPE, None).await,
+        }
     }
 
     async fn send_cmd<T: Command>(&mut self, mut cmd: T) {
@@ -1073,7 +1194,16 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
         }
     }
 
-    async fn init_umac(&mut self, rf_params: &[u8; RF_PARAMS_SIZE]) {
+    /// Sends the system init command (NCS `umac_cmd_sys_init`), with the SDK's defaults for a
+    /// station without low power mode.
+    async fn init_umac(&mut self, rf_params: &c::phy_rf_params, config: &Config) {
+        let mut rf_params_bytes = [0u8; c::RF_PARAMS_SIZE as usize];
+        rf_params_bytes.copy_from_slice(sliceit(rf_params));
+
+        let rx_buf_pool = c::rx_buf_pool_params {
+            buf_sz: RX_MAX_DATA_SIZE as _, // the RPU adds the headroom itself
+            num_bufs: RX_BUFS_PER_QUEUE as _,
+        };
         let cmd = c::cmd_sys_init {
             sys_head: unsafe { zeroed() },
             wdev_id: 0,
@@ -1085,23 +1215,10 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
                 calib_sleep_clk: c::CALIB_SLEEP_CLOCK_ENABLE,
                 phy_calib: c::DEF_PHY_CALIB,
                 mac_addr: [0; 6],
-                rf_params: *rf_params,
+                rf_params: rf_params_bytes,
                 rf_params_valid: 1,
             },
-            rx_buf_pools: [
-                c::rx_buf_pool_params {
-                    buf_sz: RX_MAX_DATA_SIZE as _, // the RPU adds the headroom itself
-                    num_bufs: RX_BUFS_PER_QUEUE as _,
-                },
-                c::rx_buf_pool_params {
-                    buf_sz: RX_MAX_DATA_SIZE as _,
-                    num_bufs: RX_BUFS_PER_QUEUE as _,
-                },
-                c::rx_buf_pool_params {
-                    buf_sz: RX_MAX_DATA_SIZE as _,
-                    num_bufs: RX_BUFS_PER_QUEUE as _,
-                },
-            ],
+            rx_buf_pools: [rx_buf_pool; c::MAX_NUM_OF_RX_QUEUES as usize],
             data_config_params: c::data_config_params {
                 rate_protection_type: 0,
                 aggregation: 1,
@@ -1123,29 +1240,34 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
                 temp_threshold: c::TEMP_CALIB_THRESHOLD as _,
                 vbat_threshold: 0,
             },
-            // The world regulatory domain, "00" (NCS CONFIG_NRF700X_REG_DOMAIN).
-            country_code: *b"00",
-            mgmt_buff_offload: 0,
-            op_band: 0,
             tcp_ip_checksum_offload: 0,
-            tx_pwr_ctrl_params: c::tx_pwr_ctrl_params {
-                ant_gain_2g: 0,
-                ant_gain_5g_band1: 0,
-                ant_gain_5g_band2: 0,
-                ant_gain_5g_band3: 0,
-                band_edge_2g_lo: 0,
-                band_edge_2g_hi: 0,
-                band_edge_5g_unii_1_lo: 0,
-                band_edge_5g_unii_1_hi: 0,
-                band_edge_5g_unii_2a_lo: 0,
-                band_edge_5g_unii_2a_hi: 0,
-                band_edge_5g_unii_2c_lo: 0,
-                band_edge_5g_unii_2c_hi: 0,
-                band_edge_5g_unii_3_lo: 0,
-                band_edge_5g_unii_3_hi: 0,
-                band_edge_5g_unii_4_lo: 0,
-                band_edge_5g_unii_4_hi: 0,
-            },
+            country_code: config.country_code,
+            op_band: c::op_band::BAND_ALL as _,
+            // Management frames stay in the RPU instead of taking RX buffers.
+            mgmt_buff_offload: 1,
+            feature_flags: 0,
+            disable_beamforming: 0,
+            // NCS CONFIG_NRF_WIFI_AP_DEAD_DETECT_TIMEOUT, in seconds.
+            discon_timeout: 20,
+            ps_exit_strategy: c::ps_exit_strategy::EVERY_TIM as _,
+            // The watchdog serves the SDK's RPU recovery, which comes with low power mode: off.
+            watchdog_timer_val: 0xFFFFFF,
+            keep_alive_enable: 0,
+            keep_alive_period: 0,
+            // NCS CONFIG_NRF_WIFI_DISPLAY_SCAN_BSS_LIMIT.
+            display_scan_bss_limit: 150,
+            coex_disable_ptiwin_for_wifi_scan: 0,
+            raw_scan_enable: 0,
+            // NCS CONFIG_NRF_WIFI_MAX_PS_POLL_FAIL_CNT.
+            max_ps_poll_fail_cnt: 10,
+            // NCS CONFIG_NRF_WIFI_RX_STBC_HT.
+            stbc_enable_in_ht: 1,
+            dbs_war_ctrl: 0,
+            dynamic_ed: 0,
+            // No coexistence with a short-range radio.
+            bt_slot_time_in_ms: 0,
+            bt_coex_disable: 1,
+            display_scan_abort_on_bss_limit: 0,
         };
         self.send_cmd(cmd).await;
     }
@@ -1158,15 +1280,11 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
     }
 
     /// Brings the default interface up and waits for the RPU to confirm (NCS
-    /// `wifi_nrf_fmac_chg_vif_state`).
+    /// `nrf_wifi_sys_fmac_chg_vif_state`).
     async fn set_interface_up(&mut self) {
-        let mut ifacename = [0; 16];
-        for (dst, src) in ifacename.iter_mut().zip(b"wlan0") {
-            *dst = *src as _;
-        }
         let mut cmd: c::umac_cmd_chg_vif_state = unsafe { zeroed() };
         cmd.info.state = 1;
-        cmd.info.ifacename = ifacename;
+        cmd.info.if_index = 0;
         self.send_cmd(cmd).await;
 
         self.wait_for_event(
@@ -1176,13 +1294,12 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
         .await;
     }
 
-    /// Starts an active display scan of every channel (NCS `wifi_nrf_disp_scan_zep`).
+    /// Starts a display scan (NCS `nrf_wifi_disp_scan_zep` without parameters). The zeroed
+    /// parameters ask for an active scan of every channel of both bands, with the default dwell
+    /// times.
     async fn trigger_scan(&mut self) {
         let mut cmd: c::umac_cmd_scan = unsafe { zeroed() };
-        cmd.info.scan_mode = c::scan_mode::AUTO_SCAN as _;
         cmd.info.scan_reason = c::scan_reason::SCAN_DISPLAY as _;
-        // One zero-length (wildcard) SSID makes the scan active.
-        cmd.info.scan_params.num_scan_ssids = 1;
         self.send_cmd(cmd).await;
     }
 
@@ -1246,11 +1363,81 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
         self.num_commands = self.num_commands.wrapping_add(1);
     }
 
-    async fn load_fw(&mut self, mem: &MemoryRegion, addr: u32, fw: &[u8]) {
+    /// Writes a firmware patch to `processor`'s memory at `rpu_addr`.
+    async fn load_fw(&mut self, processor: Processor, rpu_addr: u32, image: &[u8]) {
         const FW_CHUNK_SIZE: usize = 1024;
-        for (i, chunk) in fw.chunks(FW_CHUNK_SIZE).enumerate() {
-            let offs = addr + (FW_CHUNK_SIZE * i) as u32;
-            self.raw_write(mem, offs, slice32(chunk)).await;
+        let mut buf = [0u32; FW_CHUNK_SIZE / 4];
+        for (i, chunk) in image.chunks(FW_CHUNK_SIZE).enumerate() {
+            // The images are not word aligned in nrf70.bin, and one has an odd length: copy each
+            // chunk into a word buffer, zero padded.
+            let words = chunk.len().div_ceil(4);
+            buf[words - 1] = 0;
+            slice8_mut(&mut buf)[..chunk.len()].copy_from_slice(chunk);
+            let addr = rpu_addr + (FW_CHUNK_SIZE * i) as u32;
+            self.write(addr, Some(processor), &buf[..words]).await;
+        }
+    }
+
+    /// Pulses a processor's soft reset and waits for it to park at its boot exception vector
+    /// (NCS `nrf_wifi_hal_proc_reset`).
+    async fn rpu_proc_reset(&mut self, processor: Processor) {
+        let (control, status) = match processor {
+            Processor::LMAC => (c::RPU_REG_MIPS_MCU_CONTROL, 0xA4000018),
+            Processor::UMAC => (c::RPU_REG_MIPS_MCU2_CONTROL, 0xA4000118),
+        };
+        self.write32(control, None, 0x1).await;
+        while self.read32(control, None).await & 0x1 != 0 {}
+        while self.read32(status, None).await & 0x1 != 1 {}
+    }
+
+    /// Starts a processor on its loaded patches and waits for its boot signature (NCS
+    /// `nrf_wifi_hal_fw_patch_boot` and `nrf_wifi_hal_fw_chk_boot`).
+    async fn rpu_proc_boot(&mut self, processor: Processor) {
+        let (boot_sig_addr, boot_sig, sleepctrl_addr, patch_offset, control, vectors) = match processor {
+            Processor::LMAC => (
+                c::RPU_MEM_LMAC_BOOT_SIG,
+                c::LMAC_BOOT_SIG,
+                c::RPU_REG_UCC_SLEEP_CTRL_DATA_0,
+                c::LMAC_ROM_PATCH_OFFSET,
+                c::RPU_REG_MIPS_MCU_CONTROL,
+                [
+                    (c::RPU_REG_MIPS_MCU_BOOT_EXCP_INSTR_0, c::LMAC_BOOT_EXCP_VECT_0),
+                    (c::RPU_REG_MIPS_MCU_BOOT_EXCP_INSTR_1, c::LMAC_BOOT_EXCP_VECT_1),
+                    (c::RPU_REG_MIPS_MCU_BOOT_EXCP_INSTR_2, c::LMAC_BOOT_EXCP_VECT_2),
+                    (c::RPU_REG_MIPS_MCU_BOOT_EXCP_INSTR_3, c::LMAC_BOOT_EXCP_VECT_3),
+                ],
+            ),
+            Processor::UMAC => (
+                c::RPU_MEM_UMAC_BOOT_SIG,
+                c::UMAC_BOOT_SIG,
+                c::RPU_REG_UCC_SLEEP_CTRL_DATA_1,
+                c::UMAC_ROM_PATCH_OFFSET,
+                c::RPU_REG_MIPS_MCU2_CONTROL,
+                [
+                    (c::RPU_REG_MIPS_MCU2_BOOT_EXCP_INSTR_0, c::UMAC_BOOT_EXCP_VECT_0),
+                    (c::RPU_REG_MIPS_MCU2_BOOT_EXCP_INSTR_1, c::UMAC_BOOT_EXCP_VECT_1),
+                    (c::RPU_REG_MIPS_MCU2_BOOT_EXCP_INSTR_2, c::UMAC_BOOT_EXCP_VECT_2),
+                    (c::RPU_REG_MIPS_MCU2_BOOT_EXCP_INSTR_3, c::UMAC_BOOT_EXCP_VECT_3),
+                ],
+            ),
+        };
+
+        self.write32(boot_sig_addr, None, 0).await;
+        // Tells the ROM where the patch starts.
+        self.write32(sleepctrl_addr, None, patch_offset).await;
+        for (reg, val) in vectors {
+            self.write32(reg, None, val).await;
+        }
+        self.write32(control, None, 0x1).await;
+
+        let booted = with_timeout(FW_BOOT_TIMEOUT, async {
+            while self.read32(boot_sig_addr, None).await != boot_sig {
+                Timer::after(Duration::from_millis(10)).await;
+            }
+        })
+        .await;
+        if booted.is_err() {
+            panic!("{} did not boot", processor);
         }
     }
 
