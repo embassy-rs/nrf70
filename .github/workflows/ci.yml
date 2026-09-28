@@ -17,11 +17,14 @@ jobs:
       # Installs the toolchain, components and target from rust-toolchain.toml.
       - run: rustup toolchain install
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: actions/cache@v6
         with:
-          workspaces: |
-            . -> target
-            example -> target
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+            example/target
+          key: cargo-${{ hashFiles('**/Cargo.toml', 'rust-toolchain.toml') }}
 
       - name: Format
         run: |
