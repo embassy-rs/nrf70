@@ -1,27 +1,24 @@
 #![no_std]
 #![no_main]
-#![feature(type_alias_impl_trait)]
 #![deny(unused_must_use)]
-#![feature(async_fn_in_trait)]
-#![feature(impl_trait_projections)]
 
 use defmt::*;
-use defmt_rtt as _; // global logger
 use embassy_executor::Spawner;
-use embassy_nrf::gpio::{AnyPin, Input, Level, Output, OutputDrive, Pin, Pull};
+use embassy_futures::join::join;
+use embassy_nrf::gpio::{Input, Level, Output, OutputDrive, Pull};
 use embassy_nrf::spim::Spim;
-use embassy_nrf::{bind_interrupts, spim};
+use embassy_nrf::{bind_interrupts, peripherals, spim, Peri};
 use embassy_time::{Delay, Duration, Timer};
 use embedded_hal_bus::spi::ExclusiveDevice;
 use nrf70::SpiBus;
-use {embassy_nrf as _, panic_probe as _};
+use {defmt_rtt as _, panic_probe as _};
 
 bind_interrupts!(struct Irqs {
     SERIAL0 => spim::InterruptHandler<embassy_nrf::peripherals::SERIAL0>;
 });
 
 #[embassy_executor::task]
-async fn blink_task(led: AnyPin) -> ! {
+async fn blink_task(led: Peri<'static, peripherals::P1_06>) -> ! {
     let mut led = Output::new(led, Level::High, OutputDrive::Standard);
     loop {
         led.set_high();
@@ -36,7 +33,7 @@ async fn main(spawner: Spawner) {
     info!("Hello World!");
     let config: embassy_nrf::config::Config = Default::default();
     let p = embassy_nrf::init(config);
-    spawner.spawn(blink_task(p.P1_06.degrade())).unwrap();
+    spawner.spawn(unwrap!(blink_task(p.P1_06)));
 
     let sck = p.P0_17;
     let csn = p.P0_18;
@@ -48,15 +45,18 @@ async fn main(spawner: Spawner) {
     //let coex_status0 = Output::new(p.P0_30, Level::High, OutputDrive::Standard);
     //let coex_status1 = Output::new(p.P0_29, Level::High, OutputDrive::Standard);
     //let coex_grant = Output::new(p.P0_24, Level::High, OutputDrive::Standard);
-    let bucken = Output::new(p.P0_12.degrade(), Level::Low, OutputDrive::HighDrive);
-    let iovdd_ctl = Output::new(p.P0_31.degrade(), Level::Low, OutputDrive::Standard);
-    let host_irq = Input::new(p.P0_23.degrade(), Pull::None);
+    // BTRF_SWITCH: low selects separate antennas for the nRF5340 and the nRF7002, as the nRF
+    // Connect SDK sets it.
+    let _btrf_switch = Output::new(p.P1_10, Level::Low, OutputDrive::Standard);
+    let bucken = Output::new(p.P0_12, Level::Low, OutputDrive::HighDrive);
+    let iovdd_ctl = Output::new(p.P0_31, Level::Low, OutputDrive::Standard);
+    let host_irq = Input::new(p.P0_23, Pull::None);
 
     let mut config = spim::Config::default();
     config.frequency = spim::Frequency::M8;
     let spim = Spim::new(p.SERIAL0, Irqs, sck, dio1, dio0, config);
     let csn = Output::new(csn, Level::High, OutputDrive::HighDrive);
-    let spi = ExclusiveDevice::new(spim, csn, Delay);
+    let spi = unwrap!(ExclusiveDevice::new(spim, csn, Delay));
     let bus = SpiBus::new(spi);
 
     /*
@@ -73,7 +73,22 @@ async fn main(spawner: Spawner) {
     */
 
     let mut state = nrf70::State::new();
-    let (device, control, mut runner) = nrf70::new(&mut state, bus, bucken, iovdd_ctl, host_irq).await;
+    let (_device, mut control, mut runner) = nrf70::new(&mut state, bus, bucken, iovdd_ctl, host_irq).await;
 
-    runner.run().await;
+    let scan = async {
+        loop {
+            let mut scanner = control.scan().await;
+            while let Some(bss) = scanner.next().await {
+                let ssid = core::str::from_utf8(bss.ssid()).unwrap_or("<not UTF-8>");
+                info!(
+                    "{:02x} {} ch {} rssi {} {} {=str}",
+                    bss.bssid, bss.band, bss.channel, bss.rssi, bss.security, ssid
+                );
+            }
+            info!("scan done");
+            Timer::after(Duration::from_secs(10)).await;
+        }
+    };
+
+    join(runner.run(), scan).await;
 }
