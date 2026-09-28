@@ -17,6 +17,23 @@ bind_interrupts!(struct Irqs {
     SERIAL0 => spim::InterruptHandler<embassy_nrf::peripherals::SERIAL0>;
 });
 
+/// The nRF7002-DK's TX power limits, from the nRF Connect SDK's devicetree for it
+/// (`wifi-max-tx-pwr-*`), and the world regulatory domain.
+const WIFI_CONFIG: nrf70::Config = nrf70::Config {
+    max_tx_power: nrf70::TxPowerCeiling {
+        dsss_2g: 21,
+        mcs0_2g: 16,
+        mcs7_2g: 16,
+        mcs0_5g_low: 9,
+        mcs7_5g_low: 9,
+        mcs0_5g_mid: 11,
+        mcs7_5g_mid: 11,
+        mcs0_5g_high: 13,
+        mcs7_5g_high: 13,
+    },
+    country_code: *b"00",
+};
+
 #[embassy_executor::task]
 async fn blink_task(led: Peri<'static, peripherals::P1_06>) -> ! {
     let mut led = Output::new(led, Level::High, OutputDrive::Standard);
@@ -73,7 +90,8 @@ async fn main(spawner: Spawner) {
     */
 
     let mut state = nrf70::State::new();
-    let (_device, mut control, mut runner) = nrf70::new(&mut state, bus, bucken, iovdd_ctl, host_irq).await;
+    let (_device, mut control, mut runner) =
+        nrf70::new(&mut state, bus, bucken, iovdd_ctl, host_irq, WIFI_CONFIG).await;
 
     let scan = async {
         loop {

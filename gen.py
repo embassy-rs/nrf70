@@ -1,11 +1,24 @@
 #!/usr/bin/env python3
-import re
-import glob
-import os
-import subprocess
+"""Regenerates fw/bindings.rs and fw/nrf70.bin from Nordic's sources.
 
-for f in glob.glob("fw/*.bin"):
-    os.remove(f)
+Usage: gen.py NRF_WIFI_DIR NRF70_BIN
+
+NRF_WIFI_DIR is a checkout of https://github.com/zephyrproject-rtos/nrf_wifi at the
+revision the nRF Connect SDK pins in its west.yml, and NRF70_BIN the matching
+firmware, nrf_wifi/bin/zephyr/default/nrf70.bin in sdk-nrfxlib at the SDK's tag.
+The two must come from the same SDK release: the firmware refuses a host whose
+command layouts differ from its own, and the driver checks the version in the
+firmware header against the one in the bindings.
+"""
+
+import re
+import shutil
+import subprocess
+import sys
+
+if len(sys.argv) != 3:
+    sys.exit(__doc__)
+nrf_wifi, nrf70_bin = sys.argv[1], sys.argv[2]
 
 subprocess.run(
     [
@@ -17,15 +30,17 @@ subprocess.run(
         "--default-enum-style=rust",
         "--no-prepend-enum-name",
         "--no-layout-tests",
+        "--blocklist-item=RPU_ADDR_MAP_MCU",
         "--",
-        "-I./sdk-nrf/drivers/wifi/nrf700x/osal/fw_if/umac_if/inc/fw/",
-        "-I./sdk-nrf/drivers/wifi/nrf700x/osal/hw_if/hal/inc/fw/",
+        f"-I{nrf_wifi}/fw_if/umac_if/inc/fw",
+        f"-I{nrf_wifi}/hw_if/hal/inc",
+        f"-I{nrf_wifi}/hw_if/hal/inc/system",
     ],
     check=True,
 )
 
 h = open("fw/bindings.rs").read()
-h = re.sub("= (\d+);", lambda m: "= 0x{:x};".format(int(m[1])), h)
+h = re.sub(r"= (\d+);", lambda m: "= 0x{:x};".format(int(m[1])), h)
 h = h.replace("pub enum", "#[derive(num_enum::TryFromPrimitive)] pub enum")
 h = h.replace("NRF_WIFI_802", "IEEE_802")
 h = h.replace("NRF_WIFI_", "")
@@ -41,27 +56,4 @@ subprocess.run(
     check=True,
 )
 
-
-h = open(
-    "sdk-nrf/drivers/wifi/nrf700x/osal/fw_if/umac_if/inc/fw/rpu_fw_patches.h"
-).read()
-
-flavors = {}
-flavors["_radiotest"] = re.search(
-    re.compile("#ifdef CONFIG_NRF700X_RADIO_TEST(.*)#else", re.MULTILINE | re.DOTALL), h
-)[1]
-flavors[""] = re.search(re.compile("#else(.*)#endif", re.MULTILINE | re.DOTALL), h)[1]
-
-for suffix, code in flavors.items():
-    for fw in re.findall(
-        re.compile(
-            "const unsigned char __aligned\\(4\\)\\s+([a-z0-9_]+)\\[\\] = \\{([a-f0-9x, \t\r\n]+)\\}",
-            re.MULTILINE,
-        ),
-        code,
-    ):
-        name = fw[0].removeprefix("wifi_nrf_") + suffix + ".bin"
-        data = bytes.fromhex(
-            "".join(c for c in fw[1].replace("0x", "") if c in "0123456789abcdef")
-        )
-        open("fw/" + name, "wb").write(data)
+shutil.copyfile(nrf70_bin, "fw/nrf70.bin")
