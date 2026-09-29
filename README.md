@@ -22,6 +22,9 @@ Working:
   BSSID, band, channel, signal strength and security for each network found.
 - SPI bus through any [`embedded-hal-async`](https://crates.io/crates/embedded-hal-async)
   `SpiDevice`.
+- Any other bus through the `Bus` trait. The `scan_qspi` example implements it on the nRF5340's
+  QSPI peripheral in quad mode, as the nRF Connect SDK drives the nRF7002-DK: it loads the
+  firmware in 19 ms, against 103 ms over SPI at 8 MHz.
 - Using the host IRQ for device events, with a slow poll as a fallback.
 
 Not yet:
@@ -29,7 +32,7 @@ Not yet:
 - Joining networks and sending and receiving Ethernet frames (the `NetDriver` for
   [`embassy-net`](https://embassy.dev) exists, the data path does not).
 - WPA2/WPA3 (the firmware has no supplicant: the host runs the 4-way handshake), AP mode, low power
-  mode, QSPI.
+  mode.
 
 ## Running the example
 
@@ -37,9 +40,10 @@ Not yet:
 - On the nRF7002-DK, fit the P22 (nRF7002 VDD) and P23 (VBAT) jumper caps, or the chip does not
   answer.
 - `cd example`
-- `cargo run --release`
+- `cargo run --release` (over SPI at 8 MHz), or `cargo run --release --bin scan_qspi` (over QSPI at
+  24 MHz)
 
-The example scans every 10 s and logs what it finds:
+The examples scan every 10 s and log what they find:
 
 ```
 0.161621 [INFO ] firmware booted: UMAC 1.2.14.9, LMAC 1.1.7.0

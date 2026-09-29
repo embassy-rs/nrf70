@@ -74,20 +74,8 @@ async fn main(spawner: Spawner) {
     let spim = Spim::new(p.SERIAL0, Irqs, sck, dio1, dio0, config);
     let csn = Output::new(csn, Level::High, OutputDrive::HighDrive);
     let spi = unwrap!(ExclusiveDevice::new(spim, csn, Delay));
+    // `src/bin/scan_qspi.rs` drives the same pins with the QSPI peripheral instead.
     let bus = SpiBus::new(spi);
-
-    /*
-    // QSPI is not working well yet.
-    let mut config = qspi::Config::default();
-    config.read_opcode = qspi::ReadOpcode::READ4IO;
-    config.write_opcode = qspi::WriteOpcode::PP4IO;
-    config.write_page_size = qspi::WritePageSize::_256BYTES;
-    config.frequency = qspi::Frequency::M8; // NOTE: Waking RPU works reliably only with lowest frequency (8MHz)
-
-    let irq = interrupt::take!(QSPI);
-    let qspi: qspi::Qspi<_> = qspi::Qspi::new(p.QSPI, irq, sck, csn, dio0, dio1, dio2, dio3, config);
-    let bus = QspiBus { qspi };
-    */
 
     let mut state = nrf70::State::new();
     let (_device, mut control, mut runner) =
