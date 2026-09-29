@@ -82,3 +82,12 @@ sha2 = { version = "0.11.0", default-features = false, optional = true }
 # The host tests run on embassy-time's std time driver, with a timer queue of its own.
 [dev-dependencies]
 embassy-time = { version = "0.5.1", features = ["std", "generic-queue-8"] }
+
+# Experiment: embassy's main branch, where embassy-net runs on xarxa instead of smoltcp and
+# embassy-net-driver-channel hands packets over as xarxa `PacketBuf`s.
+[patch.crates-io]
+embassy-futures = { git = "https://github.com/embassy-rs/embassy", rev = "5e430e609369998d23c977e9099b5abbddaf775f" }
+embassy-net-driver-channel = { git = "https://github.com/embassy-rs/embassy", rev = "5e430e609369998d23c977e9099b5abbddaf775f" }
+embassy-sync = { git = "https://github.com/embassy-rs/embassy", rev = "5e430e609369998d23c977e9099b5abbddaf775f" }
+embassy-time = { git = "https://github.com/embassy-rs/embassy", rev = "5e430e609369998d23c977e9099b5abbddaf775f" }
+embassy-time-driver = { git = "https://github.com/embassy-rs/embassy", rev = "5e430e609369998d23c977e9099b5abbddaf775f" }

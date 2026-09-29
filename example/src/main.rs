@@ -68,7 +68,7 @@ async fn main(spawner: Spawner) {
 
     let mut config = spim::Config::default();
     config.frequency = spim::Frequency::M8;
-    let spim = Spim::new(p.SERIAL0, Irqs, sck, dio1, dio0, config);
+    let spim = Spim::new(p.SERIAL0, sck, dio0, dio1, Irqs, config);
     let csn = Output::new(csn, Level::High, OutputDrive::HighDrive);
     let spi = unwrap!(ExclusiveDevice::new(spim, csn, Delay));
     // `src/bin/scan_qspi.rs` drives the same pins with the QSPI peripheral instead.

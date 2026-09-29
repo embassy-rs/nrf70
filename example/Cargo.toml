@@ -21,7 +21,7 @@ defmt = "1.0.1"
 defmt-rtt = "1.0.0"
 embassy-executor = { version = "0.10.0", features = ["platform-cortex-m", "executor-thread", "defmt"] }
 embassy-futures = "0.1.2"
-embassy-net = { version = "0.9.1", features = ["auto-icmp-echo-reply", "defmt", "dhcpv4", "medium-ethernet", "proto-ipv4", "tcp"] }
+embassy-net = { version = "0.9.1", features = ["defmt", "dhcpv4", "icmp-ping-reply", "ipv4", "medium-ethernet", "tcp", "tcp-listener"] }
 embassy-nrf = { version = "0.11.0", features = ["defmt", "gpiote", "nrf5340-app-s", "time-driver-rtc1", "unstable-pac"] }
 embassy-time = { version = "0.5.1", features = ["defmt", "defmt-timestamp-uptime"] }
 embedded-hal-bus = { version = "0.3.0", features = ["async"] }
@@ -44,3 +44,20 @@ codegen-units = 1
 incremental = false
 debug-assertions = false
 overflow-checks = false
+
+# Experiment: embassy's main branch, where embassy-net runs on xarxa instead of smoltcp.
+[patch.crates-io]
+embassy-embedded-hal = { git = "https://github.com/embassy-rs/embassy", rev = "5e430e609369998d23c977e9099b5abbddaf775f" }
+embassy-executor = { git = "https://github.com/embassy-rs/embassy", rev = "5e430e609369998d23c977e9099b5abbddaf775f" }
+embassy-executor-macros = { git = "https://github.com/embassy-rs/embassy", rev = "5e430e609369998d23c977e9099b5abbddaf775f" }
+embassy-executor-timer-queue = { git = "https://github.com/embassy-rs/embassy", rev = "5e430e609369998d23c977e9099b5abbddaf775f" }
+embassy-futures = { git = "https://github.com/embassy-rs/embassy", rev = "5e430e609369998d23c977e9099b5abbddaf775f" }
+embassy-hal-internal = { git = "https://github.com/embassy-rs/embassy", rev = "5e430e609369998d23c977e9099b5abbddaf775f" }
+embassy-net = { git = "https://github.com/embassy-rs/embassy", rev = "5e430e609369998d23c977e9099b5abbddaf775f" }
+embassy-net-driver-channel = { git = "https://github.com/embassy-rs/embassy", rev = "5e430e609369998d23c977e9099b5abbddaf775f" }
+embassy-nrf = { git = "https://github.com/embassy-rs/embassy", rev = "5e430e609369998d23c977e9099b5abbddaf775f" }
+embassy-sync = { git = "https://github.com/embassy-rs/embassy", rev = "5e430e609369998d23c977e9099b5abbddaf775f" }
+embassy-time = { git = "https://github.com/embassy-rs/embassy", rev = "5e430e609369998d23c977e9099b5abbddaf775f" }
+embassy-time-driver = { git = "https://github.com/embassy-rs/embassy", rev = "5e430e609369998d23c977e9099b5abbddaf775f" }
+embassy-time-queue-utils = { git = "https://github.com/embassy-rs/embassy", rev = "5e430e609369998d23c977e9099b5abbddaf775f" }
+embassy-usb-driver = { git = "https://github.com/embassy-rs/embassy", rev = "5e430e609369998d23c977e9099b5abbddaf775f" }
