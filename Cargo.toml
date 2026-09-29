@@ -1,8 +1,33 @@
 [package]
 name = "nrf70"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
-license = "MIT OR Apache-2.0"
+description = "Driver for the Nordic nRF7002 Wi-Fi 6 companion chip, with an embassy-net network driver"
+keywords = ["embedded", "nrf7002", "wifi", "embassy-net", "no-std"]
+categories = [
+    "embedded",
+    "hardware-support",
+    "no-std",
+    "network-programming",
+    "asynchronous",
+]
+# The driver is MIT OR Apache-2.0. It bundles Nordic's nRF70 firmware (fw/nrf70.bin, under the
+# Nordic 5-Clause license in fw/LICENSE) and bindings generated from Nordic's BSD-3-Clause nrf_wifi
+# headers (fw/bindings.rs).
+license = "(MIT OR Apache-2.0) AND BSD-3-Clause AND LicenseRef-Nordic-5-Clause"
+repository = "https://github.com/embassy-rs/nrf70"
+documentation = "https://docs.rs/nrf70"
+readme = "README.md"
+# The example, the binding generator and the editor and CI files stay out of the package.
+include = [
+    "src/**/*",
+    "fw/nrf70.bin",
+    "fw/bindings.rs",
+    "fw/LICENSE",
+    "README.md",
+    "LICENSE-APACHE",
+    "LICENSE-MIT",
+]
 
 [dependencies]
 align-data = "0.1.0"
