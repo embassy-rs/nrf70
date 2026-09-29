@@ -57,6 +57,20 @@ The examples scan every 10 s and log what they find:
 4.887786 [INFO ] scan done
 ```
 
+`join_open` joins an open network, gets an address over DHCP, answers ping and runs a TCP echo
+server on port 1234:
+
+```
+WIFI_SSID=MyOpenNetwork cargo run --release --bin join_open
+```
+
+```
+5.350860 [INFO ] connected
+5.604736 [INFO ] address 10.42.0.65/24, echo server on TCP port 1234
+```
+
+Then `ping 10.42.0.65` and `nc 10.42.0.65 1234` from the same network.
+
 If probe-rs reports the core as locked, the DK's application core has APPROTECT enabled: add
 `--allow-erase-all` to the runner in `example/.cargo/config.toml`.
 
