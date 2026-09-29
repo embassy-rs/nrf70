@@ -20,6 +20,12 @@ Working:
 - The MAC address from OTP.
 - Station interface up, and scanning: active scans of every 2.4 GHz and 5 GHz channel, with SSID,
   BSSID, band, channel, signal strength and security for each network found.
+- Joining open networks with `Control::join_open`, as the nRF Connect SDK's supplicant does it: a
+  scan for the SSID, open system authentication with its strongest access point, association and
+  port authorisation. `ConnectError` says which step failed. The driver reports a lost connection
+  as link down, and the application joins again.
+- Ethernet frames to and from [`embassy-net`](https://embassy.dev) through the `NetDriver`: TCP,
+  UDP, DHCP and ICMP work on top of it.
 - SPI bus through any [`embedded-hal-async`](https://crates.io/crates/embedded-hal-async)
   `SpiDevice`.
 - Any other bus through the `Bus` trait. The `scan_qspi` example implements it on the nRF5340's
@@ -29,8 +35,6 @@ Working:
 
 Not yet:
 
-- Joining networks and sending and receiving Ethernet frames (the `NetDriver` for
-  [`embassy-net`](https://embassy.dev) exists, the data path does not).
 - WPA2/WPA3 (the firmware has no supplicant: the host runs the 4-way handshake), AP mode, low power
   mode.
 

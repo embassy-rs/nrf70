@@ -6,9 +6,10 @@ use core::mem::{align_of, size_of, zeroed};
 use core::slice;
 
 use align_data::{include_aligned, Align16};
-use defmt::{assert, panic, todo, unwrap, *};
-use embassy_futures::select::{select, Either};
+use defmt::{assert, panic, unwrap, *};
+use embassy_futures::select::{select3, Either3};
 use embassy_net_driver_channel as ch;
+use embassy_net_driver_channel::driver::LinkState;
 use embassy_sync::blocking_mutex::raw::NoopRawMutex;
 use embassy_sync::channel::Channel;
 use embassy_time::{with_timeout, Duration, Instant, Timer};
@@ -38,9 +39,16 @@ const SCAN_TIMEOUT: Duration = Duration::from_secs(30);
 const IRQ_POLL_PERIOD: Duration = Duration::from_millis(50);
 /// Scan results buffered between the runner and a [`Scanner`].
 const SCAN_RESULTS_DEPTH: usize = 32;
+/// Authentication and association each get this long (wpa_supplicant's `SME_AUTH_TIMEOUT`).
+const MLME_TIMEOUT: Duration = Duration::from_secs(5);
+/// After association, how long the RPU gets to add the AP as a peer and turn the carrier on.
+const LINK_TIMEOUT: Duration = Duration::from_secs(10);
+/// Longest event the driver reassembles. Longer ones are drained and dropped.
+const MAX_EVENT_LEN: usize = 4096;
 
 enum Request {
     Scan,
+    Connect(Ssid),
 }
 
 enum ScanEvent {
@@ -52,6 +60,55 @@ enum ScanEvent {
 struct Shared {
     requests: Channel<NoopRawMutex, Request, 1>,
     scan_results: Channel<NoopRawMutex, ScanEvent, SCAN_RESULTS_DEPTH>,
+    connect_result: Channel<NoopRawMutex, Result<(), ConnectError>, 1>,
+}
+
+/// An SSID, up to 32 bytes.
+#[derive(Clone, Copy)]
+struct Ssid {
+    len: u8,
+    bytes: [u8; 32],
+}
+
+impl Ssid {
+    fn new(ssid: &[u8]) -> Option<Self> {
+        let mut bytes = [0; 32];
+        bytes.get_mut(..ssid.len())?.copy_from_slice(ssid);
+        Some(Self {
+            len: ssid.len() as u8,
+            bytes,
+        })
+    }
+
+    fn as_bytes(&self) -> &[u8] {
+        &self.bytes[..self.len as usize]
+    }
+
+    fn to_c(self) -> c::ssid {
+        c::ssid {
+            ssid_len: self.len,
+            ssid: self.bytes,
+        }
+    }
+}
+
+/// Why joining a network failed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, defmt::Format)]
+pub enum ConnectError {
+    /// The SSID is longer than 32 bytes.
+    InvalidSsid,
+    /// A scan or another connection is in progress.
+    Busy,
+    /// No access point with this SSID answered.
+    NotFound,
+    /// The access point refused the authentication, with this IEEE 802.11 status code.
+    AuthenticationRejected(u16),
+    /// The access point refused the association, with this IEEE 802.11 status code.
+    AssociationRejected(u16),
+    /// A step did not complete in time.
+    Timeout,
+    /// The connection was lost before it completed.
+    Disconnected,
 }
 
 pub struct State {
@@ -66,6 +123,7 @@ impl State {
             shared: Shared {
                 requests: Channel::new(),
                 scan_results: Channel::new(),
+                connect_result: Channel::new(),
             },
         }
     }
@@ -130,7 +188,16 @@ where
         rpu_info: None,
         num_commands: c::RPU_CMD_START_MAGIC,
         irq_pending_ack: false,
+        bulk_pktram_reads: false,
         scan_deadline: None,
+        conn: ConnState::Idle,
+        conn_ssid: Ssid { len: 0, bytes: [0; 32] },
+        conn_bss: None,
+        conn_deadline: None,
+        peer_known: false,
+        carrier_on: false,
+        link_up: false,
+        tx_tokens_busy: 0,
     };
     runner.init(&config).await;
 
@@ -149,6 +216,16 @@ pub struct Control<'a> {
 }
 
 impl<'a> Control<'a> {
+    /// Joins the open (unencrypted) network `ssid`, picking its strongest access point. Returns
+    /// once the link is up. embassy-net sees that on its next poll: wait for
+    /// `Stack::wait_link_up` before relying on it.
+    pub async fn join_open(&mut self, ssid: &[u8]) -> Result<(), ConnectError> {
+        let ssid = Ssid::new(ssid).ok_or(ConnectError::InvalidSsid)?;
+        self.shared.connect_result.clear();
+        self.shared.requests.send(Request::Connect(ssid)).await;
+        self.shared.connect_result.receive().await
+    }
+
     /// Starts an active scan of every channel. The results arrive through the returned [`Scanner`].
     pub async fn scan(&mut self) -> Scanner<'_> {
         self.shared.scan_results.clear();
@@ -318,6 +395,10 @@ impl_cmd!(
 );
 impl_cmd!(umac, c::umac_cmd_chg_vif_state, c::umac_commands::UMAC_CMD_SET_IFFLAGS);
 impl_cmd!(umac, c::umac_cmd_scan, c::umac_commands::UMAC_CMD_TRIGGER_SCAN);
+impl_cmd!(umac, c::umac_cmd_auth, c::umac_commands::UMAC_CMD_AUTHENTICATE);
+impl_cmd!(umac, c::umac_cmd_assoc, c::umac_commands::UMAC_CMD_ASSOCIATE);
+impl_cmd!(umac, c::umac_cmd_disconn, c::umac_commands::UMAC_CMD_DEAUTHENTICATE);
+impl_cmd!(umac, c::umac_cmd_chg_sta, c::umac_commands::UMAC_CMD_SET_STATION);
 impl_cmd!(
     umac,
     c::umac_cmd_get_scan_results,
@@ -329,7 +410,7 @@ fn sliceit<T>(t: &T) -> &[u8] {
 }
 
 fn unsliceit2<T>(t: &[u8]) -> (&T, &[u8]) {
-    assert!(t.len() > size_of::<T>());
+    assert!(t.len() >= size_of::<T>());
     assert!((t.as_ptr() as usize).is_multiple_of(align_of::<T>()));
     (unsafe { &*(t.as_ptr() as *const T) }, &t[size_of::<T>()..])
 }
@@ -346,6 +427,126 @@ fn slice8(x: &[u32]) -> &[u8] {
 fn slice8_mut(x: &mut [u32]) -> &mut [u8] {
     let len = x.len() * 4;
     unsafe { slice::from_raw_parts_mut(x.as_mut_ptr() as _, len) }
+}
+
+/// The body of the first information element `id` in `ies`.
+fn find_ie(mut ies: &[u8], id: u8) -> Option<&[u8]> {
+    while let [ie_id, len, rest @ ..] = ies {
+        let body = rest.get(..*len as usize)?;
+        if *ie_id == id {
+            return Some(body);
+        }
+        ies = &rest[*len as usize..];
+    }
+    None
+}
+
+const IE_SSID: u8 = 0;
+
+/// Frame control bits of an 802.11 header.
+const FC_TO_DS: u16 = 0x0100;
+const FC_FROM_DS: u16 = 0x0200;
+
+/// How many bytes to skip after an 802.11 data header to reach the payload: the LLC/SNAP header and
+/// the ethertype (NCS `nrf_wifi_util_get_skip_header_bytes`).
+fn llc_skip(ethertype: u16) -> usize {
+    const AARP: u16 = 0x80F3;
+    const IPX: u16 = 0x8137;
+    2 + match ethertype {
+        AARP | IPX => 8,
+        e if e >= 0x0600 => 6,
+        _ => 0,
+    }
+}
+
+/// The ethertype in an LLC/SNAP header.
+fn llc_ethertype(llc: &[u8]) -> Option<u16> {
+    Some(u16::from_be_bytes(llc.get(6..8)?.try_into().ok()?))
+}
+
+/// Writes an Ethernet II frame (`dst`, `src`, ethertype or length, payload) into `out`. Returns its
+/// length, or `None` if it does not fit.
+fn write_ethernet(out: &mut [u8], dst: &[u8], src: &[u8], ethertype: u16, payload: &[u8]) -> Option<usize> {
+    let len = 14 + payload.len();
+    let out = out.get_mut(..len)?;
+    out[0..6].copy_from_slice(dst);
+    out[6..12].copy_from_slice(src);
+    let type_or_len = if ethertype >= 0x0600 {
+        ethertype
+    } else {
+        payload.len() as u16
+    };
+    out[12..14].copy_from_slice(&type_or_len.to_be_bytes());
+    out[14..].copy_from_slice(payload);
+    Some(len)
+}
+
+/// Converts a received frame, as the RPU hands it over, into an Ethernet II frame in `out` (NCS
+/// `nrf_wifi_fmac_rx_event_process` and the conversions it calls). `pkt_type` is one of the
+/// `PKT_TYPE_*` values and `mac_header_len` the 802.11 header length the RPU reports.
+fn rx_to_ethernet(frame: &[u8], pkt_type: u32, mac_header_len: usize, out: &mut [u8]) -> Option<usize> {
+    match pkt_type {
+        c::PKT_TYPE_MPDU => {
+            let fc = u16::from_le_bytes(frame.get(0..2)?.try_into().ok()?);
+            let addr = |n: usize| frame.get(4 + 6 * n..10 + 6 * n);
+            let addr4 = frame.get(24..30);
+            let (dst, src) = match fc & (FC_TO_DS | FC_FROM_DS) {
+                FC_FROM_DS => (addr(0)?, addr(2)?),
+                FC_TO_DS => (addr(2)?, addr(1)?),
+                0 => (addr(0)?, addr(1)?),
+                _ => (addr(0)?, addr4?),
+            };
+            let body = frame.get(mac_header_len..)?;
+            let ethertype = llc_ethertype(body)?;
+            write_ethernet(out, dst, src, ethertype, body.get(llc_skip(ethertype)..)?)
+        }
+        c::PKT_TYPE_MSDU_WITH_MAC => rx_to_ethernet(frame.get(mac_header_len..)?, c::PKT_TYPE_MSDU, 0, out),
+        c::PKT_TYPE_MSDU => {
+            // An A-MSDU subframe: destination, source and length, then the LLC/SNAP header.
+            let length = u16::from_be_bytes(frame.get(12..14)?.try_into().ok()?) as usize;
+            let body = frame.get(14..(14 + length).min(frame.len()))?;
+            let ethertype = llc_ethertype(body)?;
+            write_ethernet(
+                out,
+                &frame[0..6],
+                &frame[6..12],
+                ethertype,
+                body.get(llc_skip(ethertype)..)?,
+            )
+        }
+        _ => None,
+    }
+}
+
+/// The status code in the frame of an authentication or association event, `offset` bytes in (after
+/// the 24-byte header and the fields before the status), or `None` if the RPU reports a timeout.
+fn mlme_status(event: &c::umac_event_mlme, offset: usize) -> Option<u16> {
+    if event.flags & c::EVENT_MLME_TIMED_OUT != 0 {
+        return None;
+    }
+    let frame = event.frame;
+    if (frame.frame_len as usize) < offset + 2 {
+        return None;
+    }
+    Some(u16::from_le_bytes([
+        frame.frame[offset] as u8,
+        frame.frame[offset + 1] as u8,
+    ]))
+}
+
+/// Packet RAM address of RX buffer `desc_id`. The RX buffers follow the TX area.
+fn rx_buf_addr(desc_id: usize) -> u32 {
+    c::RPU_MEM_PKT_BASE + (TX_TOTAL_SIZE + RX_BUF_SIZE * desc_id) as u32
+}
+
+/// The 802.1D priority of an outgoing Ethernet frame, from the precedence bits of an IPv4 header
+/// (NCS `get_tid`, which also looks at IPv6 and VLAN tags; everything else goes as best effort).
+fn tx_priority(frame: &[u8]) -> u32 {
+    const IPV4: [u8; 2] = [0x08, 0x00];
+    match frame.get(12..16) {
+        Some([t0, t1, _, tos]) if [*t0, *t1] == IPV4 => ((tos & 0xFC) >> 5) as u32,
+        _ => 0,
+    }
 }
 
 #[derive(Copy, Clone, Debug, defmt::Format)]
@@ -446,6 +647,10 @@ fn parse_firmware(fw: &[u8]) -> Firmware<'_> {
         lmac_sec,
     }
 }
+
+/// Address bit 23 asks for an incrementing address, so that a burst reads or writes consecutive
+/// words (NCS `addrmask`). Writes set it in the SPI command already.
+const ADDR_INCREMENT: u32 = 0x80_0000;
 
 const SR0_WRITE_IN_PROGRESS: u8 = 0x01;
 
@@ -707,9 +912,9 @@ enum Event<'b> {
     /// A UMAC event, by `umac_events` number, with the whole message (which starts with its
     /// `umac_hdr`).
     Umac(u32, &'b [u8]),
-    /// A data path event, by `umac_data_commands` number, with the whole message (which starts
-    /// with its `umac_head`).
-    Data(u32, &'b [u8]),
+    /// Data path events: the whole message body, one or more events that each start with a
+    /// `umac_head`.
+    Data(&'b [u8]),
     /// Any other message type.
     Other(u32),
 }
@@ -720,13 +925,37 @@ fn parse_event(buf: &[u8]) -> Event<'_> {
     match c::host_rpu_msg_type::try_from(msg_type) {
         Ok(c::host_rpu_msg_type::HOST_RPU_MSG_TYPE_SYSTEM) => Event::Sys(unsliceit::<c::sys_head>(body).cmd_event),
         Ok(c::host_rpu_msg_type::HOST_RPU_MSG_TYPE_UMAC) => Event::Umac(unsliceit::<c::umac_hdr>(body).cmd_evnt, body),
-        Ok(c::host_rpu_msg_type::HOST_RPU_MSG_TYPE_DATA) => Event::Data(unsliceit::<c::umac_head>(body).cmd, body),
+        Ok(c::host_rpu_msg_type::HOST_RPU_MSG_TYPE_DATA) => Event::Data(body),
         _ => Event::Other(msg_type),
     }
 }
 
+/// The access point chosen by a connect scan: what authentication and association need.
+#[derive(Clone, Copy)]
+struct Bss {
+    bssid: [u8; 6],
+    /// MHz.
+    frequency: u32,
+    capability: u16,
+    beacon_interval: u16,
+    tsf: u64,
+    signal_dbm: i32,
+}
+
+/// Progress of joining a network (NCS leaves this to wpa_supplicant's SME).
+#[derive(Clone, Copy, PartialEq, Eq, Debug, defmt::Format)]
+enum ConnState {
+    Idle,
+    /// A connect scan for the SSID, keeping the strongest access point.
+    Scanning,
+    Authenticating,
+    Associating,
+    /// Associated: waiting for the RPU to add the AP as a peer and turn the carrier on.
+    Associated,
+    Connected,
+}
+
 pub struct Runner<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> {
-    #[allow(unused)]
     ch: ch::Runner<'a, MTU>,
     state_ch: ch::StateRunner<'a>,
     shared: &'a Shared,
@@ -743,8 +972,25 @@ pub struct Runner<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> {
     /// Set when events have been read since the last interrupt acknowledgement.
     irq_pending_ack: bool,
 
+    /// Whether packet RAM reads in one SPI transaction were found to work at boot.
+    bulk_pktram_reads: bool,
+
     /// Set while a display scan is running, so a lost one does not block the next.
     scan_deadline: Option<Instant>,
+
+    conn: ConnState,
+    conn_ssid: Ssid,
+    conn_bss: Option<Bss>,
+    /// When the current connection step times out.
+    conn_deadline: Option<Instant>,
+    /// The RPU added the AP as a peer (`UMAC_EVENT_NEW_STATION`). TX needs it.
+    peer_known: bool,
+    /// The RPU reported the carrier on (`CMD_CARRIER_ON`).
+    carrier_on: bool,
+    /// The link as reported to embassy-net.
+    link_up: bool,
+    /// TX tokens handed to the RPU and not yet reported done, one bit each.
+    tx_tokens_busy: u16,
 }
 
 impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT> {
@@ -803,6 +1049,7 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
 
         info!("Initializing rpu info...");
         self.init_rpu_info().await;
+        self.bulk_pktram_reads = self.check_bulk_reads().await;
 
         info!("Reading OTP...");
         let otp = self.read_otp().await;
@@ -847,86 +1094,147 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
     pub async fn run(&mut self) -> ! {
         info!("running...");
 
-        let mut buf = [0u32; MAX_EVENT_POOL_LEN / 4];
+        let mut buf = [0u32; MAX_EVENT_LEN / 4];
+        let mut tx_frame = [0u32; MTU.div_ceil(4)];
 
         loop {
-            while self.rpu_event_next(&mut buf).await {
-                self.handle_event(slice8(&buf)).await;
+            while let Some(len) = self.rpu_event_next(&mut buf).await {
+                if len > 0 {
+                    self.handle_event(slice8(&buf), len).await;
+                }
             }
             self.rpu_irq_service_end().await;
+            self.check_conn_timeout().await;
 
             let shared = self.shared;
+            let can_tx = self.link_up && self.tx_tokens_busy.count_ones() < MAX_TX_TOKENS as u32;
+            let ch = &mut self.ch;
             let irq = with_timeout(IRQ_POLL_PERIOD, self.host_irq.wait_for_rising_edge());
-            match select(irq, shared.requests.receive()).await {
-                Either::First(_) => {}
-                Either::Second(request) => self.handle_request(request).await,
+            let tx = async {
+                if can_tx {
+                    ch.tx_buf().await
+                } else {
+                    core::future::pending().await
+                }
+            };
+            match select3(irq, shared.requests.receive(), tx).await {
+                Either3::First(_) => {}
+                Either3::Second(request) => self.handle_request(request).await,
+                Either3::Third(frame) => {
+                    let len = frame.len();
+                    slice8_mut(&mut tx_frame)[..len].copy_from_slice(frame);
+                    self.ch.tx_done();
+                    self.send_frame(&tx_frame, len).await;
+                }
             }
         }
     }
 
     async fn handle_request(&mut self, request: Request) {
+        let scan_running = self.scan_deadline.is_some_and(|deadline| Instant::now() < deadline);
+        let connecting = !matches!(self.conn, ConnState::Idle | ConnState::Connected);
         match request {
             Request::Scan => {
-                if let Some(deadline) = self.scan_deadline {
-                    if Instant::now() < deadline {
-                        warn!("scan already in progress");
-                        self.push_scan_event(ScanEvent::Aborted);
-                        return;
-                    }
+                if scan_running || connecting {
+                    warn!("scan refused: a scan or a connection is in progress");
+                    self.push_scan_event(ScanEvent::Aborted);
+                    return;
                 }
                 self.scan_deadline = Some(Instant::now() + SCAN_TIMEOUT);
                 self.trigger_scan().await;
             }
+            Request::Connect(ssid) => {
+                if scan_running || connecting {
+                    let _ = self.shared.connect_result.try_send(Err(ConnectError::Busy));
+                    return;
+                }
+                if self.conn == ConnState::Connected {
+                    self.leave().await;
+                }
+                self.conn_ssid = ssid;
+                self.conn_bss = None;
+                self.set_conn(ConnState::Scanning, SCAN_TIMEOUT);
+                self.trigger_connect_scan().await;
+            }
         }
     }
 
-    async fn handle_event(&mut self, buf: &[u8]) {
+    /// Handles one event. `buf` holds it from its start and `len` is its length; `buf` may be
+    /// longer, because some events are shorter than the structure that describes them.
+    async fn handle_event(&mut self, buf: &[u8], len: usize) {
         match parse_event(buf) {
             Event::Sys(id) => match c::sys_events::try_from(id) {
                 Ok(event) => debug!("sys event {}", event as u32),
                 Err(_) => warn!("unknown sys event type {:08x}", id),
             },
             Event::Umac(id, body) => self.handle_umac_event(id, body).await,
-            Event::Data(id, body) => self.handle_data_event(id, body).await,
+            Event::Data(body) => {
+                // One message can carry several data events, each giving its own length (NCS
+                // `nrf_wifi_sys_fmac_event_callback`).
+                let mut left = len.saturating_sub(size_of::<c::host_rpu_msg>()).min(body.len());
+                let mut body = body;
+                while left >= size_of::<c::umac_head>() {
+                    let head: &c::umac_head = unsliceit(body);
+                    let (id, event_len) = (head.cmd, head.len as usize);
+                    if event_len == 0 || event_len > left {
+                        warn!("malformed data event {}, length {}", id, event_len);
+                        break;
+                    }
+                    self.handle_data_event(id, body).await;
+                    body = &body[event_len..];
+                    left -= event_len;
+                }
+            }
             Event::Other(msg_type) => warn!("unknown event type {:08x}", msg_type),
         }
     }
 
     async fn handle_data_event(&mut self, id: u32, body: &[u8]) {
         match c::umac_data_commands::try_from(id) {
-            Ok(c::umac_data_commands::CMD_RX_BUFF) => {
-                let (rx, infos) = unsliceit2::<c::rx_buff>(body);
-                let count = rx.rx_pkt_cnt as usize;
-                for i in 0..count {
-                    let info: &c::rx_buff_info = unsliceit(&infos[i * size_of::<c::rx_buff_info>()..]);
-                    let desc_id = info.descriptor_id as usize;
-                    if desc_id >= RX_BUFS {
-                        warn!("RX event for invalid descriptor {}", desc_id);
-                        continue;
-                    }
-                    // Frames are not passed to a network stack yet, so the buffer goes straight
-                    // back to the RPU. Without this the RX pool drains.
-                    self.rx_buf_post(desc_id).await;
+            Ok(c::umac_data_commands::CMD_RX_BUFF) => self.handle_rx(body).await,
+            Ok(c::umac_data_commands::CMD_TX_BUFF_DONE) => {
+                let token = unsliceit::<c::tx_buff_done>(body).tx_desc_num as usize;
+                if token < MAX_TX_TOKENS {
+                    self.tx_tokens_busy &= !(1 << token);
+                } else {
+                    warn!("TX done for invalid token {}", token);
                 }
+            }
+            Ok(c::umac_data_commands::CMD_CARRIER_ON) => {
+                debug!("carrier on");
+                self.carrier_on = true;
+                self.check_associated().await;
+            }
+            Ok(c::umac_data_commands::CMD_CARRIER_OFF) => {
+                debug!("carrier off");
+                self.carrier_on = false;
+                self.connection_lost().await;
             }
             _ => debug!("unhandled data event {}", id),
         }
     }
 
     async fn handle_umac_event(&mut self, id: u32, body: &[u8]) {
+        use c::umac_events::*;
         match c::umac_events::try_from(id) {
-            Ok(c::umac_events::UMAC_EVENT_TRIGGER_SCAN_START) => debug!("scan started"),
-            Ok(c::umac_events::UMAC_EVENT_SCAN_DONE) => {
-                if self.scan_deadline.is_some() {
-                    // A display scan hands its results over only when asked for them.
-                    self.get_scan_results().await;
+            Ok(UMAC_EVENT_TRIGGER_SCAN_START) => debug!("scan started"),
+            Ok(UMAC_EVENT_SCAN_DONE) => {
+                // Scans hand their results over only when asked for them.
+                if self.conn == ConnState::Scanning {
+                    self.get_scan_results(c::scan_reason::SCAN_CONNECT).await;
+                } else if self.scan_deadline.is_some() {
+                    self.get_scan_results(c::scan_reason::SCAN_DISPLAY).await;
                 }
             }
-            Ok(c::umac_events::UMAC_EVENT_SCAN_ABORTED) => {
-                self.scan_deadline = None;
-                self.push_scan_event(ScanEvent::Aborted);
+            Ok(UMAC_EVENT_SCAN_ABORTED) => {
+                if self.conn == ConnState::Scanning {
+                    self.connect_failed(ConnectError::NotFound).await;
+                } else {
+                    self.scan_deadline = None;
+                    self.push_scan_event(ScanEvent::Aborted);
+                }
             }
-            Ok(c::umac_events::UMAC_EVENT_SCAN_DISPLAY_RESULT) => {
+            Ok(UMAC_EVENT_SCAN_DISPLAY_RESULT) => {
                 let event: &c::umac_event_new_scan_display_results = unsliceit(body);
                 let count = (event.event_bss_count as usize).min(event.display_results.len());
                 let seq = event.umac_hdr.seq;
@@ -940,9 +1248,60 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
                     self.push_scan_event(ScanEvent::Done);
                 }
             }
-            Ok(c::umac_events::UMAC_EVENT_IFFLAGS_STATUS) => {
+            Ok(UMAC_EVENT_SCAN_RESULT) => self.handle_scan_result(body).await,
+            Ok(UMAC_EVENT_AUTHENTICATE) => {
+                if self.conn == ConnState::Authenticating {
+                    // Authentication frame: header, then algorithm, transaction and status.
+                    match mlme_status(unsliceit(body), 28) {
+                        Some(0) => self.associate().await,
+                        Some(status) => self.connect_failed(ConnectError::AuthenticationRejected(status)).await,
+                        None => self.connect_failed(ConnectError::Timeout).await,
+                    }
+                }
+            }
+            Ok(UMAC_EVENT_ASSOCIATE) => {
+                if self.conn == ConnState::Associating {
+                    // Association response: header, then capabilities and status.
+                    match mlme_status(unsliceit(body), 26) {
+                        Some(0) => {
+                            debug!("associated");
+                            self.set_conn(ConnState::Associated, LINK_TIMEOUT);
+                            self.check_associated().await;
+                        }
+                        Some(status) => self.connect_failed(ConnectError::AssociationRejected(status)).await,
+                        None => self.connect_failed(ConnectError::Timeout).await,
+                    }
+                }
+            }
+            Ok(UMAC_EVENT_NEW_STATION) => {
+                debug!("AP added as peer");
+                self.peer_known = true;
+                self.check_associated().await;
+            }
+            Ok(UMAC_EVENT_DEL_STATION) => {
+                debug!("AP removed as peer");
+                self.peer_known = false;
+                self.connection_lost().await;
+            }
+            Ok(
+                UMAC_EVENT_DEAUTHENTICATE
+                | UMAC_EVENT_DISASSOCIATE
+                | UMAC_EVENT_UNPROT_DEAUTHENTICATE
+                | UMAC_EVENT_UNPROT_DISASSOCIATE,
+            ) => {
+                debug!("disconnect event {}", id);
+                self.connection_lost().await;
+            }
+            Ok(UMAC_EVENT_IFFLAGS_STATUS) => {
                 let status = unsliceit::<c::umac_event_vif_state>(body).status;
                 debug!("interface flags status {}", status);
+            }
+            Ok(UMAC_EVENT_CMD_STATUS) => {
+                let event: &c::umac_event_cmd_status = unsliceit(body);
+                let (cmd, status) = (event.cmd_id, event.cmd_status);
+                if status != 0 {
+                    warn!("command {} failed with status {}", cmd, status);
+                }
             }
             _ => debug!("unhandled UMAC event {}", id),
         }
@@ -954,16 +1313,347 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
         }
     }
 
+    // ========= connecting
+
+    fn set_conn(&mut self, state: ConnState, timeout: Duration) {
+        debug!("connection: {}", state);
+        self.conn = state;
+        self.conn_deadline = Some(Instant::now() + timeout);
+    }
+
+    fn set_link(&mut self, up: bool) {
+        if up != self.link_up {
+            self.link_up = up;
+            self.state_ch
+                .set_link_state(if up { LinkState::Up } else { LinkState::Down });
+        }
+    }
+
+    /// Resets the connection state and reports the link down.
+    fn reset_conn(&mut self) {
+        self.conn = ConnState::Idle;
+        self.conn_deadline = None;
+        self.peer_known = false;
+        self.carrier_on = false;
+        self.set_link(false);
+    }
+
+    /// Gives up on joining: leaves the AP if already authenticated, and reports `error`.
+    async fn connect_failed(&mut self, error: ConnectError) {
+        warn!("connection failed: {}", error);
+        if matches!(self.conn, ConnState::Associating | ConnState::Associated) {
+            self.deauthenticate().await;
+        }
+        self.reset_conn();
+        let _ = self.shared.connect_result.try_send(Err(error));
+    }
+
+    /// The RPU or the AP ended the association.
+    async fn connection_lost(&mut self) {
+        match self.conn {
+            ConnState::Idle => {}
+            ConnState::Connected => {
+                warn!("disconnected");
+                self.reset_conn();
+            }
+            _ => self.connect_failed(ConnectError::Disconnected).await,
+        }
+    }
+
+    /// Leaves the current network.
+    async fn leave(&mut self) {
+        self.deauthenticate().await;
+        self.reset_conn();
+    }
+
+    async fn check_conn_timeout(&mut self) {
+        if self.conn_deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+            let error = match (self.conn, self.conn_bss) {
+                (ConnState::Scanning, None) => ConnectError::NotFound,
+                _ => ConnectError::Timeout,
+            };
+            self.connect_failed(error).await;
+        }
+    }
+
+    /// Scans for the target SSID so that the RPU knows its access points before authentication
+    /// (NCS `nrf_wifi_wpa_supp_scan2`).
+    async fn trigger_connect_scan(&mut self) {
+        let mut cmd: c::umac_cmd_scan = unsafe { zeroed() };
+        cmd.info.scan_reason = c::scan_reason::SCAN_CONNECT as _;
+        cmd.info.scan_params.num_scan_ssids = 1;
+        cmd.info.scan_params.scan_ssids[0] = self.conn_ssid.to_c();
+        self.send_cmd(cmd).await;
+    }
+
+    /// Keeps the strongest access point of the target SSID, and authenticates with it after the
+    /// last result (NCS `nrf_wifi_wpa_supp_event_proc_scan_res`).
+    async fn handle_scan_result(&mut self, body: &[u8]) {
+        if self.conn != ConnState::Scanning {
+            return;
+        }
+        let (event, tail) = unsliceit2::<c::umac_event_new_scan_results>(body);
+        let valid = event.valid_fields;
+        let ies_len = if valid & c::EVENT_NEW_SCAN_RESULTS_IES_VALID != 0 {
+            event.ies_len as usize
+        } else {
+            0
+        };
+        let beacon_ies_len = if valid & c::EVENT_NEW_SCAN_RESULTS_BEACON_IES_VALID != 0 {
+            event.beacon_ies_len as usize
+        } else {
+            0
+        };
+        let ies = tail.get(..ies_len).unwrap_or(&[]);
+        let beacon_ies = tail.get(ies_len..ies_len + beacon_ies_len).unwrap_or(&[]);
+        let target = self.conn_ssid.as_bytes();
+        let matches = find_ie(ies, IE_SSID) == Some(target) || find_ie(beacon_ies, IE_SSID) == Some(target);
+
+        if matches {
+            let signal = event.signal;
+            let signal_dbm = if signal.signal_type == c::SIGNAL_TYPE_MBM {
+                (unsafe { signal.signal.mbm_signal }) as i32 / 100
+            } else {
+                -100
+            };
+            let ies_tsf = if valid & c::EVENT_NEW_SCAN_RESULTS_IES_TSF_VALID != 0 {
+                event.ies_tsf
+            } else {
+                0
+            };
+            let beacon_tsf = if valid & c::EVENT_NEW_SCAN_RESULTS_BEACON_IES_TSF_VALID != 0 {
+                event.beacon_ies_tsf
+            } else {
+                0
+            };
+            let bss = Bss {
+                bssid: event.mac_addr,
+                frequency: event.frequency,
+                capability: event.capability,
+                beacon_interval: event.beacon_interval,
+                tsf: ies_tsf.max(beacon_tsf),
+                signal_dbm,
+            };
+            debug!(
+                "found {:02x} at {} MHz, {} dBm",
+                bss.bssid, bss.frequency, bss.signal_dbm
+            );
+            if self.conn_bss.is_none_or(|best| bss.signal_dbm > best.signal_dbm) {
+                self.conn_bss = Some(bss);
+            }
+        }
+
+        // The last result has a zero sequence number.
+        if event.umac_hdr.seq == 0 {
+            match self.conn_bss {
+                Some(bss) => self.authenticate(bss).await,
+                None => self.connect_failed(ConnectError::NotFound).await,
+            }
+        }
+    }
+
+    /// Open system authentication with `bss` (NCS `nrf_wifi_wpa_supp_authenticate`).
+    async fn authenticate(&mut self, bss: Bss) {
+        info!(
+            "authenticating with {:02x} at {} MHz, {} dBm",
+            bss.bssid, bss.frequency, bss.signal_dbm
+        );
+        let mut cmd: c::umac_cmd_auth = unsafe { zeroed() };
+        cmd.valid_fields = c::CMD_AUTHENTICATE_FREQ_VALID | c::CMD_AUTHENTICATE_SSID_VALID;
+        cmd.info.frequency = bss.frequency;
+        cmd.info.auth_type = c::auth_type::AUTHTYPE_OPEN_SYSTEM as _;
+        cmd.info.ssid = self.conn_ssid.to_c();
+        cmd.info.bssid = bss.bssid;
+        cmd.info.signal = bss.signal_dbm;
+        cmd.info.capability = bss.capability;
+        cmd.info.beacon_interval = bss.beacon_interval;
+        cmd.info.tsf = bss.tsf;
+        self.set_conn(ConnState::Authenticating, MLME_TIMEOUT);
+        self.send_cmd(cmd).await;
+    }
+
+    /// Associates with the authenticated AP (NCS `nrf_wifi_wpa_supp_associate`).
+    async fn associate(&mut self) {
+        let Some(bss) = self.conn_bss else {
+            return;
+        };
+        let mut cmd: c::umac_cmd_assoc = unsafe { zeroed() };
+        let info = &mut cmd.connect_common_info;
+        info.valid_fields = c::CONNECT_COMMON_INFO_MAC_ADDR_VALID
+            | c::CONNECT_COMMON_INFO_SSID_VALID
+            | c::CONNECT_COMMON_INFO_FREQ_VALID
+            | c::CONNECT_COMMON_INFO_USE_MFP_VALID;
+        info.mac_addr = bss.bssid;
+        info.ssid = self.conn_ssid.to_c();
+        info.frequency = bss.frequency;
+        info.use_mfp = 0;
+        info.flags = c::CMD_CONNECT_COMMON_INFO_USE_RRM;
+        // The RPU keeps the port closed until SET_STATION authorizes it.
+        info.control_port = 1;
+        // NCS CONFIG_WIFI_MGMT_BSS_MAX_IDLE_TIME, in seconds.
+        info.maxidle_insec = 300;
+        self.set_conn(ConnState::Associating, MLME_TIMEOUT);
+        self.send_cmd(cmd).await;
+    }
+
+    /// Completes the connection once the RPU has added the AP as a peer and turned the carrier
+    /// on, which it reports in no fixed order after the association.
+    async fn check_associated(&mut self) {
+        if self.conn != ConnState::Associated || !self.peer_known || !self.carrier_on {
+            return;
+        }
+        // An open network has no keys to set up: open the port right away, as wpa_supplicant's
+        // ForceAuthorized state does.
+        self.authorize().await;
+        self.conn = ConnState::Connected;
+        self.conn_deadline = None;
+        self.set_link(true);
+        info!("connected");
+        let _ = self.shared.connect_result.try_send(Ok(()));
+    }
+
+    /// Opens the port to the AP (NCS `nrf_wifi_wpa_set_supp_port`).
+    async fn authorize(&mut self) {
+        let Some(bss) = self.conn_bss else {
+            return;
+        };
+        let mut cmd: c::umac_cmd_chg_sta = unsafe { zeroed() };
+        cmd.valid_fields = c::CMD_SET_STATION_STA_FLAGS2_VALID;
+        cmd.info.mac_addr = bss.bssid;
+        cmd.info.sta_flags2 = c::sta_flag_update {
+            mask: c::STA_FLAG_AUTHORIZED,
+            set: c::STA_FLAG_AUTHORIZED,
+        };
+        self.send_cmd(cmd).await;
+    }
+
+    /// Deauthenticates from the AP, reason 3 "leaving" (NCS `nrf_wifi_wpa_supp_deauthenticate`).
+    async fn deauthenticate(&mut self) {
+        let Some(bss) = self.conn_bss else {
+            return;
+        };
+        let mut cmd: c::umac_cmd_disconn = unsafe { zeroed() };
+        cmd.valid_fields = c::CMD_MLME_MAC_ADDR_VALID;
+        cmd.info.reason_code = 3;
+        cmd.info.mac_addr = bss.bssid;
+        self.send_cmd(cmd).await;
+    }
+
+    // ========= data path
+
+    /// Hands a frame from embassy-net to the RPU (NCS `nrf_wifi_fmac_start_xmit`, one frame per
+    /// token). The RPU builds the 802.11 header from the Ethernet one.
+    async fn send_frame(&mut self, frame: &[u32], len: usize) {
+        let bytes = &slice8(frame)[..len];
+        if len < 14 {
+            return;
+        }
+        let token = self.tx_tokens_busy.trailing_ones() as usize;
+        self.tx_tokens_busy |= 1 << token;
+
+        let area = c::RPU_MEM_PKT_BASE + (token * MAX_TX_AGGREGATION * TX_BUF_SIZE) as u32;
+        self.write(area, None, &frame[..len.div_ceil(4)]).await;
+
+        #[repr(C, packed)]
+        struct TxCommand {
+            msg: c::host_rpu_msg,
+            buff: c::tx_buff,
+            info: c::tx_buff_info,
+        }
+        let mut cmd: TxCommand = unsafe { zeroed() };
+        cmd.msg.hdr.len = size_of::<TxCommand>() as u32;
+        cmd.msg.type_ = c::host_rpu_msg_type::HOST_RPU_MSG_TYPE_DATA as _;
+        cmd.buff.umac_head = c::umac_head {
+            cmd: c::umac_data_commands::CMD_TX_BUFF as u32,
+            len: (size_of::<c::tx_buff>() + size_of::<c::tx_buff_info>()) as u32,
+        };
+        cmd.buff.tx_desc_num = token as u8;
+        let mut dest = [0; 6];
+        let mut src = [0; 6];
+        dest.copy_from_slice(&bytes[0..6]);
+        src.copy_from_slice(&bytes[6..12]);
+        cmd.buff.mac_hdr_info.dest = dest;
+        cmd.buff.mac_hdr_info.src = src;
+        cmd.buff.mac_hdr_info.etype = u16::from_be_bytes([bytes[12], bytes[13]]);
+        cmd.buff.mac_hdr_info.tx_flags = tx_priority(bytes);
+        // No power save buffering towards an AP: every frame ends the service period.
+        cmd.buff.mac_hdr_info.eosp = 1;
+        cmd.buff.num_tx_pkts = 1;
+        cmd.info = c::tx_buff_info {
+            pkt_length: len as u16,
+            // The RPU takes packet RAM addresses as offsets.
+            ddr_ptr: area & c::RPU_ADDR_MASK_OFFSET,
+        };
+
+        let mut words = [0u32; size_of::<TxCommand>().div_ceil(4)];
+        slice8_mut(&mut words)[..size_of::<TxCommand>()].copy_from_slice(sliceit(&cmd));
+        let info = self.rpu_info.as_ref().unwrap();
+        let (cmd_base, busy_queue) = (info.tx_cmd_base, info.hpqm_info.cmd_busy_queue);
+        let cmd_addr = cmd_base + c::RPU_DATA_CMD_SIZE_MAX_TX * token as u32;
+        self.write(cmd_addr, None, &words).await;
+        self.rpu_hpq_enqueue(busy_queue, cmd_addr).await;
+        self.rpu_msg_trigger().await;
+    }
+
+    /// Passes received data frames to embassy-net and gives their buffers back (NCS
+    /// `nrf_wifi_fmac_rx_event_process`).
+    async fn handle_rx(&mut self, body: &[u8]) {
+        let (rx, infos) = unsliceit2::<c::rx_buff>(body);
+        let class = rx.rx_pkt_type as i32;
+        let mac_header_len = rx.mac_header_len as usize;
+        for i in 0..rx.rx_pkt_cnt as usize {
+            let Some(info) = infos.get(i * size_of::<c::rx_buff_info>()..) else {
+                break;
+            };
+            let info: &c::rx_buff_info = unsliceit(info);
+            let (desc_id, len, pkt_type) = (
+                info.descriptor_id as usize,
+                info.rx_pkt_len as usize,
+                info.pkt_type as u32,
+            );
+            if desc_id >= RX_BUFS {
+                warn!("RX event for invalid descriptor {}", desc_id);
+                continue;
+            }
+            if class == c::rx_pkt_type::RX_PKT_DATA as i32 {
+                self.rx_deliver(desc_id, len, pkt_type, mac_header_len).await;
+                self.rx_buf_post(desc_id).await;
+            } else if class != c::rx_pkt_type::RX_PKT_BCN_PRB_RSP as i32 {
+                // The UMAC refills beacon and probe response buffers itself.
+                warn!("RX packet class {} not handled", class);
+            }
+        }
+    }
+
+    async fn rx_deliver(&mut self, desc_id: usize, len: usize, pkt_type: u32, mac_header_len: usize) {
+        if len > RX_MAX_DATA_SIZE {
+            warn!("RX frame of {} bytes dropped", len);
+            return;
+        }
+        let mut frame = [0u32; RX_MAX_DATA_SIZE / 4];
+        let words = len.div_ceil(4);
+        self.read(rx_buf_addr(desc_id) + c::RX_BUF_HEADROOM, None, &mut frame[..words])
+            .await;
+        let Some(out) = self.ch.try_rx_buf() else {
+            debug!("RX frame dropped, embassy-net has no buffer free");
+            return;
+        };
+        match rx_to_ethernet(&slice8(&frame)[..len], pkt_type, mac_header_len, out) {
+            Some(n) => self.ch.rx_done(n),
+            None => warn!("RX frame of type {} not converted", pkt_type),
+        }
+    }
+
     /// Waits for an event that `matches` accepts, handling the others as usual.
     async fn wait_for_event(&mut self, what: &str, matches: impl Fn(&Event) -> bool) {
-        let mut buf = [0u32; MAX_EVENT_POOL_LEN / 4];
+        let mut buf = [0u32; MAX_EVENT_LEN / 4];
         let found = with_timeout(EVENT_TIMEOUT, async {
             loop {
-                self.next_event(&mut buf).await;
+                let len = self.next_event(&mut buf).await;
                 if matches(&parse_event(slice8(&buf))) {
                     return;
                 }
-                self.handle_event(slice8(&buf)).await;
+                self.handle_event(slice8(&buf), len).await;
             }
         })
         .await;
@@ -972,19 +1662,24 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
         }
     }
 
-    /// Reads the next event into `buf`, waiting for HOST_IRQ while the queue is empty.
-    async fn next_event(&mut self, buf: &mut [u32]) {
+    /// Reads the next event into `buf` and returns its length, waiting for HOST_IRQ while the
+    /// queue is empty.
+    async fn next_event(&mut self, buf: &mut [u32]) -> usize {
         loop {
-            if self.rpu_event_next(buf).await {
-                return;
+            match self.rpu_event_next(buf).await {
+                Some(len) if len > 0 => return len,
+                Some(_) => {}
+                None => {
+                    self.rpu_irq_service_end().await;
+                    let _ = with_timeout(IRQ_POLL_PERIOD, self.host_irq.wait_for_rising_edge()).await;
+                }
             }
-            self.rpu_irq_service_end().await;
-            let _ = with_timeout(IRQ_POLL_PERIOD, self.host_irq.wait_for_rising_edge()).await;
         }
     }
 
-    /// Reads the next queued event into `buf`. Returns false if the queue is empty.
-    async fn rpu_event_next(&mut self, buf: &mut [u32]) -> bool {
+    /// Reads the next queued event into `buf`. Returns its length, 0 if it was dropped, or `None`
+    /// if the queue is empty.
+    async fn rpu_event_next(&mut self, buf: &mut [u32]) -> Option<usize> {
         let event_address = self
             .rpu_hpq_dequeue(self.rpu_info.as_ref().unwrap().hpqm_info.event_busy_queue)
             .await;
@@ -993,11 +1688,10 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
             // No more events to read. Sometimes when low power mode is enabled
             // we see a wrong address, but it work after a while, so, add a
             // check for that.
-            None | Some(0xAAAAAAAA) => false,
+            None | Some(0xAAAAAAAA) => None,
             Some(event_address) => {
-                self.rpu_event_read(event_address, buf).await;
                 self.irq_pending_ack = true;
-                true
+                Some(self.rpu_event_read(event_address, buf).await.unwrap_or(0))
             }
         }
     }
@@ -1067,30 +1761,63 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
         .await;
     }
 
-    async fn rpu_event_read(&mut self, event_address: u32, buf: &mut [u32]) {
-        self.read(
-            event_address,
-            None,
-            &mut buf[..c::RPU_EVENT_COMMON_SIZE_MAX as usize / 4],
-        )
-        .await;
+    /// Reads the event at `event_address` into `buf` (NCS `hal_rpu_event_get`). An event longer
+    /// than one event buffer continues, without a header, in the buffers queued after it. Returns
+    /// the event length, or `None` if it did not fit in `buf` and was dropped.
+    async fn rpu_event_read(&mut self, event_address: u32, buf: &mut [u32]) -> Option<usize> {
+        const COMMON: usize = c::RPU_EVENT_COMMON_SIZE_MAX as usize;
+        self.read(event_address, None, &mut buf[..COMMON / 4]).await;
 
         // Get the header from the front of the event data
         let message_header: &c::host_rpu_msg_hdr = unsliceit(slice8(buf));
         let len = message_header.len as usize;
-        let resubmit = message_header.resubmit;
+        let resubmit = message_header.resubmit > 0;
+        let fits = len <= buf.len() * 4;
 
-        if len > MAX_EVENT_POOL_LEN {
-            todo!("Fragmented event read is not yet implemented");
-        } else if len > c::RPU_EVENT_COMMON_SIZE_MAX as usize {
+        let first = len.min(MAX_EVENT_POOL_LEN);
+        if first > COMMON && fits {
             // This is a longer than usual event. We gotta read it again
-            self.read(event_address, None, &mut buf[..len.div_ceil(4)]).await;
+            self.read(event_address, None, &mut buf[..first.div_ceil(4)]).await;
         }
-
-        // Hand the event back to the RPU only once it has been read in full.
-        if resubmit > 0 {
+        // Hand each buffer back to the RPU only once it has been read.
+        if resubmit {
             self.rpu_event_free(event_address).await;
         }
+
+        let mut offset = first;
+        while offset < len {
+            let Some(fragment) = self.next_event_fragment().await else {
+                warn!("event of {} bytes lost a fragment", len);
+                return None;
+            };
+            let n = (len - offset).min(MAX_EVENT_POOL_LEN);
+            if fits {
+                self.read(fragment, None, &mut buf[offset / 4..(offset + n).div_ceil(4)])
+                    .await;
+            }
+            if resubmit {
+                self.rpu_event_free(fragment).await;
+            }
+            offset += n;
+        }
+
+        if !fits {
+            warn!("event of {} bytes dropped", len);
+            return None;
+        }
+        Some(len)
+    }
+
+    /// The address of the next fragment of a long event, which the RPU queues right after the first.
+    async fn next_event_fragment(&mut self) -> Option<u32> {
+        let queue = self.rpu_info.as_ref().unwrap().hpqm_info.event_busy_queue;
+        for _ in 0..100 {
+            if let Some(address) = self.rpu_hpq_dequeue(queue).await {
+                return Some(address);
+            }
+            Timer::after(Duration::from_millis(1)).await;
+        }
+        None
     }
 
     async fn rpu_event_free(&mut self, event_address: u32) {
@@ -1155,6 +1882,25 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
             rx_cmd_base,
             tx_cmd_base: c::RPU_MEM_TX_CMD_BASE,
         });
+    }
+
+    /// Checks that packet RAM reads in one SPI transaction return what word by word reads do.
+    /// Without the incrementing address bit, a burst returns the first word over and over.
+    async fn check_bulk_reads(&mut self) -> bool {
+        let (mem, offs) = regions::remap_global_addr_to_region_and_offset(c::RPU_MEM_UMAC_BOOT_SIG, None);
+        let mut by_word = [0u32; 32];
+        let mut bulk = [0u32; 32];
+        for (i, val) in by_word.iter_mut().enumerate() {
+            *val = self.raw_read32_inner(mem, offs + i as u32 * 4).await;
+        }
+        self.bus.read((mem.start + offs) | ADDR_INCREMENT, &mut bulk).await;
+        let ok = by_word == bulk;
+        if ok {
+            info!("packet RAM: bulk reads work");
+        } else {
+            warn!("packet RAM: bulk reads differ, reading word by word");
+        }
+        ok
     }
 
     /// Reads the UMAC's copy of the OTP (NCS `nrf_wifi_hal_otp_info_get`,
@@ -1234,7 +1980,8 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
                 max_num_tx_agg_sessions: 4,
                 max_num_rx_agg_sessions: 8,
                 max_tx_aggregation: MAX_TX_AGGREGATION as _,
-                reorder_buf_size: 64,
+                // NCS uses half the RX buffers (CONFIG_NRF70_RX_NUM_BUFS / 2).
+                reorder_buf_size: (RX_BUFS / 2) as u8,
                 max_rxampdu_size: 3,
             },
             temp_vbat_config_params: c::temp_vbat_config {
@@ -1311,10 +2058,10 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
         self.send_cmd(cmd).await;
     }
 
-    /// Asks for the results of a finished display scan (NCS `wifi_nrf_fmac_scan_res_get`).
-    async fn get_scan_results(&mut self) {
+    /// Asks for the results of a finished scan (NCS `nrf_wifi_sys_fmac_scan_res_get`).
+    async fn get_scan_results(&mut self, reason: c::scan_reason) {
         let mut cmd: c::umac_cmd_get_scan_results = unsafe { zeroed() };
-        cmd.scan_reason = c::scan_reason::SCAN_DISPLAY as _;
+        cmd.scan_reason = reason as _;
         self.send_cmd(cmd).await;
     }
 
@@ -1329,13 +2076,14 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
     /// Hands RX buffer `desc_id` to the RPU (NCS `wifi_nrf_fmac_rx_cmd_send`).
     async fn rx_buf_post(&mut self, desc_id: usize) {
         let queue_id = desc_id / RX_BUFS_PER_QUEUE;
-        let rpu_addr = c::RPU_MEM_PKT_BASE + (TX_TOTAL_SIZE + RX_BUF_SIZE * desc_id) as u32;
+        let rpu_addr = rx_buf_addr(desc_id);
 
         // write rx buffer header
         self.write32(rpu_addr, None, desc_id as u32).await;
 
-        // Create host_rpu_rx_buf_info (it's just one word of the address)
-        let command = [rpu_addr + c::RX_BUF_HEADROOM];
+        // Create host_rpu_rx_buf_info (it's just one word of the address). The RPU takes packet
+        // RAM addresses as offsets, as NCS posts them.
+        let command = [(rpu_addr + c::RX_BUF_HEADROOM) & c::RPU_ADDR_MASK_OFFSET];
 
         // Call wifi_nrf_hal_data_cmd_send with the command
         self.rpu_rx_cmd_send(&command, desc_id as u32, queue_id).await;
@@ -1519,10 +2267,13 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
     async fn raw_read(&mut self, mem: &MemoryRegion, offs: u32, buf: &mut [u32]) {
         assert!(mem.start + offs + (buf.len() as u32 * 4) <= mem.end);
 
-        // latency=0 optimization doesn't seem to be working, we read the first word repeatedly.
-        // Read word by word instead.
-        for (i, val) in buf.iter_mut().enumerate() {
-            *val = self.raw_read32_inner(mem, offs + i as u32 * 4).await;
+        if mem.latency == 0 && self.bulk_pktram_reads {
+            // One transaction with the address incrementing, as NCS reads packet RAM.
+            self.bus.read((mem.start + offs) | ADDR_INCREMENT, buf).await;
+        } else {
+            for (i, val) in buf.iter_mut().enumerate() {
+                *val = self.raw_read32_inner(mem, offs + i as u32 * 4).await;
+            }
         }
         trace!(
             "read addr={:08x} len={:08x} buf={:02x}",
@@ -1695,7 +2446,6 @@ pub(crate) struct RpuInfo {
     /// The base address for posting RX commands.
     rx_cmd_base: u32,
     /// The base address for posting TX commands.
-    #[allow(unused)]
     tx_cmd_base: u32,
 }
 
@@ -1905,8 +2655,87 @@ mod tests {
         buf[3] = c::umac_data_commands::CMD_RX_BUFF as u32; // umac_head.cmd
         assert!(matches!(
             parse_event(slice8(&buf)),
-            Event::Data(id, _) if id == c::umac_data_commands::CMD_RX_BUFF as u32
+            Event::Data(body) if body[..4] == (c::umac_data_commands::CMD_RX_BUFF as u32).to_le_bytes()
         ));
+    }
+
+    /// An 802.11 data frame from the AP (FromDS) with an RFC 1042 LLC/SNAP header and an IPv4
+    /// payload.
+    fn from_ds_frame(payload: &[u8]) -> Vec<u8> {
+        let mut frame = vec![
+            0x08, 0x02, // frame control: data, FromDS
+            0x00, 0x00, // duration
+            1, 1, 1, 1, 1, 1, // addr1: our MAC, the destination
+            2, 2, 2, 2, 2, 2, // addr2: BSSID
+            3, 3, 3, 3, 3, 3, // addr3: the source
+            0x00, 0x00, // sequence control
+            0xAA, 0xAA, 0x03, 0x00, 0x00, 0x00, // LLC/SNAP (RFC 1042)
+            0x08, 0x00, // IPv4
+        ];
+        frame.extend_from_slice(payload);
+        frame
+    }
+
+    #[test]
+    fn mpdu_from_the_ap_becomes_ethernet() {
+        let frame = from_ds_frame(&[0x45, 0xAB, 0xCD]);
+        let mut out = [0u8; 64];
+        let len = rx_to_ethernet(&frame, c::PKT_TYPE_MPDU, 24, &mut out);
+        assert_eq!(
+            &out[..unwrap!(len)],
+            [1, 1, 1, 1, 1, 1, 3, 3, 3, 3, 3, 3, 0x08, 0x00, 0x45, 0xAB, 0xCD]
+        );
+    }
+
+    #[test]
+    fn amsdu_subframe_becomes_ethernet_without_its_padding() {
+        let mut subframe = vec![1, 1, 1, 1, 1, 1, 3, 3, 3, 3, 3, 3];
+        subframe.extend_from_slice(&11u16.to_be_bytes()); // LLC/SNAP + ethertype + 3 bytes
+        subframe.extend_from_slice(&[0xAA, 0xAA, 0x03, 0x00, 0x00, 0x00, 0x08, 0x06, 7, 8, 9]);
+        subframe.extend_from_slice(&[0, 0, 0]); // padding to a multiple of 4
+        let mut out = [0u8; 64];
+        let len = rx_to_ethernet(&subframe, c::PKT_TYPE_MSDU, 0, &mut out);
+        assert_eq!(
+            &out[..unwrap!(len)],
+            [1, 1, 1, 1, 1, 1, 3, 3, 3, 3, 3, 3, 0x08, 0x06, 7, 8, 9]
+        );
+    }
+
+    #[test]
+    fn rx_frame_too_big_for_the_buffer_is_refused() {
+        let frame = from_ds_frame(&[0; 100]);
+        let mut out = [0u8; 64];
+        assert_eq!(rx_to_ethernet(&frame, c::PKT_TYPE_MPDU, 24, &mut out), None);
+    }
+
+    #[test]
+    fn ies_are_searched_by_id() {
+        let ies = [0x01, 0x02, 0x82, 0x84, 0x00, 0x03, b'a', b'b', b'c'];
+        assert_eq!(find_ie(&ies, IE_SSID), Some(&b"abc"[..]));
+        assert_eq!(find_ie(&ies, 48), None);
+        // A truncated element ends the search.
+        assert_eq!(find_ie(&[0x00, 0x05, b'a'], IE_SSID), None);
+    }
+
+    #[test]
+    fn tx_priority_comes_from_the_ipv4_precedence() {
+        let mut frame = [0u8; 20];
+        frame[12..14].copy_from_slice(&[0x08, 0x00]);
+        frame[15] = 0xB8; // DSCP 46 (expedited forwarding): precedence 5
+        assert_eq!(tx_priority(&frame), 5);
+        frame[12..14].copy_from_slice(&[0x08, 0x06]); // ARP
+        assert_eq!(tx_priority(&frame), 0);
+    }
+
+    #[test]
+    fn association_status_is_read_from_the_response_frame() {
+        let mut event: c::umac_event_mlme = unsafe { zeroed() };
+        let mut frame = [0i8; 400];
+        frame[26] = 17; // status 17: the AP cannot take more stations
+        event.frame = c::frame { frame_len: 30, frame };
+        assert_eq!(mlme_status(&event, 26), Some(17));
+        event.flags = c::EVENT_MLME_TIMED_OUT;
+        assert_eq!(mlme_status(&event, 26), None);
     }
 
     #[derive(Debug, PartialEq)]
