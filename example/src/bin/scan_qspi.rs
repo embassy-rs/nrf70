@@ -191,7 +191,7 @@ impl<'d> QspiBus<'d> {
         };
         // The activation runs at the wake-up frequency, SCKFREQ 11.
         config.frequency = qspi::Frequency::M2_7;
-        let qspi = Qspi::new(qspi, irq, sck, csn, io0, io1, io2, io3, config);
+        let qspi = Qspi::new(qspi, sck, csn, io0, io1, io2, io3, irq, config);
 
         let r = pac::QSPI;
         anomaly_43_workaround();
