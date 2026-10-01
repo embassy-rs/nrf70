@@ -36,10 +36,10 @@ features = ["wpa3", "ap"]
 [features]
 default = []
 # `Control::join_wpa2`: WPA2-Personal networks. The nRF70 firmware has no supplicant, so the key
-# handshakes run in the driver. Their HMAC-SHA1, HMAC-SHA256, AES-128 and AES-128-CMAC come from
-# `embassy-crypto`, whose drivers the application chooses: the microcontroller's accelerator or
-# software.
-wpa2 = ["dep:embassy-crypto", "dep:rand_core"]
+# handshakes run in the driver. Their HMAC-SHA1, HMAC-SHA256, AES-128, AES-128-CMAC and random
+# numbers come from `embassy-crypto`, whose drivers the application chooses: the
+# microcontroller's accelerator or software.
+wpa2 = ["dep:embassy-crypto"]
 # `Control::join_wpa3`: WPA3-Personal networks, whose SAE key exchange runs in the driver too, on
 # the P-256 arithmetic of the `p256` crate (its hashes on `embassy-crypto`'s HMAC-SHA256).
 wpa3 = ["wpa2", "dep:p256"]
@@ -60,7 +60,6 @@ embedded-hal = "1.0.0"
 embedded-hal-async = "1.0.0"
 num_enum = { version = "0.7.4", default-features = false }
 p256 = { version = "0.14", default-features = false, features = ["arithmetic", "hash2curve"], optional = true }
-rand_core = { version = "0.10.1", optional = true }
 
 # The host tests run the supplicant on software HMAC-SHA1 and AES-128.
 [dev-dependencies]

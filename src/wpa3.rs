@@ -13,7 +13,6 @@ use defmt::{debug, warn};
 use embassy_time::Instant;
 use embedded_hal::digital::{InputPin, OutputPin};
 use embedded_hal_async::digital::Wait;
-use rand_core::CryptoRng;
 
 use crate::sae::{self, Pt, Sae};
 use crate::supplicant::Rsnxe;
@@ -94,14 +93,9 @@ impl Control<'_> {
     /// access point announces it, hunting and pecking elsewhere. Returns once the keys are in and
     /// the link is up; see [`Control::join_open`].
     ///
-    /// The exchange runs here, on the host, and needs random numbers: 32 bytes from `rng`, any
-    /// cryptographically secure generator the application has, taken before joining.
-    pub async fn join_wpa3(
-        &mut self,
-        ssid: &[u8],
-        password: &[u8],
-        rng: &mut (impl CryptoRng + ?Sized),
-    ) -> Result<(), ConnectError> {
+    /// The exchange runs here, on the host, and needs random numbers: 32 bytes from the
+    /// `embassy-crypto` generator, taken before joining.
+    pub async fn join_wpa3(&mut self, ssid: &[u8], password: &[u8]) -> Result<(), ConnectError> {
         if password.is_empty() || password.len() > PASSWORD_MAX {
             return Err(ConnectError::InvalidPassphrase);
         }
@@ -114,7 +108,7 @@ impl Control<'_> {
         };
         debug!("SAE: PT derived in {} ms", start.elapsed().as_millis());
         wpa3.password[..password.len()].copy_from_slice(password);
-        rng.fill_bytes(&mut wpa3.seed);
+        embassy_crypto::rng_fill_bytes(&mut wpa3.seed);
         self.join(ssid, Credentials::Wpa3(wpa3)).await
     }
 }

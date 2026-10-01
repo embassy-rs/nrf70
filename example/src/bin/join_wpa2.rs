@@ -22,7 +22,6 @@ use embassy_futures::select::{select, Either};
 use embassy_net::iface::Iface;
 use embassy_net::tcp::{TcpListener, TcpSocket};
 use embassy_net::{Stack, StackStorage};
-use embassy_nrf::crypto::rng::{self, Rng};
 use embassy_nrf::gpio::{Input, Level, Output, OutputDrive, Pull};
 use embassy_nrf::spim::{self, Spim};
 use embassy_nrf::{bind_interrupts, mode, peripherals};
@@ -34,7 +33,6 @@ use {defmt_rtt as _, panic_probe as _};
 
 bind_interrupts!(struct Irqs {
     SERIAL0 => spim::InterruptHandler<peripherals::SERIAL0>;
-    CRYPTOCELL => rng::InterruptHandler;
 });
 
 /// The WPA2-Personal network to join.
@@ -113,9 +111,9 @@ async fn main(spawner: Spawner) {
     .await;
     spawner.spawn(unwrap!(wifi_task(runner)));
 
-    let mut rng = Rng::new(p.CRYPTO_RNG, Irqs);
+    // The CryptoCell's random number generator, the `embassy-crypto` driver of this example.
     let mut seed = [0; 8];
-    rng.fill_bytes(&mut seed).await;
+    embassy_crypto::rng_fill_bytes(&mut seed);
     static STACK: StaticCell<StackStorage> = StaticCell::new();
     let (stack, net_runner) = Stack::new(STACK.init(StackStorage::new()), u64::from_le_bytes(seed));
     static DEVICE: StaticCell<nrf70::NetDriver<'static>> = StaticCell::new();
@@ -130,9 +128,9 @@ async fn main(spawner: Spawner) {
     info!("pre-shared key derived in {} ms", start.elapsed().as_millis());
 
     loop {
-        // The handshake draws its nonces from the random number generator: here the nRF5340's
-        // CryptoCell, but any `rand_core::CryptoRng` does.
-        if let Err(error) = control.join_wpa2_psk(WIFI_SSID.as_bytes(), &psk, &mut rng).await {
+        // The handshake runs on `embassy-crypto`: its HMAC-SHA1, AES-128 and nonces come from the
+        // drivers the `wpa2` feature of this example registers, the nRF5340's CryptoCell.
+        if let Err(error) = control.join_wpa2_psk(WIFI_SSID.as_bytes(), &psk).await {
             warn!("joining failed: {}", error);
             Timer::after(Duration::from_secs(5)).await;
             continue;
