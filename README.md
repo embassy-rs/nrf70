@@ -35,11 +35,13 @@ Working:
   4-way handshake and the group key handshake itself, and hands the keys to the chip, which does
   the encryption (CCMP), so throughput is that of an open network. The handshake's random numbers
   come from the application, as any [`rand_core::CryptoRng`](https://docs.rs/rand_core): a
-  hardware generator or a software one.
-  `wpa2_psk` derives the key from the passphrase once, for `Control::join_wpa2_psk`: 2.1 s on an
-  nRF5340 at 64 MHz built for size, 0.5 s at 128 MHz built for speed. A wrong passphrase shows as
-  `ConnectError::HandshakeFailed` after about 3 s. The group key handshake was checked on an
-  nRF7002-DK too, against an access point that changes its group key every 30 s.
+  hardware generator or a software one. Its HMAC-SHA1, HMAC-SHA256, AES-128 and AES-128-CMAC
+  come from the application too, as `embassy-crypto` drivers: the microcontroller's accelerator or
+  software.
+  `wpa2_psk` derives the key from the passphrase once, for `Control::join_wpa2_psk`: 0.7 s on an
+  nRF5340 at 64 MHz with its CryptoCell, 2.2 s in software built for size. A wrong passphrase
+  shows as `ConnectError::HandshakeFailed` after about 3 s. The group key handshake was checked
+  on an nRF7002-DK too, against an access point that changes its group key every 30 s.
   Management frame protection (IEEE 802.11w) is used when the access point offers it, required
   or not, with BIP-CMAC-128: the driver then takes PSK-SHA256 key management if the access point
   offers it (AES-128-CMAC MICs, keys derived with SHA-256), and hands the chip the management
@@ -124,19 +126,46 @@ Not yet:
 
 ## Cargo features
 
-- `wpa2` (off by default): `Control::join_wpa2`, `Control::join_wpa2_psk` and `wpa2_psk`. It adds
-  about 30 KB of flash and 2 KB of RAM on an nRF5340, and the `aes`, `aes-kw`, `cmac`, `hmac`,
-  `pbkdf2`, `sha1`, `sha2` and `rand_core` crates. Without it the driver joins open networks
-  only, and depends on none of them.
-- `wpa3` (off by default, implies `wpa2`): `Control::join_wpa3`. It adds about 27 KB of flash and
-  3 KB of RAM to a WPA2 application on an nRF5340, and the `p256` crate.
+- `wpa2` (off by default): `Control::join_wpa2`, `Control::join_wpa2_psk` and `wpa2_psk`. Without
+  it the driver joins open networks only.
+- `wpa3` (off by default, implies `wpa2`): `Control::join_wpa3`. SAE runs on the P-256
+  arithmetic of the `p256` crate, in software, and its hashes on `embassy-crypto`'s HMAC-SHA256.
 - `ap` (off by default): `Control::start_ap_open` and `Control::stop_ap`, and with `wpa2`
   `Control::start_ap_wpa2`. It adds about 15 KB of flash and 9 KB of RAM on an nRF5340, 6 KB of
   which in `State` for the frames kept for stations that sleep; with `wpa2`, 23 KB and 11 KB.
 
+The handshakes of WPA2 need HMAC-SHA1 (for the key derivation from the passphrase, the pairwise
+key and the frames' integrity codes) and the AES-128 block cipher (to unwrap the group keys), and
+with management frame protection HMAC-SHA256 and AES-128-CMAC (the keys and integrity codes of
+PSK-SHA256). The driver has none of them: it calls
+[`embassy-crypto`](https://github.com/embassy-rs/embassy/tree/main/embassy-crypto), and the
+application says in its own `Cargo.toml` who answers, with one feature per operation. Without a
+driver for all four, the application does not link.
+
+The microcontroller's accelerator, where the HAL has `embassy-crypto` drivers: here the
+CryptoCell of an nRF5340, nRF52840 or nRF91, or the CRACEN of an nRF54L.
+
 ```toml
-nrf70 = { version = "0.2", features = ["wpa3", "ap"] }
+nrf70 = { version = "0.2", features = ["wpa2"] }
+embassy-nrf = { version = "...", features = ["embassy-crypto-aes128-cmac", "embassy-crypto-aes128-ecb", "embassy-crypto-hmac-sha1", "embassy-crypto-hmac-sha256"] }
 ```
+
+Or software, from the RustCrypto crates, on any microcontroller:
+
+```toml
+nrf70 = { version = "0.2", features = ["wpa2"] }
+embassy-crypto-rustcrypto = { version = "0.1", features = ["embassy-crypto-aes128-cmac", "embassy-crypto-aes128-ecb", "embassy-crypto-hmac-sha1", "embassy-crypto-hmac-sha256"] }
+```
+
+with `use embassy_crypto_rustcrypto as _;` in the application, so that the crate is linked.
+
+On an nRF5340 at 64 MHz, built for size, with the `join_wpa2` example:
+
+| | CryptoCell | Software |
+| --- | --- | --- |
+| Flash, more than without `wpa2` | 11 KB | 17 KB |
+| RAM | 2 KB | 2 KB |
+| Key from the passphrase (`wpa2_psk`) | 0.7 s | 2.2 s |
 
 ## Running the example
 
@@ -172,16 +201,16 @@ WIFI_SSID=MyOpenNetwork cargo run --release --bin join_open
 Then `ping 10.42.0.65` and `nc 10.42.0.65 1234` from the same network.
 
 `join_wpa2` does the same on a WPA2-Personal network. It needs the example's `wpa2` feature, which
-turns on the driver's:
+turns on the driver's and makes the nRF5340's CryptoCell the `embassy-crypto` driver:
 
 ```
 WIFI_SSID=MyNetwork WIFI_PASSPHRASE=MyPassphrase cargo run --release --features wpa2 --bin join_wpa2
 ```
 
 ```
-2.469207 [INFO ] pre-shared key derived in 2201 ms
-7.599761 [INFO ] connected
-7.842651 [INFO ] address 10.42.0.65/24, echo server on TCP port 1234
+1.000732 [INFO ] pre-shared key derived in 732 ms
+6.119781 [INFO ] connected
+6.369903 [INFO ] address 10.42.0.65/24, echo server on TCP port 1234
 ```
 
 If probe-rs reports the core as locked, the DK's application core has APPROTECT enabled: add

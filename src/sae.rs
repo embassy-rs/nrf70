@@ -10,7 +10,8 @@
 //! Nothing here touches the RPU: [`Sae`] writes and checks the bodies of the commit and confirm
 //! messages, so that it can be tested on its own.
 
-use hmac::{Hmac, KeyInit, Mac};
+use crate::supplicant::kdf_sha256;
+use embassy_crypto::HmacSha256;
 use p256::elliptic_curve::array::Array;
 use p256::elliptic_curve::bigint::{ArrayEncoding, NonZero, U256};
 use p256::elliptic_curve::consts::U48;
@@ -21,11 +22,7 @@ use p256::elliptic_curve::subtle::{Choice, ConditionallySelectable, ConstantTime
 use p256::elliptic_curve::Curve;
 use p256::hash2curve::MapToCurve;
 use p256::{AffinePoint, FieldBytes, NistP256, ProjectivePoint, Scalar};
-use sha2::Sha256;
 
-use crate::supplicant::kdf_sha256;
-
-type HmacSha256 = Hmac<Sha256>;
 type FieldElement = <NistP256 as MapToCurve>::FieldElement;
 
 /// The finite cyclic group: 19, NIST P-256.
@@ -49,14 +46,11 @@ const PRIME: [u8; LEN] = [
 const HUNTING_AND_PECKING_ROUNDS: u8 = 40;
 
 fn hmac_sha256(key: &[u8], parts: &[&[u8]]) -> [u8; LEN] {
-    let mut mac = match HmacSha256::new_from_slice(key) {
-        Ok(mac) => mac,
-        Err(_) => defmt::unreachable!(),
-    };
+    let mut mac = HmacSha256::new(key);
     for part in parts {
         mac.update(part);
     }
-    mac.finalize().into_bytes().into()
+    mac.finalize()
 }
 
 /// HKDF-Expand with SHA-256 (RFC 5869), as far as SAE needs it: up to 64 bytes.

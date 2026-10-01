@@ -6,8 +6,15 @@ license = "MIT OR Apache-2.0"
 default-run = "nrf70-example"
 
 [features]
-# The driver's WPA2 support, which `join_wpa2` needs.
-wpa2 = ["nrf70/wpa2"]
+# The driver's WPA2 support, which `join_wpa2` needs, with the nRF5340's CryptoCell as the
+# `embassy-crypto` drivers for the HMAC-SHA1, HMAC-SHA256, AES-128 and AES-128-CMAC it runs on.
+wpa2 = [
+    "nrf70/wpa2",
+    "embassy-nrf/embassy-crypto-aes128-cmac",
+    "embassy-nrf/embassy-crypto-aes128-ecb",
+    "embassy-nrf/embassy-crypto-hmac-sha1",
+    "embassy-nrf/embassy-crypto-hmac-sha256",
+]
 
 [[bin]]
 name = "join_wpa2"
@@ -47,6 +54,7 @@ overflow-checks = false
 
 # Experiment: embassy's main branch, where embassy-net runs on xarxa instead of smoltcp.
 [patch.crates-io]
+embassy-crypto = { git = "https://github.com/embassy-rs/embassy", rev = "5e430e609369998d23c977e9099b5abbddaf775f" }
 embassy-embedded-hal = { git = "https://github.com/embassy-rs/embassy", rev = "5e430e609369998d23c977e9099b5abbddaf775f" }
 embassy-executor = { git = "https://github.com/embassy-rs/embassy", rev = "5e430e609369998d23c977e9099b5abbddaf775f" }
 embassy-executor-macros = { git = "https://github.com/embassy-rs/embassy", rev = "5e430e609369998d23c977e9099b5abbddaf775f" }

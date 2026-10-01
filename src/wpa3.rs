@@ -13,9 +13,7 @@ use defmt::{debug, warn};
 use embassy_time::Instant;
 use embedded_hal::digital::{InputPin, OutputPin};
 use embedded_hal_async::digital::Wait;
-use hmac::{Hmac, KeyInit, Mac};
 use rand_core::CryptoRng;
-use sha2::Sha256;
 
 use crate::sae::{self, Pt, Sae};
 use crate::supplicant::Rsnxe;
@@ -128,15 +126,12 @@ fn scalars(seed: &[u8; 32], attempt: u32) -> (p256::Scalar, p256::Scalar) {
     let mut next = || loop {
         let mut wide = [0; 48];
         for (i, chunk) in wide.chunks_mut(32).enumerate() {
-            let mut mac = match Hmac::<Sha256>::new_from_slice(seed) {
-                Ok(mac) => mac,
-                Err(_) => defmt::unreachable!(),
-            };
+            let mut mac = embassy_crypto::HmacSha256::new(seed);
             mac.update(b"nrf70 SAE scalars");
             mac.update(&attempt.to_le_bytes());
             mac.update(&counter.to_le_bytes());
             mac.update(&[i as u8]);
-            chunk.copy_from_slice(&mac.finalize().into_bytes()[..chunk.len()]);
+            chunk.copy_from_slice(&mac.finalize()[..chunk.len()]);
         }
         counter += 1;
         if let Some(scalar) = Sae::scalar_from(&wide) {

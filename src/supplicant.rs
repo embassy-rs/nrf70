@@ -10,18 +10,14 @@
 //!
 //! Nothing here touches the RPU. [`Supplicant::handle`] takes an EAPOL frame and says what to
 //! send back and which keys to install, so that it can be tested on its own.
+//!
+//! The two primitives all of it stands on, HMAC-SHA1 and the AES-128 block cipher, come from
+//! `embassy-crypto`: the application chooses who provides them, the microcontroller's
+//! accelerator or software. The constructions on top of them (PBKDF2, the 802.11 PRF, the AES
+//! key unwrap) are here.
 
-use aes::Aes128;
-use aes_kw::KwAes128;
-use cmac::Cmac;
 use defmt::debug;
-use hmac::{Hmac, KeyInit, Mac};
-use sha1::Sha1;
-use sha2::Sha256;
-
-type HmacSha1 = Hmac<Sha1>;
-type HmacSha256 = Hmac<Sha256>;
-type CmacAes128 = Cmac<Aes128>;
+use embassy_crypto::{Aes128, Aes128Cmac, HmacSha1, HmacSha256};
 
 /// Ethertype of EAPOL frames (IEEE 802.1X).
 pub(crate) const ETHERTYPE_EAPOL: u16 = 0x888E;
@@ -74,22 +70,30 @@ pub(crate) fn psk_from_passphrase(passphrase: &[u8], ssid: &[u8]) -> Option<[u8;
         return None;
     }
     let mut psk = [0; 32];
-    pbkdf2::pbkdf2_hmac::<Sha1>(passphrase, ssid, 4096, &mut psk);
+    pbkdf2_hmac_sha1(passphrase, ssid, 4096, &mut psk);
     Some(psk)
 }
 
-fn hmac_sha1(key: &[u8]) -> HmacSha1 {
-    match HmacSha1::new_from_slice(key) {
-        Ok(mac) => mac,
-        // HMAC takes a key of any length.
-        Err(_) => defmt::unreachable!(),
-    }
-}
-
-fn hmac_sha256(key: &[u8]) -> HmacSha256 {
-    match HmacSha256::new_from_slice(key) {
-        Ok(mac) => mac,
-        Err(_) => defmt::unreachable!(),
+/// PBKDF2 with HMAC-SHA1 (RFC 8018, 5.2): fills `out` with the key derived from `password`.
+fn pbkdf2_hmac_sha1(password: &[u8], salt: &[u8], iterations: u32, out: &mut [u8]) {
+    // The password is absorbed once. Every HMAC starts from a copy of that state, which leaves
+    // two SHA-1 compressions per iteration.
+    let keyed = HmacSha1::new(password);
+    for (i, chunk) in out.chunks_mut(HmacSha1::OUTPUT_SIZE).enumerate() {
+        let mut mac = keyed.clone();
+        mac.update(salt);
+        mac.update(&(i as u32 + 1).to_be_bytes());
+        let mut u = mac.finalize();
+        let mut block = u;
+        for _ in 1..iterations {
+            let mut mac = keyed.clone();
+            mac.update(&u);
+            u = mac.finalize();
+            for (b, u) in block.iter_mut().zip(u) {
+                *b ^= u;
+            }
+        }
+        chunk.copy_from_slice(&block[..chunk.len()]);
     }
 }
 
@@ -99,12 +103,12 @@ fn hmac_sha256(key: &[u8]) -> HmacSha256 {
 pub(crate) fn kdf_sha256(key: &[u8], label: &[u8], context: &[u8], out: &mut [u8]) {
     let bits = (out.len() * 8) as u16;
     for (i, chunk) in out.chunks_mut(32).enumerate() {
-        let mut mac = hmac_sha256(key);
+        let mut mac = HmacSha256::new(key);
         mac.update(&(i as u16 + 1).to_le_bytes());
         mac.update(label);
         mac.update(context);
         mac.update(&bits.to_le_bytes());
-        chunk.copy_from_slice(&mac.finalize().into_bytes()[..chunk.len()]);
+        chunk.copy_from_slice(&mac.finalize()[..chunk.len()]);
     }
 }
 
@@ -185,12 +189,12 @@ pub(crate) struct Suite {
 /// with HMAC-SHA1(`key`, `label` || 0 || `data` || i) for i = 0, 1, and so on.
 pub(crate) fn prf(key: &[u8], label: &[u8], data: &[u8], out: &mut [u8]) {
     for (i, chunk) in out.chunks_mut(20).enumerate() {
-        let mut mac = hmac_sha1(key);
+        let mut mac = HmacSha1::new(key);
         mac.update(label);
         mac.update(&[0]);
         mac.update(data);
         mac.update(&[i as u8]);
-        chunk.copy_from_slice(&mac.finalize().into_bytes()[..chunk.len()]);
+        chunk.copy_from_slice(&mac.finalize()[..chunk.len()]);
     }
 }
 
@@ -568,20 +572,17 @@ fn mic(info: u16, kck: &[u8; 16], parts: &[&[u8]]) -> [u8; MIC_LEN] {
         info & INFO_VERSION_MASK,
         INFO_VERSION_AES_CMAC | INFO_VERSION_AKM_DEFINED
     ) {
-        let mut mac = match CmacAes128::new_from_slice(kck) {
-            Ok(mac) => mac,
-            Err(_) => defmt::unreachable!(),
-        };
+        let mut mac = Aes128Cmac::new(kck);
         for part in parts {
             mac.update(part);
         }
-        out.copy_from_slice(&mac.finalize().into_bytes());
+        out = mac.finalize();
     } else {
-        let mut mac = hmac_sha1(kck);
+        let mut mac = HmacSha1::new(kck);
         for part in parts {
             mac.update(part);
         }
-        out.copy_from_slice(&mac.finalize().into_bytes()[..MIC_LEN]);
+        out.copy_from_slice(&mac.finalize()[..MIC_LEN]);
     }
     out
 }
@@ -1107,8 +1108,42 @@ fn unwrap_key_data<'a>(key: &KeyFrame, kek: &[u8; 16], buf: &'a mut [u8; KEY_DAT
     if key.info & INFO_ENCRYPTED_KEY_DATA == 0 {
         return None;
     }
-    let kw = KwAes128::new_from_slice(kek).ok()?;
-    kw.unwrap_key(key.key_data, buf).ok()
+    aes_key_unwrap(kek, key.key_data, buf)
+}
+
+/// The initial value a wrapped key carries, which is how unwrapping proves its integrity (RFC
+/// 3394, 2.2.3.1).
+const KEY_WRAP_IV: [u8; 8] = [0xA6; 8];
+
+/// AES key unwrap (RFC 3394, 2.2.2) of `wrapped`, 64-bit blocks of which the first holds the
+/// integrity check, into `out`. Returns the unwrapped key, or `None` if `wrapped` is not at least
+/// three whole blocks, does not fit `out`, or fails the integrity check.
+fn aes_key_unwrap<'a>(kek: &[u8; 16], wrapped: &[u8], out: &'a mut [u8]) -> Option<&'a [u8]> {
+    if wrapped.len() < 24 || !wrapped.len().is_multiple_of(8) {
+        return None;
+    }
+    let n = wrapped.len() / 8 - 1;
+    let out = out.get_mut(..8 * n)?;
+    out.copy_from_slice(&wrapped[8..]);
+    let mut a = [0; 8];
+    a.copy_from_slice(&wrapped[..8]);
+
+    let aes = Aes128::new(kek);
+    for j in (0..6).rev() {
+        for i in (0..n).rev() {
+            let t = (n * j + i + 1) as u64;
+            let mut block = [0; 16];
+            block[..8].copy_from_slice(&(u64::from_be_bytes(a) ^ t).to_be_bytes());
+            block[8..].copy_from_slice(&out[8 * i..8 * i + 8]);
+            aes.decrypt_block(&mut block);
+            a.copy_from_slice(&block[..8]);
+            out[8 * i..8 * i + 8].copy_from_slice(&block[8..]);
+        }
+    }
+
+    // Every byte is looked at, whatever the first ones are.
+    let difference = a.iter().zip(KEY_WRAP_IV).fold(0, |acc, (a, iv)| acc | (a ^ iv));
+    (difference == 0).then_some(out)
 }
 
 #[cfg(test)]
@@ -1118,7 +1153,85 @@ mod tests {
     use core::{assert, assert_eq};
     use std::vec::Vec;
 
+    // The software HMAC-SHA1 and AES-128 that the tests run on.
+    use embassy_crypto_rustcrypto as _;
+
     use super::*;
+
+    /// AES key wrap (RFC 3394, 2.2.1), the access point's side of [`aes_key_unwrap`].
+    fn aes_key_wrap(kek: &[u8; 16], data: &[u8]) -> Vec<u8> {
+        let n = data.len() / 8;
+        let mut a = KEY_WRAP_IV;
+        let mut r = data.to_vec();
+        let aes = Aes128::new(kek);
+        for j in 0..6 {
+            for i in 0..n {
+                let mut block = [0; 16];
+                block[..8].copy_from_slice(&a);
+                block[8..].copy_from_slice(&r[8 * i..8 * i + 8]);
+                aes.encrypt_block(&mut block);
+                let t = (n * j + i + 1) as u64;
+                a = (u64::from_be_bytes(block[..8].try_into().unwrap()) ^ t).to_be_bytes();
+                r[8 * i..8 * i + 8].copy_from_slice(&block[8..]);
+            }
+        }
+        let mut wrapped = a.to_vec();
+        wrapped.extend_from_slice(&r);
+        wrapped
+    }
+
+    // RFC 3394, 4.1: 128 bits of key data wrapped with a 128-bit KEK.
+    #[test]
+    fn key_unwrap_matches_the_rfc_test_vector() {
+        let kek: [u8; 16] = hex("000102030405060708090A0B0C0D0E0F").try_into().unwrap();
+        let key = hex("00112233445566778899AABBCCDDEEFF");
+        let wrapped = hex("1FA68B0A8112B447AEF34BD8FB5A7B829D3E862371D2CFE5");
+        assert_eq!(aes_key_wrap(&kek, &key), wrapped);
+
+        let mut out = [0; 32];
+        assert_eq!(aes_key_unwrap(&kek, &wrapped, &mut out), Some(key.as_slice()));
+    }
+
+    #[test]
+    fn key_unwrap_refuses_what_was_not_wrapped_with_the_key() {
+        let kek = [0x42; 16];
+        let wrapped = aes_key_wrap(&kek, &[0x11; 24]);
+        let mut out = [0; 32];
+        assert_eq!(aes_key_unwrap(&kek, &wrapped, &mut out), Some([0x11; 24].as_slice()));
+
+        // A flipped bit, another key, a length that is not whole blocks, too little to hold a
+        // key, and more than the buffer takes.
+        let mut tampered = wrapped.clone();
+        tampered[20] ^= 1;
+        assert_eq!(aes_key_unwrap(&kek, &tampered, &mut out), None);
+        assert_eq!(aes_key_unwrap(&[0x43; 16], &wrapped, &mut out), None);
+        assert_eq!(aes_key_unwrap(&kek, &wrapped[..31], &mut out), None);
+        assert_eq!(aes_key_unwrap(&kek, &wrapped[..16], &mut out), None);
+        assert_eq!(aes_key_unwrap(&kek, &wrapped, &mut out[..16]), None);
+    }
+
+    // RFC 6070: PBKDF2-HMAC-SHA1 test vectors, the ones short enough to run in a test.
+    #[test]
+    fn pbkdf2_matches_the_rfc_test_vectors() {
+        let mut out = [0; 20];
+        pbkdf2_hmac_sha1(b"password", b"salt", 1, &mut out);
+        assert_eq!(out.as_slice(), hex("0c60c80f961f0e71f3a9b524af6012062fe037a6"));
+        pbkdf2_hmac_sha1(b"password", b"salt", 4096, &mut out);
+        assert_eq!(out.as_slice(), hex("4b007901b765489abead49d926f721d065a429c1"));
+
+        // More than one block of output, and a password and a salt longer than a few bytes.
+        let mut out = [0; 25];
+        pbkdf2_hmac_sha1(
+            b"passwordPASSWORDpassword",
+            b"saltSALTsaltSALTsaltSALTsaltSALTsalt",
+            4096,
+            &mut out,
+        );
+        assert_eq!(
+            out.as_slice(),
+            hex("3d2eec4fe41c849b80c8d83662c0e44a8b291a964cf2f07038")
+        );
+    }
 
     fn hex(s: &str) -> Vec<u8> {
         let s: Vec<u8> = s.bytes().filter(|b| !b.is_ascii_whitespace()).collect();
@@ -1580,10 +1693,7 @@ mod tests {
                 data.push(0xDD);
                 data.resize(data.len().next_multiple_of(8), 0);
             }
-            let kw = KwAes128::new_from_slice(&self.ptk.as_ref().unwrap().kek).unwrap();
-            let mut wrapped = std::vec![0; data.len() + 8];
-            kw.wrap_key(&data, &mut wrapped).unwrap();
-            wrapped
+            aes_key_wrap(&self.ptk.as_ref().unwrap().kek, &data)
         }
 
         fn gtk_kde(gtk: &[u8], index: u8) -> Vec<u8> {
