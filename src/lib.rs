@@ -961,6 +961,9 @@ pub(crate) mod tests {
     use core::assert;
     use std::vec::Vec;
 
+    // The software HMAC, AES-128 and AES-128-CMAC that the tests run on.
+    use embassy_crypto_rustcrypto as _;
+
     use super::*;
 
     /// The bytes of a hex string, which may have white space between them.

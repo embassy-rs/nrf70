@@ -1,9 +1,11 @@
 //! The key derivations of WPA2 and WPA3 (IEEE 802.11-2020, 12.7.1): HMAC, the PRF and the KDF
 //! built on it, the PSK from a passphrase, and the pairwise transient key.
+//!
+//! HMAC-SHA1 and HMAC-SHA256 come from `embassy-crypto`: the application chooses who provides
+//! them, the microcontroller's accelerator or software. What stands on them (PBKDF2, the 802.11
+//! PRF and KDF) is here.
 
-use hmac::{Hmac, KeyInit, Mac};
-use sha1::Sha1;
-use sha2::Sha256;
+use embassy_crypto::{HmacSha1, HmacSha256};
 
 use crate::rsn::Akm;
 
@@ -23,30 +25,49 @@ pub(crate) fn psk_from_passphrase(passphrase: &[u8], ssid: &[u8]) -> Option<[u8;
         return None;
     }
     let mut psk = [0; 32];
-    pbkdf2::pbkdf2_hmac::<Sha1>(passphrase, ssid, 4096, &mut psk);
+    pbkdf2_hmac_sha1(passphrase, ssid, 4096, &mut psk);
     Some(psk)
+}
+
+/// PBKDF2 with HMAC-SHA1 (RFC 8018, 5.2): fills `out` with the key derived from `password`.
+fn pbkdf2_hmac_sha1(password: &[u8], salt: &[u8], iterations: u32, out: &mut [u8]) {
+    // The password is absorbed once. Every HMAC starts from a copy of that state, which leaves
+    // two SHA-1 compressions per iteration.
+    let keyed = HmacSha1::new(password);
+    for (i, chunk) in out.chunks_mut(HmacSha1::OUTPUT_SIZE).enumerate() {
+        let mut mac = keyed.clone();
+        mac.update(salt);
+        mac.update(&(i as u32 + 1).to_be_bytes());
+        let mut u = mac.finalize();
+        let mut block = u;
+        for _ in 1..iterations {
+            let mut mac = keyed.clone();
+            mac.update(&u);
+            u = mac.finalize();
+            for (b, u) in block.iter_mut().zip(u) {
+                *b ^= u;
+            }
+        }
+        chunk.copy_from_slice(&block[..chunk.len()]);
+    }
 }
 
 /// HMAC-SHA1(`key`, the concatenation of `parts`).
 pub(crate) fn hmac_sha1(key: &[u8], parts: &[&[u8]]) -> [u8; 20] {
-    hmac::<Hmac<Sha1>>(key, parts).into()
+    let mut mac = HmacSha1::new(key);
+    for part in parts {
+        mac.update(part);
+    }
+    mac.finalize()
 }
 
 /// HMAC-SHA256(`key`, the concatenation of `parts`).
 pub(crate) fn hmac_sha256(key: &[u8], parts: &[&[u8]]) -> [u8; 32] {
-    hmac::<Hmac<Sha256>>(key, parts).into()
-}
-
-fn hmac<M: Mac + KeyInit>(key: &[u8], parts: &[&[u8]]) -> hmac::digest::Output<M> {
-    let mut mac = match M::new_from_slice(key) {
-        Ok(mac) => mac,
-        // HMAC takes a key of any length.
-        Err(_) => defmt::unreachable!(),
-    };
+    let mut mac = HmacSha256::new(key);
     for part in parts {
         mac.update(part);
     }
-    mac.finalize().into_bytes()
+    mac.finalize()
 }
 
 /// The 802.11 key derivation function over HMAC-SHA256 (IEEE 802.11-2020, 12.7.1.6.2): fills
@@ -150,6 +171,29 @@ mod tests {
         assert!(psk_from_passphrase(b"1234567", b"net").is_none());
         assert!(psk_from_passphrase(&[b'a'; 64], b"net").is_none());
         assert!(psk_from_passphrase(&[b'a'; 63], b"net").is_some());
+    }
+
+    // RFC 6070: PBKDF2-HMAC-SHA1 test vectors, the ones short enough to run in a test.
+    #[test]
+    fn pbkdf2_matches_the_rfc_test_vectors() {
+        let mut out = [0; 20];
+        pbkdf2_hmac_sha1(b"password", b"salt", 1, &mut out);
+        assert_eq!(out.as_slice(), hex("0c60c80f961f0e71f3a9b524af6012062fe037a6"));
+        pbkdf2_hmac_sha1(b"password", b"salt", 4096, &mut out);
+        assert_eq!(out.as_slice(), hex("4b007901b765489abead49d926f721d065a429c1"));
+
+        // More than one block of output, and a password and a salt longer than a few bytes.
+        let mut out = [0; 25];
+        pbkdf2_hmac_sha1(
+            b"passwordPASSWORDpassword",
+            b"saltSALTsaltSALTsaltSALTsaltSALTsalt",
+            4096,
+            &mut out,
+        );
+        assert_eq!(
+            out.as_slice(),
+            hex("3d2eec4fe41c849b80c8d83662c0e44a8b291a964cf2f07038")
+        );
     }
 
     // IEEE 802.11-2020, J.3.2: test vectors for the PRF.

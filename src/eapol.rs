@@ -1,10 +1,11 @@
 //! EAPOL-Key frames (IEEE 802.11-2020, 12.7.2), from the IEEE 802.1X header on: their layout and
 //! MIC, their key data and its encryption, and the group keys it carries. The supplicant and the
 //! authenticator both read and write them.
+//!
+//! The AES-128 block cipher and AES-128-CMAC come from `embassy-crypto`, as HMAC does (see
+//! `crypto.rs`); the AES key wrap and unwrap (RFC 3394) are here.
 
-use aes::Aes128;
-use aes_kw::KwAes128;
-use cmac::{Cmac, KeyInit, Mac};
+use embassy_crypto::{Aes128, Aes128Cmac};
 
 use crate::crypto::{hmac_sha1, TK_LEN};
 use crate::ieee80211::{IE_RSN, IE_RSNXE};
@@ -128,14 +129,11 @@ pub(crate) fn mic(info: u16, kck: &[u8; 16], parts: &[&[u8]]) -> [u8; MIC_LEN] {
         info & INFO_VERSION_MASK,
         INFO_VERSION_AES_CMAC | INFO_VERSION_AKM_DEFINED
     ) {
-        let mut mac = match Cmac::<Aes128>::new_from_slice(kck) {
-            Ok(mac) => mac,
-            Err(_) => defmt::unreachable!(),
-        };
+        let mut mac = Aes128Cmac::new(kck);
         for part in parts {
             mac.update(part);
         }
-        out.copy_from_slice(&mac.finalize().into_bytes());
+        out = mac.finalize();
     } else {
         out.copy_from_slice(&hmac_sha1(kck, parts)[..MIC_LEN]);
     }
@@ -213,9 +211,7 @@ pub(crate) fn wrap_key_data(kek: &[u8; 16], data: &[u8], out: &mut [u8]) -> Opti
         *padded.get_mut(len)? = 0xDD;
         len = (len + 1).next_multiple_of(8).max(16);
     }
-    let kw = KwAes128::new_from_slice(kek).ok()?;
-    kw.wrap_key(padded.get(..len)?, out.get_mut(..len + 8)?).ok()?;
-    Some(len + 8)
+    aes_key_wrap(kek, padded.get(..len)?, out)
 }
 
 /// A group temporal key, as the RPU takes it.
@@ -331,8 +327,119 @@ pub(crate) fn unwrap_key_data<'a>(key: &KeyFrame, kek: &[u8; 16], buf: &'a mut [
     if key.info & INFO_ENCRYPTED_KEY_DATA == 0 {
         return None;
     }
-    let kw = KwAes128::new_from_slice(kek).ok()?;
-    kw.unwrap_key(key.key_data, buf).ok()
+    aes_key_unwrap(kek, key.key_data, buf)
+}
+
+/// The initial value a wrapped key carries, which is how unwrapping proves its integrity (RFC
+/// 3394, 2.2.3.1).
+const KEY_WRAP_IV: [u8; 8] = [0xA6; 8];
+
+/// AES key unwrap (RFC 3394, 2.2.2) of `wrapped`, 64-bit blocks of which the first holds the
+/// integrity check, into `out`. Returns the unwrapped key, or `None` if `wrapped` is not at least
+/// three whole blocks, does not fit `out`, or fails the integrity check.
+fn aes_key_unwrap<'a>(kek: &[u8; 16], wrapped: &[u8], out: &'a mut [u8]) -> Option<&'a [u8]> {
+    if wrapped.len() < 24 || !wrapped.len().is_multiple_of(8) {
+        return None;
+    }
+    let n = wrapped.len() / 8 - 1;
+    let out = out.get_mut(..8 * n)?;
+    out.copy_from_slice(&wrapped[8..]);
+    let mut a = [0; 8];
+    a.copy_from_slice(&wrapped[..8]);
+
+    let aes = Aes128::new(kek);
+    for j in (0..6).rev() {
+        for i in (0..n).rev() {
+            let t = (n * j + i + 1) as u64;
+            let mut block = [0; 16];
+            block[..8].copy_from_slice(&(u64::from_be_bytes(a) ^ t).to_be_bytes());
+            block[8..].copy_from_slice(&out[8 * i..8 * i + 8]);
+            aes.decrypt_block(&mut block);
+            a.copy_from_slice(&block[..8]);
+            out[8 * i..8 * i + 8].copy_from_slice(&block[8..]);
+        }
+    }
+
+    // Every byte is looked at, whatever the first ones are.
+    let difference = a.iter().zip(KEY_WRAP_IV).fold(0, |acc, (a, iv)| acc | (a ^ iv));
+    (difference == 0).then_some(out)
+}
+
+/// AES key wrap (RFC 3394, 2.2.1) of `data`, whole 64-bit blocks, at least two, into `out`: the
+/// access point's side of [`aes_key_unwrap`]. Returns the wrapped length, 8 bytes more, or `None`
+/// if `data` is not whole blocks or `out` is too short.
+#[cfg(any(feature = "ap", test))]
+pub(crate) fn aes_key_wrap(kek: &[u8; 16], data: &[u8], out: &mut [u8]) -> Option<usize> {
+    if data.len() < 16 || !data.len().is_multiple_of(8) {
+        return None;
+    }
+    let n = data.len() / 8;
+    let out = out.get_mut(..8 * (n + 1))?;
+    out[8..].copy_from_slice(data);
+    let mut a = KEY_WRAP_IV;
+    let aes = Aes128::new(kek);
+    for j in 0..6 {
+        for i in 1..=n {
+            let mut block = [0; 16];
+            block[..8].copy_from_slice(&a);
+            block[8..].copy_from_slice(&out[8 * i..8 * i + 8]);
+            aes.encrypt_block(&mut block);
+            let t = (n * j + i) as u64;
+            a = (u64::from_be_bytes(block[..8].try_into().ok()?) ^ t).to_be_bytes();
+            out[8 * i..8 * i + 8].copy_from_slice(&block[8..]);
+        }
+    }
+    out[..8].copy_from_slice(&a);
+    Some(8 * (n + 1))
+}
+
+#[cfg(test)]
+mod tests {
+    extern crate std;
+
+    use core::assert_eq;
+    use std::vec::Vec;
+
+    use super::*;
+    use crate::tests::hex;
+
+    /// [`aes_key_wrap`] into a vector.
+    fn wrap(kek: &[u8; 16], data: &[u8]) -> Vec<u8> {
+        let mut wrapped = std::vec![0; data.len() + 8];
+        let len = aes_key_wrap(kek, data, &mut wrapped).unwrap();
+        wrapped.truncate(len);
+        wrapped
+    }
+
+    // RFC 3394, 4.1: 128 bits of key data wrapped with a 128-bit KEK.
+    #[test]
+    fn key_unwrap_matches_the_rfc_test_vector() {
+        let kek: [u8; 16] = hex("000102030405060708090A0B0C0D0E0F").try_into().unwrap();
+        let key = hex("00112233445566778899AABBCCDDEEFF");
+        let wrapped = hex("1FA68B0A8112B447AEF34BD8FB5A7B829D3E862371D2CFE5");
+        assert_eq!(wrap(&kek, &key), wrapped);
+
+        let mut out = [0; 32];
+        assert_eq!(aes_key_unwrap(&kek, &wrapped, &mut out), Some(key.as_slice()));
+    }
+
+    #[test]
+    fn key_unwrap_refuses_what_was_not_wrapped_with_the_key() {
+        let kek = [0x42; 16];
+        let wrapped = wrap(&kek, &[0x11; 24]);
+        let mut out = [0; 32];
+        assert_eq!(aes_key_unwrap(&kek, &wrapped, &mut out), Some([0x11; 24].as_slice()));
+
+        // A flipped bit, another key, a length that is not whole blocks, too little to hold a
+        // key, and more than the buffer takes.
+        let mut tampered = wrapped.clone();
+        tampered[20] ^= 1;
+        assert_eq!(aes_key_unwrap(&kek, &tampered, &mut out), None);
+        assert_eq!(aes_key_unwrap(&[0x43; 16], &wrapped, &mut out), None);
+        assert_eq!(aes_key_unwrap(&kek, &wrapped[..31], &mut out), None);
+        assert_eq!(aes_key_unwrap(&kek, &wrapped[..16], &mut out), None);
+        assert_eq!(aes_key_unwrap(&kek, &wrapped, &mut out[..16]), None);
+    }
 }
 
 /// What the fuzz targets reach of the EAPOL-Key frames: see `fuzz.rs`.
