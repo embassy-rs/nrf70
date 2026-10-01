@@ -5,6 +5,14 @@ edition = "2021"
 license = "MIT OR Apache-2.0"
 default-run = "nrf70-example"
 
+[features]
+# The driver's WPA2 support, which `join_wpa2` needs.
+wpa2 = ["nrf70/wpa2"]
+
+[[bin]]
+name = "join_wpa2"
+required-features = ["wpa2"]
+
 [dependencies]
 nrf70 = { path = ".." }
 cortex-m = { version = "0.7.7", features = ["inline-asm", "critical-section-single-core"] }

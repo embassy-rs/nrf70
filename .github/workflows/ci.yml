@@ -31,15 +31,22 @@ jobs:
           cargo fmt --check
           cargo fmt --check --manifest-path example/Cargo.toml
 
+      # The driver with and without its `wpa2` feature, for the target and for the host tests.
       - name: Clippy
         run: |
           cargo clippy --target thumbv8m.main-none-eabihf -- -D warnings
+          cargo clippy --target thumbv8m.main-none-eabihf --features wpa2 -- -D warnings
           cargo clippy --all-targets -- -D warnings
-          cd example && cargo clippy --release -- -D warnings
+          cargo clippy --all-targets --features wpa2 -- -D warnings
+          cd example
+          cargo clippy --release -- -D warnings
+          cargo clippy --release --all-features -- -D warnings
 
       - name: Test
-        run: cargo test
+        run: |
+          cargo test
+          cargo test --features wpa2
 
       - name: Build example
         working-directory: example
-        run: cargo build --release
+        run: cargo build --release --all-features

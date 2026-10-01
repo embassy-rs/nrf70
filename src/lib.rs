@@ -29,6 +29,14 @@ mod c {
     pub const RX_BUF_HEADROOM: u32 = 4;
 }
 
+#[cfg(feature = "wpa2")]
+mod supplicant;
+#[cfg(feature = "wpa2")]
+mod wpa2;
+
+#[cfg(feature = "wpa2")]
+pub use wpa2::wpa2_psk;
+
 const MTU: usize = 1514;
 
 /// How long the RPU gets to answer the init command and interface changes.
@@ -43,12 +51,24 @@ const SCAN_RESULTS_DEPTH: usize = 32;
 const MLME_TIMEOUT: Duration = Duration::from_secs(5);
 /// After association, how long the RPU gets to add the AP as a peer and turn the carrier on.
 const LINK_TIMEOUT: Duration = Duration::from_secs(10);
+/// How long the 4-way handshake may take once associated (wpa_supplicant gives it as long).
+const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 /// Longest event the driver reassembles. Longer ones are drained and dropped.
 const MAX_EVENT_LEN: usize = 4096;
 
+/// What a network is joined with.
+#[derive(Clone, Copy)]
+enum Credentials {
+    /// Nothing: an open network.
+    Open,
+    /// The key of a WPA2-Personal network.
+    #[cfg(feature = "wpa2")]
+    Wpa2(wpa2::Wpa2),
+}
+
 enum Request {
     Scan,
-    Connect(Ssid),
+    Connect(Ssid, Credentials),
 }
 
 enum ScanEvent {
@@ -97,16 +117,24 @@ impl Ssid {
 pub enum ConnectError {
     /// The SSID is longer than 32 bytes.
     InvalidSsid,
+    /// The passphrase of a WPA2-Personal network is not 8 to 63 bytes long.
+    InvalidPassphrase,
     /// A scan or another connection is in progress.
     Busy,
     /// No access point with this SSID answered.
     NotFound,
+    /// Access points with this SSID answered, but none offers the security asked for: an open
+    /// network for [`Control::join_open`], WPA2-Personal with CCMP for `Control::join_wpa2`.
+    SecurityMismatch,
     /// The access point refused the authentication, with this IEEE 802.11 status code.
     AuthenticationRejected(u16),
     /// The access point refused the association, with this IEEE 802.11 status code.
     AssociationRejected(u16),
     /// A step did not complete in time.
     Timeout,
+    /// The 4-way handshake did not complete. Most often the passphrase is wrong: the access
+    /// point then ignores the station, and gives no reason.
+    HandshakeFailed,
     /// The connection was lost before it completed.
     Disconnected,
 }
@@ -192,8 +220,12 @@ where
         scan_deadline: None,
         conn: ConnState::Idle,
         conn_ssid: Ssid { len: 0, bytes: [0; 32] },
+        conn_credentials: Credentials::Open,
         conn_bss: None,
+        conn_security_mismatch: false,
         conn_deadline: None,
+        #[cfg(feature = "wpa2")]
+        wpa2: wpa2::State::new(),
         peer_known: false,
         carrier_on: false,
         link_up: false,
@@ -220,9 +252,13 @@ impl<'a> Control<'a> {
     /// once the link is up. embassy-net sees that on its next poll: wait for
     /// `Stack::wait_link_up` before relying on it.
     pub async fn join_open(&mut self, ssid: &[u8]) -> Result<(), ConnectError> {
+        self.join(ssid, Credentials::Open).await
+    }
+
+    async fn join(&mut self, ssid: &[u8], credentials: Credentials) -> Result<(), ConnectError> {
         let ssid = Ssid::new(ssid).ok_or(ConnectError::InvalidSsid)?;
         self.shared.connect_result.clear();
-        self.shared.requests.send(Request::Connect(ssid)).await;
+        self.shared.requests.send(Request::Connect(ssid, credentials)).await;
         self.shared.connect_result.receive().await
     }
 
@@ -399,6 +435,8 @@ impl_cmd!(umac, c::umac_cmd_auth, c::umac_commands::UMAC_CMD_AUTHENTICATE);
 impl_cmd!(umac, c::umac_cmd_assoc, c::umac_commands::UMAC_CMD_ASSOCIATE);
 impl_cmd!(umac, c::umac_cmd_disconn, c::umac_commands::UMAC_CMD_DEAUTHENTICATE);
 impl_cmd!(umac, c::umac_cmd_chg_sta, c::umac_commands::UMAC_CMD_SET_STATION);
+impl_cmd!(umac, c::umac_cmd_key, c::umac_commands::UMAC_CMD_NEW_KEY);
+impl_cmd!(umac, c::umac_cmd_set_key, c::umac_commands::UMAC_CMD_SET_KEY);
 impl_cmd!(
     umac,
     c::umac_cmd_get_scan_results,
@@ -442,6 +480,9 @@ fn find_ie(mut ies: &[u8], id: u8) -> Option<&[u8]> {
 }
 
 const IE_SSID: u8 = 0;
+
+/// Capability information bit of a BSS: data frames are encrypted.
+const CAPABILITY_PRIVACY: u16 = 0x0010;
 
 /// Frame control bits of an 802.11 header.
 const FC_TO_DS: u16 = 0x0100;
@@ -940,6 +981,9 @@ struct Bss {
     beacon_interval: u16,
     tsf: u64,
     signal_dbm: i32,
+    /// The RSN element it announces, if any.
+    #[cfg(feature = "wpa2")]
+    rsne: Option<supplicant::Rsne>,
 }
 
 /// Progress of joining a network (NCS leaves this to wpa_supplicant's SME).
@@ -952,6 +996,8 @@ enum ConnState {
     Associating,
     /// Associated: waiting for the RPU to add the AP as a peer and turn the carrier on.
     Associated,
+    /// WPA2 only: the 4-way handshake, until both keys are in.
+    Handshake,
     Connected,
 }
 
@@ -980,9 +1026,17 @@ pub struct Runner<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> {
 
     conn: ConnState,
     conn_ssid: Ssid,
+    /// What the network is joined with, until the connection ends.
+    conn_credentials: Credentials,
     conn_bss: Option<Bss>,
+    /// The connect scan found the SSID on an access point that does not offer the security asked
+    /// for.
+    conn_security_mismatch: bool,
     /// When the current connection step times out.
     conn_deadline: Option<Instant>,
+    /// The key handshakes of a WPA2 network.
+    #[cfg(feature = "wpa2")]
+    wpa2: wpa2::State,
     /// The RPU added the AP as a peer (`UMAC_EVENT_NEW_STATION`). TX needs it.
     peer_known: bool,
     /// The RPU reported the carrier on (`CMD_CARRIER_ON`).
@@ -991,6 +1045,30 @@ pub struct Runner<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> {
     link_up: bool,
     /// TX tokens handed to the RPU and not yet reported done, one bit each.
     tx_tokens_busy: u16,
+}
+
+/// What the runner asks of `wpa2.rs`, in a build without the `wpa2` feature: nothing.
+#[cfg(not(feature = "wpa2"))]
+impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
+    const EAPOL_TX_TOKENS: u32 = 0;
+
+    fn set_station_address(&mut self, _mac_addr: [u8; 6]) {}
+
+    fn secure_association(&mut self, _bss: &Bss, _info: &mut c::connect_common_info) {}
+
+    fn handshake_expected(&self) -> bool {
+        false
+    }
+
+    async fn rx_eapol(&mut self, _frame: &[u8], _pkt_type: u32, _mac_header_len: usize) -> bool {
+        false
+    }
+
+    async fn frame_sent(&mut self, _token: usize) {}
+
+    async fn check_pending_keys(&mut self) {}
+
+    fn forget_keys(&mut self) {}
 }
 
 impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT> {
@@ -1086,6 +1164,7 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
 
         info!("Bringing the interface up...");
         self.set_mac_address(mac_addr).await;
+        self.set_station_address(mac_addr);
         self.state_ch
             .set_hardware_address(ch::driver::HardwareAddress::Ethernet(mac_addr));
         self.set_interface_up().await;
@@ -1105,9 +1184,12 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
             }
             self.rpu_irq_service_end().await;
             self.check_conn_timeout().await;
+            self.check_pending_keys().await;
 
             let shared = self.shared;
-            let can_tx = self.link_up && self.tx_tokens_busy.count_ones() < MAX_TX_TOKENS as u32;
+            // With WPA2, one token stays free for the supplicant.
+            let data_tx_tokens = MAX_TX_TOKENS as u32 - Self::EAPOL_TX_TOKENS;
+            let can_tx = self.link_up && self.tx_tokens_busy.count_ones() < data_tx_tokens;
             let ch = &mut self.ch;
             let irq = with_timeout(IRQ_POLL_PERIOD, self.host_irq.wait_for_rising_edge());
             let tx = async {
@@ -1143,7 +1225,7 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
                 self.scan_deadline = Some(Instant::now() + SCAN_TIMEOUT);
                 self.trigger_scan().await;
             }
-            Request::Connect(ssid) => {
+            Request::Connect(ssid, credentials) => {
                 if scan_running || connecting {
                     let _ = self.shared.connect_result.try_send(Err(ConnectError::Busy));
                     return;
@@ -1152,7 +1234,9 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
                     self.leave().await;
                 }
                 self.conn_ssid = ssid;
+                self.conn_credentials = credentials;
                 self.conn_bss = None;
+                self.conn_security_mismatch = false;
                 self.set_conn(ConnState::Scanning, SCAN_TIMEOUT);
                 self.trigger_connect_scan().await;
             }
@@ -1196,6 +1280,7 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
                 let token = unsliceit::<c::tx_buff_done>(body).tx_desc_num as usize;
                 if token < MAX_TX_TOKENS {
                     self.tx_tokens_busy &= !(1 << token);
+                    self.frame_sent(token).await;
                 } else {
                     warn!("TX done for invalid token {}", token);
                 }
@@ -1335,13 +1420,18 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
         self.conn_deadline = None;
         self.peer_known = false;
         self.carrier_on = false;
+        self.conn_credentials = Credentials::Open;
+        self.forget_keys();
         self.set_link(false);
     }
 
     /// Gives up on joining: leaves the AP if already authenticated, and reports `error`.
     async fn connect_failed(&mut self, error: ConnectError) {
         warn!("connection failed: {}", error);
-        if matches!(self.conn, ConnState::Associating | ConnState::Associated) {
+        if matches!(
+            self.conn,
+            ConnState::Associating | ConnState::Associated | ConnState::Handshake
+        ) {
             self.deauthenticate().await;
         }
         self.reset_conn();
@@ -1356,6 +1446,8 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
                 warn!("disconnected");
                 self.reset_conn();
             }
+            // An AP that cannot verify the handshake gives up on the station after a few tries.
+            ConnState::Handshake => self.connect_failed(ConnectError::HandshakeFailed).await,
             _ => self.connect_failed(ConnectError::Disconnected).await,
         }
     }
@@ -1369,10 +1461,20 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
     async fn check_conn_timeout(&mut self) {
         if self.conn_deadline.is_some_and(|deadline| Instant::now() >= deadline) {
             let error = match (self.conn, self.conn_bss) {
-                (ConnState::Scanning, None) => ConnectError::NotFound,
+                (ConnState::Scanning, None) => self.not_found(),
+                (ConnState::Handshake, _) => ConnectError::HandshakeFailed,
                 _ => ConnectError::Timeout,
             };
             self.connect_failed(error).await;
+        }
+    }
+
+    /// Why the connect scan kept no access point.
+    fn not_found(&self) -> ConnectError {
+        if self.conn_security_mismatch {
+            ConnectError::SecurityMismatch
+        } else {
+            ConnectError::NotFound
         }
     }
 
@@ -1433,12 +1535,21 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
                 beacon_interval: event.beacon_interval,
                 tsf: ies_tsf.max(beacon_tsf),
                 signal_dbm,
+                #[cfg(feature = "wpa2")]
+                rsne: wpa2::ap_rsne(ies, beacon_ies),
+            };
+            let suitable = match self.conn_credentials {
+                Credentials::Open => bss.capability & CAPABILITY_PRIVACY == 0,
+                #[cfg(feature = "wpa2")]
+                Credentials::Wpa2(_) => bss.rsne.is_some_and(|rsne| rsne.offers_wpa2_psk_ccmp()),
             };
             debug!(
-                "found {:02x} at {} MHz, {} dBm",
-                bss.bssid, bss.frequency, bss.signal_dbm
+                "found {:02x} at {} MHz, {} dBm, suitable: {}",
+                bss.bssid, bss.frequency, bss.signal_dbm, suitable
             );
-            if self.conn_bss.is_none_or(|best| bss.signal_dbm > best.signal_dbm) {
+            if !suitable {
+                self.conn_security_mismatch = true;
+            } else if self.conn_bss.is_none_or(|best| bss.signal_dbm > best.signal_dbm) {
                 self.conn_bss = Some(bss);
             }
         }
@@ -1447,7 +1558,7 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
         if event.umac_hdr.seq == 0 {
             match self.conn_bss {
                 Some(bss) => self.authenticate(bss).await,
-                None => self.connect_failed(ConnectError::NotFound).await,
+                None => self.connect_failed(self.not_found()).await,
             }
         }
     }
@@ -1492,6 +1603,7 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
         info.control_port = 1;
         // NCS CONFIG_WIFI_MGMT_BSS_MAX_IDLE_TIME, in seconds.
         info.maxidle_insec = 300;
+        self.secure_association(&bss, info);
         self.set_conn(ConnState::Associating, MLME_TIMEOUT);
         self.send_cmd(cmd).await;
     }
@@ -1502,8 +1614,18 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
         if self.conn != ConnState::Associated || !self.peer_known || !self.carrier_on {
             return;
         }
-        // An open network has no keys to set up: open the port right away, as wpa_supplicant's
-        // ForceAuthorized state does.
+        if self.handshake_expected() {
+            // The AP starts the 4-way handshake; the port opens once its keys are in.
+            self.set_conn(ConnState::Handshake, HANDSHAKE_TIMEOUT);
+        } else {
+            // An open network has no keys to set up: open the port right away, as
+            // wpa_supplicant's ForceAuthorized state does.
+            self.connected().await;
+        }
+    }
+
+    /// Opens the port and reports the link up.
+    async fn connected(&mut self) {
         self.authorize().await;
         self.conn = ConnState::Connected;
         self.conn_deadline = None;
@@ -1542,13 +1664,14 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
     // ========= data path
 
     /// Hands a frame from embassy-net to the RPU (NCS `nrf_wifi_fmac_start_xmit`, one frame per
-    /// token). The RPU builds the 802.11 header from the Ethernet one.
-    async fn send_frame(&mut self, frame: &[u32], len: usize) {
+    /// token). The RPU builds the 802.11 header from the Ethernet one. Returns the token, or `None`
+    /// if the frame was not sent: it is shorter than an Ethernet header, or no token is free.
+    async fn send_frame(&mut self, frame: &[u32], len: usize) -> Option<usize> {
         let bytes = &slice8(frame)[..len];
-        if len < 14 {
-            return;
-        }
         let token = self.tx_tokens_busy.trailing_ones() as usize;
+        if len < 14 || token >= MAX_TX_TOKENS {
+            return None;
+        }
         self.tx_tokens_busy |= 1 << token;
 
         let area = c::RPU_MEM_PKT_BASE + (token * MAX_TX_AGGREGATION * TX_BUF_SIZE) as u32;
@@ -1593,6 +1716,7 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
         self.write(cmd_addr, None, &words).await;
         self.rpu_hpq_enqueue(busy_queue, cmd_addr).await;
         self.rpu_msg_trigger().await;
+        Some(token)
     }
 
     /// Passes received data frames to embassy-net and gives their buffers back (NCS
@@ -1634,11 +1758,18 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
         let words = len.div_ceil(4);
         self.read(rx_buf_addr(desc_id) + c::RX_BUF_HEADROOM, None, &mut frame[..words])
             .await;
+        let bytes = &slice8(&frame)[..len];
+
+        // Key handshake frames are the supplicant's, not embassy-net's.
+        if self.rx_eapol(bytes, pkt_type, mac_header_len).await {
+            return;
+        }
+
         let Some(out) = self.ch.try_rx_buf() else {
             debug!("RX frame dropped, embassy-net has no buffer free");
             return;
         };
-        match rx_to_ethernet(&slice8(&frame)[..len], pkt_type, mac_header_len, out) {
+        match rx_to_ethernet(bytes, pkt_type, mac_header_len, out) {
             Some(n) => self.ch.rx_done(n),
             None => warn!("RX frame of type {} not converted", pkt_type),
         }

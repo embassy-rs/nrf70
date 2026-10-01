@@ -29,7 +29,18 @@ include = [
     "LICENSE-MIT",
 ]
 
+# docs.rs shows the whole API.
+[package.metadata.docs.rs]
+features = ["wpa2"]
+
+[features]
+default = []
+# `Control::join_wpa2`: WPA2-Personal networks. The nRF70 firmware has no supplicant, so the key
+# handshakes run in the driver, which costs about 17 KB of flash and the crates below.
+wpa2 = ["dep:aes-kw", "dep:hmac", "dep:pbkdf2", "dep:rand_core", "dep:sha1"]
+
 [dependencies]
+aes-kw = { version = "0.3.1", default-features = false, optional = true }
 align-data = "0.1.0"
 defmt = "1.0.1"
 embassy-futures = "0.1.2"
@@ -38,4 +49,8 @@ embassy-sync = "0.8.0"
 embassy-time = "0.5.1"
 embedded-hal = "1.0.0"
 embedded-hal-async = "1.0.0"
+hmac = { version = "0.13.0", default-features = false, optional = true }
 num_enum = { version = "0.7.4", default-features = false }
+pbkdf2 = { version = "0.13.0", default-features = false, features = ["hmac"], optional = true }
+rand_core = { version = "0.10.1", optional = true }
+sha1 = { version = "0.11.0", default-features = false, optional = true }

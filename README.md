@@ -24,6 +24,16 @@ Working:
   scan for the SSID, open system authentication with its strongest access point, association and
   port authorisation. `ConnectError` says which step failed. The driver reports a lost connection
   as link down, and the application joins again.
+- Joining WPA2-Personal networks with `Control::join_wpa2`, with the `wpa2`
+  [cargo feature](#cargo-features). The nRF70 firmware has no supplicant, so the driver runs the
+  4-way handshake and the group key handshake itself, and hands the keys to the chip, which does
+  the encryption (CCMP), so throughput is that of an open network. The handshake's random numbers
+  come from the application, as any [`rand_core::CryptoRng`](https://docs.rs/rand_core): a
+  hardware generator or a software one.
+  `wpa2_psk` derives the key from the passphrase once, for `Control::join_wpa2_psk`: 2.1 s on an
+  nRF5340 at 64 MHz built for size, 0.5 s at 128 MHz built for speed. A wrong passphrase shows as
+  `ConnectError::HandshakeFailed` after about 3 s. The group key handshake is tested on the host
+  only.
 - Ethernet frames to and from [`embassy-net`](https://embassy.dev) through the `NetDriver`: TCP,
   UDP, DHCP and ICMP work on top of it.
 - SPI bus through any [`embedded-hal-async`](https://crates.io/crates/embedded-hal-async)
@@ -35,8 +45,20 @@ Working:
 
 Not yet:
 
-- WPA2/WPA3 (the firmware has no supplicant: the host runs the 4-way handshake), AP mode, low power
-  mode.
+- WPA3 (SAE), management frame protection, and WPA/WPA2 mixed mode (a TKIP group key): an access
+  point that requires one of them is reported as `ConnectError::SecurityMismatch`.
+- AP mode, low power mode.
+
+## Cargo features
+
+- `wpa2` (off by default): `Control::join_wpa2`, `Control::join_wpa2_psk` and `wpa2_psk`. It adds
+  about 17 KB of flash and 2 KB of RAM on an nRF5340, and the `aes-kw`, `hmac`, `pbkdf2`, `sha1`
+  and `rand_core` crates. Without it the driver joins open networks only, and depends on none of
+  them.
+
+```toml
+nrf70 = { version = "0.2", features = ["wpa2"] }
+```
 
 ## Running the example
 
@@ -70,6 +92,19 @@ WIFI_SSID=MyOpenNetwork cargo run --release --bin join_open
 ```
 
 Then `ping 10.42.0.65` and `nc 10.42.0.65 1234` from the same network.
+
+`join_wpa2` does the same on a WPA2-Personal network. It needs the example's `wpa2` feature, which
+turns on the driver's:
+
+```
+WIFI_SSID=MyNetwork WIFI_PASSPHRASE=MyPassphrase cargo run --release --features wpa2 --bin join_wpa2
+```
+
+```
+2.469207 [INFO ] pre-shared key derived in 2201 ms
+7.599761 [INFO ] connected
+7.842651 [INFO ] address 10.42.0.65/24, echo server on TCP port 1234
+```
 
 If probe-rs reports the core as locked, the DK's application core has APPROTECT enabled: add
 `--allow-erase-all` to the runner in `example/.cargo/config.toml`.
