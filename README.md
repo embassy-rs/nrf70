@@ -33,11 +33,9 @@ Working:
 - Joining WPA2-Personal networks with `Control::join_wpa2`, with the `wpa2`
   [cargo feature](#cargo-features). The nRF70 firmware has no supplicant, so the driver runs the
   4-way handshake and the group key handshake itself, and hands the keys to the chip, which does
-  the encryption (CCMP), so throughput is that of an open network. The handshake's random numbers
-  come from the application, as any [`rand_core::CryptoRng`](https://docs.rs/rand_core): a
-  hardware generator or a software one. Its HMAC-SHA1, HMAC-SHA256, AES-128 and AES-128-CMAC
-  come from the application too, as `embassy-crypto` drivers: the microcontroller's accelerator or
-  software.
+  the encryption (CCMP), so throughput is that of an open network. The handshake's HMAC-SHA1,
+  HMAC-SHA256, AES-128, AES-128-CMAC and random numbers come from the application, as
+  `embassy-crypto` drivers: the microcontroller's accelerator or software.
   `wpa2_psk` derives the key from the passphrase once, for `Control::join_wpa2_psk`: 0.7 s on an
   nRF5340 at 64 MHz with its CryptoCell, 2.2 s in software built for size. A wrong passphrase
   shows as `ConnectError::HandshakeFailed` after about 3 s. The group key handshake was checked
@@ -212,29 +210,34 @@ Not yet:
   `wpa3`, 38 KB and 15 KB, and `Control::start_ap_wpa3` and `Control::start_ap_wpa2_wpa3`.
 
 The handshakes of WPA2 need HMAC-SHA1 (for the key derivation from the passphrase, the pairwise
-key and the frames' integrity codes) and the AES-128 block cipher (to unwrap the group keys), and
-with management frame protection HMAC-SHA256 and AES-128-CMAC (the keys and integrity codes of
-PSK-SHA256). The driver has none of them: it calls
+key and the frames' integrity codes), the AES-128 block cipher (to unwrap the group keys) and
+random numbers (for the nonces), and with management frame protection HMAC-SHA256 and
+AES-128-CMAC (the keys and integrity codes of PSK-SHA256). The driver has none of them: it calls
 [`embassy-crypto`](https://github.com/embassy-rs/embassy/tree/main/embassy-crypto), and the
 application says in its own `Cargo.toml` who answers, with one feature per operation. Without a
-driver for all four, the application does not link.
+driver for each of the five, the application does not link.
 
 The microcontroller's accelerator, where the HAL has `embassy-crypto` drivers: here the
 CryptoCell of an nRF5340, nRF52840 or nRF91, or the CRACEN of an nRF54L.
 
 ```toml
 nrf70 = { version = "0.2", features = ["wpa2"] }
-embassy-nrf = { version = "...", features = ["embassy-crypto-aes128-cmac", "embassy-crypto-aes128-ecb", "embassy-crypto-hmac-sha1", "embassy-crypto-hmac-sha256"] }
+embassy-nrf = { version = "...", features = ["embassy-crypto-aes128-cmac", "embassy-crypto-aes128-ecb", "embassy-crypto-hmac-sha1", "embassy-crypto-hmac-sha256", "embassy-crypto-rng"] }
 ```
 
-Or software, from the RustCrypto crates, on any microcontroller:
+`embassy-crypto-rng` takes the generator over: the application then gets its own random numbers
+from `embassy_crypto::rng_fill_bytes` too.
+
+Or HMAC-SHA1 and AES-128 in software, from the RustCrypto crates, on any microcontroller:
 
 ```toml
 nrf70 = { version = "0.2", features = ["wpa2"] }
 embassy-crypto-rustcrypto = { version = "0.1", features = ["embassy-crypto-aes128-cmac", "embassy-crypto-aes128-ecb", "embassy-crypto-hmac-sha1", "embassy-crypto-hmac-sha256"] }
 ```
 
-with `use embassy_crypto_rustcrypto as _;` in the application, so that the crate is linked.
+with `use embassy_crypto_rustcrypto as _;` in the application, so that the crate is linked. The
+random numbers still have to come from hardware: the HAL's `embassy-crypto-rng`, or a generator
+of the application's own registered with `embassy_crypto::rng_impl!`.
 
 On an nRF5340 at 64 MHz, built for size, with the `join_wpa2` example:
 
@@ -278,7 +281,8 @@ WIFI_SSID=MyOpenNetwork cargo run --release --bin join_open
 Then `ping 10.42.0.65` and `nc 10.42.0.65 1234` from the same network.
 
 `join_wpa2` does the same on a WPA2-Personal network. It needs the example's `wpa2` feature, which
-turns on the driver's and makes the nRF5340's CryptoCell the `embassy-crypto` driver:
+turns on the driver's and makes the nRF5340's CryptoCell the `embassy-crypto` driver of all it
+needs:
 
 ```
 WIFI_SSID=MyNetwork WIFI_PASSPHRASE=MyPassphrase cargo run --release --features wpa2 --bin join_wpa2

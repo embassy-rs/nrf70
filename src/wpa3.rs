@@ -14,7 +14,6 @@ use defmt::{debug, info, warn};
 use embassy_time::Instant;
 use embedded_hal::digital::{InputPin, OutputPin};
 use embedded_hal_async::digital::Wait;
-use rand_core::CryptoRng;
 
 use crate::crypto::hmac_sha256;
 use crate::ieee80211::{
@@ -136,20 +135,15 @@ impl Control<'_> {
     /// access point announces it, hunting and pecking elsewhere. Returns once the keys are in and
     /// the link is up; see [`Control::join_open`].
     ///
-    /// The exchange runs here, on the host, and needs random numbers: 32 bytes from `rng`, any
-    /// cryptographically secure generator the application has, taken before joining.
+    /// The exchange runs here, on the host, and needs random numbers: 32 bytes from the
+    /// `embassy-crypto` generator, taken before joining.
     ///
     /// The PMK of the exchange is kept for 12 hours, for the four access points joined last: the
     /// next join of one of them with the same password skips SAE (an open system authentication,
     /// and the association names the PMK), and goes through SAE after all if the access point no
     /// longer has it.
-    pub async fn join_wpa3(
-        &mut self,
-        ssid: &[u8],
-        password: &[u8],
-        rng: &mut (impl CryptoRng + ?Sized),
-    ) -> Result<(), ConnectError> {
-        self.join_sae(ssid, password, None, rng).await
+    pub async fn join_wpa3(&mut self, ssid: &[u8], password: &[u8]) -> Result<(), ConnectError> {
+        self.join_sae(ssid, password, None).await
     }
 
     /// Joins the WPA3-Personal network `ssid` as [`Control::join_wpa3`] does, with the password
@@ -162,23 +156,16 @@ impl Control<'_> {
         ssid: &[u8],
         password: &[u8],
         identifier: &[u8],
-        rng: &mut (impl CryptoRng + ?Sized),
     ) -> Result<(), ConnectError> {
         if identifier.is_empty() {
             return Err(ConnectError::InvalidPassphrase);
         }
-        self.join_sae(ssid, password, Some(identifier), rng).await
+        self.join_sae(ssid, password, Some(identifier)).await
     }
 
-    async fn join_sae(
-        &mut self,
-        ssid: &[u8],
-        password: &[u8],
-        identifier: Option<&[u8]>,
-        rng: &mut (impl CryptoRng + ?Sized),
-    ) -> Result<(), ConnectError> {
+    async fn join_sae(&mut self, ssid: &[u8], password: &[u8], identifier: Option<&[u8]>) -> Result<(), ConnectError> {
         let mut seed = [0; 32];
-        rng.fill_bytes(&mut seed);
+        embassy_crypto::rng_fill_bytes(&mut seed);
         let start = Instant::now();
         let wpa3 = Wpa3::new(ssid, password, identifier, seed).ok_or(ConnectError::InvalidPassphrase)?;
         debug!("SAE: PT derived in {} ms", start.elapsed().as_millis());

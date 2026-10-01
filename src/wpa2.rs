@@ -11,7 +11,6 @@ use defmt::{debug, warn};
 use embassy_time::{Duration, Instant};
 use embedded_hal::digital::{InputPin, OutputPin};
 use embedded_hal_async::digital::Wait;
-use rand_core::CryptoRng;
 
 use crate::crypto::psk_from_passphrase;
 use crate::data::{write_ethernet, RxFrame};
@@ -146,35 +145,25 @@ impl Control<'_> {
     /// receives, and reports no MIC failure: their integrity rests on TKIP's CRC alone.
     ///
     /// The nRF70 firmware has no supplicant, so the handshake runs here, on the host, and it needs
-    /// random numbers for its nonces. They come from `rng`, any cryptographically secure generator
-    /// the application has: a hardware one, or a software one seeded from real entropy. Each call
+    /// random numbers for its nonces. They come from the random number generator the application
+    /// registered with `embassy-crypto`, as the handshake's HMAC-SHA1 and AES-128 do. Each call
     /// takes 32 bytes from it, before joining.
     ///
     /// Deriving the key from the passphrase takes 16,384 SHA-1 compressions, during which this
     /// task does not yield. [`wpa2_psk`] and [`Control::join_wpa2_psk`] let an application do it
     /// once and keep the result.
-    pub async fn join_wpa2(
-        &mut self,
-        ssid: &[u8],
-        passphrase: &[u8],
-        rng: &mut (impl CryptoRng + ?Sized),
-    ) -> Result<(), ConnectError> {
+    pub async fn join_wpa2(&mut self, ssid: &[u8], passphrase: &[u8]) -> Result<(), ConnectError> {
         let psk = wpa2_psk(ssid, passphrase).ok_or(ConnectError::InvalidPassphrase)?;
-        self.join_wpa2_psk(ssid, &psk, rng).await
+        self.join_wpa2_psk(ssid, &psk).await
     }
 
     /// [`Control::join_wpa2`] with the pre-shared key that [`wpa2_psk`] derives from the
     /// passphrase.
-    pub async fn join_wpa2_psk(
-        &mut self,
-        ssid: &[u8],
-        psk: &[u8; 32],
-        rng: &mut (impl CryptoRng + ?Sized),
-    ) -> Result<(), ConnectError> {
-        // The runner does the handshake and has no generator of its own: it gets a seed, from
-        // which the supplicant derives a nonce for each handshake of this association.
+    pub async fn join_wpa2_psk(&mut self, ssid: &[u8], psk: &[u8; 32]) -> Result<(), ConnectError> {
+        // The runner does the handshake: it gets a seed, from which the supplicant derives a
+        // nonce for each handshake of this association.
         let mut nonce_seed = [0; 32];
-        rng.fill_bytes(&mut nonce_seed);
+        embassy_crypto::rng_fill_bytes(&mut nonce_seed);
         self.join(ssid, Credentials::Wpa2(Wpa2 { psk: *psk, nonce_seed })).await
     }
 }
