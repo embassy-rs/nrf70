@@ -74,10 +74,10 @@ embassy-time = { version = "0.5.1", features = ["std", "generic-queue-8"] }
 # Experiment: embassy's main branch, where embassy-net runs on xarxa instead of smoltcp and
 # embassy-net-driver-channel hands packets over as xarxa `PacketBuf`s.
 [patch.crates-io]
-embassy-crypto = { git = "https://github.com/embassy-rs/embassy", rev = "5e430e609369998d23c977e9099b5abbddaf775f" }
-embassy-crypto-rustcrypto = { git = "https://github.com/embassy-rs/embassy", rev = "5e430e609369998d23c977e9099b5abbddaf775f" }
-embassy-futures = { git = "https://github.com/embassy-rs/embassy", rev = "5e430e609369998d23c977e9099b5abbddaf775f" }
-embassy-net-driver-channel = { git = "https://github.com/embassy-rs/embassy", rev = "5e430e609369998d23c977e9099b5abbddaf775f" }
-embassy-sync = { git = "https://github.com/embassy-rs/embassy", rev = "5e430e609369998d23c977e9099b5abbddaf775f" }
-embassy-time = { git = "https://github.com/embassy-rs/embassy", rev = "5e430e609369998d23c977e9099b5abbddaf775f" }
-embassy-time-driver = { git = "https://github.com/embassy-rs/embassy", rev = "5e430e609369998d23c977e9099b5abbddaf775f" }
+embassy-crypto = { git = "https://github.com/embassy-rs/embassy", rev = "a404c7806196df0403b90fb6bef13c80dcee5f2b" }
+embassy-crypto-rustcrypto = { git = "https://github.com/embassy-rs/embassy", rev = "a404c7806196df0403b90fb6bef13c80dcee5f2b" }
+embassy-futures = { git = "https://github.com/embassy-rs/embassy", rev = "a404c7806196df0403b90fb6bef13c80dcee5f2b" }
+embassy-net-driver-channel = { git = "https://github.com/embassy-rs/embassy", rev = "a404c7806196df0403b90fb6bef13c80dcee5f2b" }
+embassy-sync = { git = "https://github.com/embassy-rs/embassy", rev = "a404c7806196df0403b90fb6bef13c80dcee5f2b" }
+embassy-time = { git = "https://github.com/embassy-rs/embassy", rev = "a404c7806196df0403b90fb6bef13c80dcee5f2b" }
+embassy-time-driver = { git = "https://github.com/embassy-rs/embassy", rev = "a404c7806196df0403b90fb6bef13c80dcee5f2b" }
