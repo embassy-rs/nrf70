@@ -1658,7 +1658,12 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
             let shared = self.shared;
             // With WPA2, one token stays free for the supplicant.
             let data_tx_tokens = MAX_TX_TOKENS as u32 - Self::EAPOL_TX_TOKENS;
-            let can_tx = self.link_up && self.tx_tokens_busy.count_ones() < data_tx_tokens && self.ap_has_room();
+            // Frames wait in the channel only while the link is up and every data token is
+            // busy. With the link down they are taken and dropped: they cannot be sent, and left
+            // there they would fill the channel, so that the stack's first frames after a join
+            // (its DHCP request) would find no room.
+            let link_up = self.link_up;
+            let take_tx = !link_up || (self.tx_tokens_busy.count_ones() < data_tx_tokens && self.ap_has_room());
             // What the loop has to come back for without an interrupt.
             let wake_at = [
                 (self.powered && !self.low_power).then_some(poll_at),
@@ -1688,7 +1693,7 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
                 }
             };
             let tx = async {
-                if can_tx {
+                if take_tx {
                     ch.tx().await
                 } else {
                     core::future::pending().await
@@ -1700,11 +1705,13 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
                 Either3::First(request) => self.handle_request(request).await,
                 Either3::Second(frame) => {
                     // Dropping the packet gives its buffer back to the pool.
-                    let len = frame.len();
-                    slice8_mut(&mut tx_frame)[..len].copy_from_slice(&frame);
-                    drop(frame);
-                    if !self.ap_hold(&mut tx_frame, len).await {
-                        self.send_frame(&tx_frame, len).await;
+                    if link_up {
+                        let len = frame.len();
+                        slice8_mut(&mut tx_frame)[..len].copy_from_slice(&frame);
+                        drop(frame);
+                        if !self.ap_hold(&mut tx_frame, len).await {
+                            self.send_frame(&tx_frame, len).await;
+                        }
                     }
                 }
                 Either3::Third(_) => {}
