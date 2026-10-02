@@ -435,6 +435,7 @@ impl_cmd!(umac, c::umac_cmd_auth, c::umac_commands::UMAC_CMD_AUTHENTICATE);
 impl_cmd!(umac, c::umac_cmd_assoc, c::umac_commands::UMAC_CMD_ASSOCIATE);
 impl_cmd!(umac, c::umac_cmd_disconn, c::umac_commands::UMAC_CMD_DEAUTHENTICATE);
 impl_cmd!(umac, c::umac_cmd_chg_sta, c::umac_commands::UMAC_CMD_SET_STATION);
+impl_cmd!(umac, c::umac_cmd_get_sta, c::umac_commands::UMAC_CMD_GET_STATION);
 impl_cmd!(umac, c::umac_cmd_key, c::umac_commands::UMAC_CMD_NEW_KEY);
 impl_cmd!(umac, c::umac_cmd_set_key, c::umac_commands::UMAC_CMD_SET_KEY);
 impl_cmd!(
@@ -1010,6 +1011,8 @@ enum ConnState {
     Associated,
     /// WPA2 only: the 4-way handshake, until both keys are in.
     Handshake,
+    /// The port is being opened: waiting for the RPU to have done it.
+    Authorizing,
     Connected,
 }
 
@@ -1377,6 +1380,12 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
                     }
                 }
             }
+            Ok(UMAC_EVENT_GET_STATION) => {
+                // The answer to the query that follows the opening of the port.
+                if self.conn == ConnState::Authorizing {
+                    self.connected();
+                }
+            }
             Ok(UMAC_EVENT_NEW_STATION) => {
                 debug!("AP added as peer");
                 self.peer_known = true;
@@ -1451,7 +1460,7 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
         warn!("connection failed: {}", error);
         if matches!(
             self.conn,
-            ConnState::Associating | ConnState::Associated | ConnState::Handshake
+            ConnState::Associating | ConnState::Associated | ConnState::Handshake | ConnState::Authorizing
         ) {
             self.deauthenticate().await;
         }
@@ -1641,13 +1650,31 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
         } else {
             // An open network has no keys to set up: open the port right away, as
             // wpa_supplicant's ForceAuthorized state does.
-            self.connected().await;
+            self.open_port().await;
         }
     }
 
-    /// Opens the port and reports the link up.
-    async fn connected(&mut self) {
+    /// Opens the port, and asks the RPU for the AP's station entry. Its answer is what
+    /// [`Self::connected`] waits for.
+    ///
+    /// The RPU takes commands and frames from different queues. A frame handed over right after
+    /// the commands that set the keys and open the port overtakes them and is lost, without a
+    /// word from the RPU: a stack that sends its DHCP request the moment the link is up waits for
+    /// its retry, 10 s later. The RPU answers commands in order, so once it has answered the
+    /// query the port is open.
+    async fn open_port(&mut self) {
+        let Some(bss) = self.conn_bss else {
+            return;
+        };
         self.authorize().await;
+        let mut cmd: c::umac_cmd_get_sta = unsafe { zeroed() };
+        cmd.info.mac_addr = bss.bssid;
+        self.send_cmd(cmd).await;
+        self.set_conn(ConnState::Authorizing, EVENT_TIMEOUT);
+    }
+
+    /// Reports the link up: the port is open.
+    fn connected(&mut self) {
         self.conn = ConnState::Connected;
         self.conn_deadline = None;
         self.set_link(true);

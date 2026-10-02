@@ -216,7 +216,11 @@ impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
             debug!("EAPOL frame ignored: no WPA2 association");
             return;
         };
-        if !matches!(self.conn, ConnState::Handshake | ConnState::Connected) || frame[6..12] != bss.bssid {
+        if !matches!(
+            self.conn,
+            ConnState::Handshake | ConnState::Authorizing | ConnState::Connected
+        ) || frame[6..12] != bss.bssid
+        {
             debug!("EAPOL frame ignored: not from the AP of an association");
             return;
         }
@@ -289,7 +293,7 @@ impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
             debug!("group key {} installed", gtk.index);
         }
         if self.conn == ConnState::Handshake {
-            self.connected().await;
+            self.open_port().await;
         }
     }
 
