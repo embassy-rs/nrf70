@@ -45,8 +45,9 @@ Working:
 
 Not yet:
 
-- WPA3 (SAE), management frame protection, and WPA/WPA2 mixed mode (a TKIP group key): an access
-  point that requires one of them is reported as `ConnectError::SecurityMismatch`.
+- Beyond WPA2-Personal with CCMP, which works (see above): WPA3 (SAE), management frame protection,
+  and access points that still use TKIP for the group key (WPA/WPA2 mixed mode). An access point
+  that requires one of them is reported as `ConnectError::SecurityMismatch`.
 - AP mode, low power mode.
 
 ## Cargo features
