@@ -507,7 +507,10 @@ impl Supplicant {
             &tptk.kck,
         );
         self.tptk = Some(tptk);
-        debug!("4-way handshake: message 1, sending message 2");
+        debug!(
+            "4-way handshake: message 1 (replay counter {}), sending message 2",
+            key.replay_counter
+        );
         Outcome::Reply(len)
     }
 
@@ -548,7 +551,10 @@ impl Supplicant {
         self.renew_snonce = true;
         let tk = (key.info & INFO_INSTALL != 0 && !self.tk_installed).then_some(ptk.tk);
         self.tk_installed |= tk.is_some();
-        debug!("4-way handshake: message 3, sending message 4");
+        debug!(
+            "4-way handshake: message 3 (replay counter {}), sending message 4",
+            key.replay_counter
+        );
         Outcome::Keys {
             reply: len,
             tk,

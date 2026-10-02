@@ -1277,7 +1277,14 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
         match c::umac_data_commands::try_from(id) {
             Ok(c::umac_data_commands::CMD_RX_BUFF) => self.handle_rx(body).await,
             Ok(c::umac_data_commands::CMD_TX_BUFF_DONE) => {
-                let token = unsliceit::<c::tx_buff_done>(body).tx_desc_num as usize;
+                let (done, statuses) = unsliceit2::<c::tx_buff_done>(body);
+                let token = done.tx_desc_num as usize;
+                // One status per frame of the token. A failed one is a frame the RPU gave up on:
+                // the AP never acknowledged it, and it is lost.
+                let statuses = statuses.get(..done.num_tx_status_code as usize).unwrap_or(&[]);
+                if statuses.iter().any(|&status| status as u32 != c::TX_STATUS_SUCCESS) {
+                    debug!("frame of TX token {} not acknowledged", token);
+                }
                 if token < MAX_TX_TOKENS {
                     self.tx_tokens_busy &= !(1 << token);
                     self.frame_sent(token).await;
@@ -1374,7 +1381,9 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
                 | UMAC_EVENT_UNPROT_DEAUTHENTICATE
                 | UMAC_EVENT_UNPROT_DISASSOCIATE,
             ) => {
-                debug!("disconnect event {}", id);
+                // The reason code follows the 24-byte header of the frame.
+                let reason = mlme_status(unsliceit(body), 24);
+                debug!("disconnect event {}, reason {}", id, reason);
                 self.connection_lost().await;
             }
             Ok(UMAC_EVENT_IFFLAGS_STATUS) => {
