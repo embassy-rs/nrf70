@@ -410,7 +410,8 @@ pub struct LinkStatus {
     pub bssid: [u8; 6],
     /// Its channel's centre frequency, in MHz.
     pub frequency: u32,
-    /// Signal strength of the last frame received from it, in dBm.
+    /// Signal strength of the last frame received from it, in dBm. `None` until the RPU has
+    /// measured one, shortly after a join.
     pub rssi: Option<i32>,
     /// Rate of the last frame sent to it, in kbit/s.
     pub tx_rate: Option<u32>,
@@ -430,7 +431,9 @@ impl LinkStatus {
         Self {
             bssid: bss.bssid,
             frequency: bss.frequency,
-            rssi: (valid & c::STA_INFO_SIGNAL_VALID != 0).then_some(signal),
+            // Right after a join the RPU may mark the signal valid before it has measured one,
+            // and gives 0 dBm.
+            rssi: (valid & c::STA_INFO_SIGNAL_VALID != 0 && signal != 0).then_some(signal),
             tx_rate: rate(c::STA_INFO_TX_BITRATE_VALID, info.tx_bitrate),
             rx_rate: rate(c::STA_INFO_RX_BITRATE_VALID, info.rx_bitrate),
         }
@@ -3009,6 +3012,11 @@ mod tests {
         // A rate the RPU marks valid in the station entry but not in the rate itself.
         info.rx_bitrate.valid_fields = 0;
         assert_eq!(LinkStatus::from_station(&ap, &info).rx_rate, None);
+
+        // Right after a join: a signal marked valid before the RPU has measured one.
+        info.signal = 0;
+        let status = LinkStatus::from_station(&ap, &info);
+        assert_eq!((status.rssi, status.tx_rate), (None, Some(65_000)));
     }
 
     #[test]
