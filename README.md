@@ -32,8 +32,8 @@ Working:
   hardware generator or a software one.
   `wpa2_psk` derives the key from the passphrase once, for `Control::join_wpa2_psk`: 2.1 s on an
   nRF5340 at 64 MHz built for size, 0.5 s at 128 MHz built for speed. A wrong passphrase shows as
-  `ConnectError::HandshakeFailed` after about 3 s. The group key handshake is tested on the host
-  only.
+  `ConnectError::HandshakeFailed` after about 3 s. The group key handshake was checked on an
+  nRF7002-DK too, against an access point that changes its group key every 30 s.
 - Ethernet frames to and from [`embassy-net`](https://embassy.dev) through the `NetDriver`: TCP,
   UDP, DHCP and ICMP work on top of it.
 - SPI bus through any [`embedded-hal-async`](https://crates.io/crates/embedded-hal-async)
