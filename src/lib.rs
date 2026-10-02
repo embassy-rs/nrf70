@@ -12,7 +12,7 @@ use embassy_net_driver_channel as ch;
 use embassy_net_driver_channel::driver::LinkState;
 use embassy_sync::blocking_mutex::raw::NoopRawMutex;
 use embassy_sync::channel::Channel;
-use embassy_time::{with_timeout, Duration, Instant, Timer};
+use embassy_time::{with_deadline, with_timeout, Duration, Instant, Timer};
 use embedded_hal::digital::{InputPin, OutputPin};
 use embedded_hal::spi::Operation;
 use embedded_hal_async::digital::Wait;
@@ -43,7 +43,8 @@ const MTU: usize = 1514;
 const EVENT_TIMEOUT: Duration = Duration::from_secs(5);
 /// A scan covers every 2.4 GHz and 5 GHz channel, which takes a few seconds.
 const SCAN_TIMEOUT: Duration = Duration::from_secs(30);
-/// The RPU pulses HOST_IRQ once per event. Poll this often as well, in case an edge is missed.
+/// The RPU raises HOST_IRQ when it has events. The event queue is read this often as well, in
+/// case an interrupt goes missing.
 const IRQ_POLL_PERIOD: Duration = Duration::from_millis(50);
 /// Scan results buffered between the runner and a [`Scanner`].
 const SCAN_RESULTS_DEPTH: usize = 32;
@@ -1286,13 +1287,18 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
         let mut buf = [0u32; MAX_EVENT_LEN / 4];
         let mut tx_frame = [0u32; MTU.div_ceil(4)];
 
+        let mut poll_at = Instant::now();
+
         loop {
-            while let Some(len) = self.rpu_event_next(&mut buf).await {
-                if len > 0 {
-                    self.handle_event(slice8(&buf), len).await;
+            // HOST_IRQ is high while the RPU has events that were not acknowledged.
+            let irq = self.host_irq.is_high().unwrap_or(true);
+            if irq || Instant::now() >= poll_at {
+                let events = self.service_events(&mut buf).await;
+                if events > 0 && !irq {
+                    debug!("{} events found without an interrupt", events);
                 }
+                poll_at = Instant::now() + IRQ_POLL_PERIOD;
             }
-            self.rpu_irq_service_end().await;
             self.check_conn_timeout().await;
             self.check_pending_keys().await;
 
@@ -1301,7 +1307,7 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
             let data_tx_tokens = MAX_TX_TOKENS as u32 - Self::EAPOL_TX_TOKENS;
             let can_tx = self.link_up && self.tx_tokens_busy.count_ones() < data_tx_tokens;
             let ch = &mut self.ch;
-            let irq = with_timeout(IRQ_POLL_PERIOD, self.host_irq.wait_for_rising_edge());
+            let irq = with_deadline(poll_at, self.host_irq.wait_for_high());
             let tx = async {
                 if can_tx {
                     ch.tx_buf().await
@@ -1309,16 +1315,49 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
                     core::future::pending().await
                 }
             };
-            match select3(irq, shared.requests.receive(), tx).await {
-                Either3::First(_) => {}
-                Either3::Second(request) => self.handle_request(request).await,
-                Either3::Third(frame) => {
+            // The interrupt comes last: its events are read at each turn of the loop anyway, and
+            // a busy receiver must not keep a request or a frame to send waiting.
+            match select3(shared.requests.receive(), tx, irq).await {
+                Either3::First(request) => self.handle_request(request).await,
+                Either3::Second(frame) => {
                     let len = frame.len();
                     slice8_mut(&mut tx_frame)[..len].copy_from_slice(frame);
                     self.ch.tx_done();
                     self.send_frame(&tx_frame, len).await;
                 }
+                Either3::Third(_) => {}
             }
+        }
+    }
+
+    /// Handles the events the RPU has queued and acknowledges its interrupt (NCS
+    /// `hal_rpu_irq_process`). Returns how many events there were.
+    ///
+    /// An event queued between the last look at the queue and the acknowledgement loses its
+    /// interrupt, so the queue is read again after each acknowledgement.
+    async fn service_events(&mut self, buf: &mut [u32]) -> usize {
+        let mut events = 0;
+        let mut acknowledged_idle = false;
+        loop {
+            while let Some(len) = self.rpu_event_next(buf).await {
+                events += 1;
+                if len > 0 {
+                    self.handle_event(slice8(buf), len).await;
+                }
+            }
+            if self.rpu_irq_watchdog_check().await {
+                debug!("RPU watchdog interrupt");
+                self.rpu_irq_watchdog_ack().await;
+            }
+            if self.irq_pending_ack {
+                self.irq_pending_ack = false;
+            } else if !acknowledged_idle && self.host_irq.is_high().unwrap_or(false) {
+                // An interrupt with nothing to read: acknowledged once, or it would stay high.
+                acknowledged_idle = true;
+            } else {
+                return events;
+            }
+            self.rpu_irq_ack().await;
         }
     }
 
