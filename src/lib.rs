@@ -53,6 +53,11 @@ const RPU_IDLE_TIMEOUT: Duration = Duration::from_millis(10);
 const RPU_WAKE_TIMEOUT: Duration = Duration::from_secs(1);
 /// How long a deauthentication frame gets to leave before the chip is turned off.
 const POWER_OFF_DELAY: Duration = Duration::from_millis(20);
+/// How many channels of a network are remembered for the next join.
+const KNOWN_CHANNELS: usize = 4;
+/// A scan of the remembered channels takes 50 ms per channel, 150 ms where the RPU may only
+/// listen. Past this, the join falls back to the scan of every channel.
+const KNOWN_SCAN_TIMEOUT: Duration = Duration::from_secs(2);
 /// Scan results buffered between the runner and a [`Scanner`].
 const SCAN_RESULTS_DEPTH: usize = 32;
 /// Authentication and association each get this long (wpa_supplicant's `SME_AUTH_TIMEOUT`).
@@ -258,6 +263,8 @@ where
         conn_bss: None,
         conn_security_mismatch: false,
         conn_deadline: None,
+        known: None,
+        known_scan: false,
         #[cfg(feature = "wpa2")]
         wpa2: wpa2::State::new(),
         peer_known: false,
@@ -565,6 +572,21 @@ impl_cmd!(
 );
 impl_cmd!(umac, c::umac_cmd_chg_vif_state, c::umac_commands::UMAC_CMD_SET_IFFLAGS);
 impl_cmd!(umac, c::umac_cmd_scan, c::umac_commands::UMAC_CMD_TRIGGER_SCAN);
+
+/// A scan command followed by the channels to scan: `scan_params.center_frequency`, which the
+/// bindings leave as an array of no length.
+#[repr(C, packed)]
+struct ScanChannelsCmd {
+    cmd: c::umac_cmd_scan,
+    center_frequency: [u32; KNOWN_CHANNELS],
+}
+
+impl Command for ScanChannelsCmd {
+    const MESSAGE_TYPE: c::host_rpu_msg_type = c::host_rpu_msg_type::HOST_RPU_MSG_TYPE_UMAC;
+    fn fill(&mut self) {
+        self.cmd.fill();
+    }
+}
 impl_cmd!(umac, c::umac_cmd_auth, c::umac_commands::UMAC_CMD_AUTHENTICATE);
 impl_cmd!(umac, c::umac_cmd_assoc, c::umac_commands::UMAC_CMD_ASSOCIATE);
 impl_cmd!(umac, c::umac_cmd_disconn, c::umac_commands::UMAC_CMD_DEAUTHENTICATE);
@@ -1131,6 +1153,55 @@ struct Bss {
     rsne: Option<supplicant::Rsne>,
 }
 
+/// The channels where a scan of every channel found a network, for the next join to scan only
+/// these: a fraction of a second instead of several.
+#[derive(Clone, Copy)]
+struct KnownNetwork {
+    ssid: Ssid,
+    /// Centre frequency in MHz and rank of the best access point seen on it, best first.
+    channels: [(u32, i32); KNOWN_CHANNELS],
+    count: usize,
+}
+
+impl KnownNetwork {
+    fn new(ssid: Ssid) -> Self {
+        Self {
+            ssid,
+            channels: [(0, 0); KNOWN_CHANNELS],
+            count: 0,
+        }
+    }
+
+    /// Notes an access point of the network. When there are more channels than room, the ones
+    /// with the best access points stay.
+    fn note(&mut self, bss: &Bss) {
+        let rank = bss_rank(bss);
+        let seen = self.channels[..self.count]
+            .iter()
+            .position(|(frequency, _)| *frequency == bss.frequency);
+        let slot = match seen {
+            Some(slot) if self.channels[slot].1 >= rank => return,
+            Some(slot) => slot,
+            None if self.count < KNOWN_CHANNELS => {
+                self.count += 1;
+                self.count - 1
+            }
+            None if self.channels[KNOWN_CHANNELS - 1].1 >= rank => return,
+            None => KNOWN_CHANNELS - 1,
+        };
+        self.channels[slot] = (bss.frequency, rank);
+        self.channels[..self.count].sort_unstable_by_key(|(_, rank)| core::cmp::Reverse(*rank));
+    }
+
+    fn frequencies(&self) -> [u32; KNOWN_CHANNELS] {
+        let mut frequencies = [0; KNOWN_CHANNELS];
+        for (slot, (frequency, _)) in frequencies.iter_mut().zip(&self.channels[..self.count]) {
+            *slot = *frequency;
+        }
+        frequencies
+    }
+}
+
 /// How much weaker a 5 GHz access point may be than a 2.4 GHz one of the same network and still
 /// be the one to join.
 const BAND_5GHZ_BONUS_DB: i32 = 10;
@@ -1139,8 +1210,12 @@ const BAND_5GHZ_BONUS_DB: i32 = 10;
 /// one counting for [`BAND_5GHZ_BONUS_DB`] more than its signal. wpa_supplicant ranks by estimated
 /// throughput, which favours 5 GHz in the same way: its channels are wider and less crowded.
 fn better_bss(candidate: &Bss, best: &Bss) -> bool {
-    let rank = |bss: &Bss| bss.signal_dbm + if bss.frequency >= 5000 { BAND_5GHZ_BONUS_DB } else { 0 };
-    rank(candidate) > rank(best)
+    bss_rank(candidate) > bss_rank(best)
+}
+
+/// What access points are compared by.
+fn bss_rank(bss: &Bss) -> i32 {
+    bss.signal_dbm + if bss.frequency >= 5000 { BAND_5GHZ_BONUS_DB } else { 0 }
 }
 
 /// Progress of joining a network (NCS leaves this to wpa_supplicant's SME).
@@ -1206,6 +1281,10 @@ pub struct Runner<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> {
     conn_security_mismatch: bool,
     /// When the current connection step times out.
     conn_deadline: Option<Instant>,
+    /// Where the last scan of every channel found the network that was joined then.
+    known: Option<KnownNetwork>,
+    /// The connect scan in progress covers the channels of `known` only.
+    known_scan: bool,
     /// The key handshakes of a WPA2 network.
     #[cfg(feature = "wpa2")]
     wpa2: wpa2::State,
@@ -1577,8 +1656,16 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
                 self.conn_credentials = credentials;
                 self.conn_bss = None;
                 self.conn_security_mismatch = false;
-                self.set_conn(ConnState::Scanning, SCAN_TIMEOUT);
-                self.trigger_connect_scan().await;
+                // Where the network was last time first, if this is the one joined then.
+                match self.known {
+                    Some(known) if known.ssid.as_bytes() == ssid.as_bytes() && known.count > 0 => {
+                        debug!("scanning the {} channels the network was on", known.count);
+                        self.known_scan = true;
+                        self.set_conn(ConnState::Scanning, KNOWN_SCAN_TIMEOUT);
+                        self.trigger_connect_scan(Some(&known)).await;
+                    }
+                    _ => self.connect_scan_all().await,
+                }
             }
         }
     }
@@ -1805,6 +1892,8 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
     /// Gives up on joining: leaves the AP if already authenticated, and reports `error`.
     async fn connect_failed(&mut self, error: ConnectError) {
         warn!("connection failed: {}", error);
+        // The next try looks at every channel again.
+        self.known = None;
         if matches!(
             self.conn,
             ConnState::Associating | ConnState::Associated | ConnState::Handshake | ConnState::Authorizing
@@ -1837,6 +1926,10 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
 
     async fn check_conn_timeout(&mut self) {
         if self.conn_deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+            if self.conn == ConnState::Scanning && self.known_scan {
+                debug!("no answer on the channels the network was on: scanning every channel");
+                return self.connect_scan_all().await;
+            }
             let error = match (self.conn, self.conn_bss) {
                 (ConnState::Scanning, None) => self.not_found(),
                 (ConnState::Handshake, _) => ConnectError::HandshakeFailed,
@@ -1857,12 +1950,30 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
 
     /// Scans for the target SSID so that the RPU knows its access points before authentication
     /// (NCS `nrf_wifi_wpa_supp_scan2`).
-    async fn trigger_connect_scan(&mut self) {
+    /// With `known`, on its channels only.
+    async fn trigger_connect_scan(&mut self, known: Option<&KnownNetwork>) {
         let mut cmd: c::umac_cmd_scan = unsafe { zeroed() };
         cmd.info.scan_reason = c::scan_reason::SCAN_CONNECT as _;
         cmd.info.scan_params.num_scan_ssids = 1;
         cmd.info.scan_params.scan_ssids[0] = self.conn_ssid.to_c();
-        self.send_cmd(cmd).await;
+        match known {
+            Some(known) => {
+                cmd.info.scan_params.num_scan_channels = known.count as _;
+                let center_frequency = known.frequencies();
+                self.send_cmd(ScanChannelsCmd { cmd, center_frequency }).await;
+            }
+            None => self.send_cmd(cmd).await,
+        }
+    }
+
+    /// Starts the connect scan of every channel, which also notes where the network is.
+    async fn connect_scan_all(&mut self) {
+        self.known_scan = false;
+        self.known = Some(KnownNetwork::new(self.conn_ssid));
+        self.conn_bss = None;
+        self.conn_security_mismatch = false;
+        self.set_conn(ConnState::Scanning, SCAN_TIMEOUT);
+        self.trigger_connect_scan(None).await;
     }
 
     /// Keeps the strongest access point of the target SSID, and authenticates with it after the
@@ -1926,8 +2037,13 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
             );
             if !suitable {
                 self.conn_security_mismatch = true;
-            } else if self.conn_bss.is_none_or(|best| better_bss(&bss, &best)) {
-                self.conn_bss = Some(bss);
+            } else {
+                if let (false, Some(known)) = (self.known_scan, self.known.as_mut()) {
+                    known.note(&bss);
+                }
+                if self.conn_bss.is_none_or(|best| better_bss(&bss, &best)) {
+                    self.conn_bss = Some(bss);
+                }
             }
         }
 
@@ -1935,6 +2051,10 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
         if event.umac_hdr.seq == 0 {
             match self.conn_bss {
                 Some(bss) => self.authenticate(bss).await,
+                None if self.known_scan => {
+                    debug!("the network is not where it was: scanning every channel");
+                    self.connect_scan_all().await;
+                }
                 None => self.connect_failed(self.not_found()).await,
             }
         }
@@ -3333,6 +3453,31 @@ mod tests {
         assert!(!better_bss(&bss(2412, -55), &bss(5200, -60)));
         assert!(!better_bss(&bss(5200, -70), &bss(2412, -55)));
         assert!(better_bss(&bss(2412, -55), &bss(5200, -70)));
+    }
+
+    #[test]
+    fn the_channels_of_the_best_access_points_are_remembered() {
+        let mut known = KnownNetwork::new(Ssid::new(b"network").unwrap());
+        assert_eq!((known.count, known.frequencies()), (0, [0; KNOWN_CHANNELS]));
+
+        // Two access points on one channel count once, and the best channel comes first: 5 GHz
+        // counts for 10 dB more.
+        known.note(&bss(2412, -70));
+        known.note(&bss(5200, -65));
+        known.note(&bss(2412, -50));
+        assert_eq!((known.count, known.frequencies()), (2, [2412, 5200, 0, 0]));
+        // A weaker access point on a known channel changes nothing.
+        known.note(&bss(5200, -80));
+        assert_eq!((known.count, known.frequencies()), (2, [2412, 5200, 0, 0]));
+
+        // With more channels than room, the weakest goes.
+        known.note(&bss(2437, -80));
+        known.note(&bss(5745, -40));
+        assert_eq!((known.count, known.frequencies()), (4, [5745, 2412, 5200, 2437]));
+        known.note(&bss(2462, -90));
+        assert_eq!(known.frequencies(), [5745, 2412, 5200, 2437]);
+        known.note(&bss(2462, -60));
+        assert_eq!((known.count, known.frequencies()), (4, [5745, 2412, 5200, 2462]));
     }
 
     #[test]

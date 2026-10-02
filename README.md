@@ -24,6 +24,10 @@ Working:
   scan for the SSID, open system authentication with its strongest access point, association and
   port authorisation. `ConnectError` says which step failed. The driver reports a lost connection
   as link down, and the application joins again.
+  The driver remembers the channels where that scan found the network (up to four, the best
+  access points' first), and the next join of the same network scans those only: 0.1 s instead
+  of 4.6 s on an nRF7002-DK. If the network is no longer there, the scan of every channel
+  follows, and a join that fails forgets the channels.
 - Joining WPA2-Personal networks with `Control::join_wpa2`, with the `wpa2`
   [cargo feature](#cargo-features). The nRF70 firmware has no supplicant, so the driver runs the
   4-way handshake and the group key handshake itself, and hands the keys to the chip, which does
@@ -49,8 +53,8 @@ Working:
   throughput stays within 5% of the normal mode's.
 - Turning the chip off with `Control::power_off` (its shutdown state, after leaving the network)
   and on again with `Control::power_on`, which loads the firmware and brings the interface up in
-  0.2 s on an nRF7002-DK, and restores the power save setting. The network is then joined again,
-  which takes a scan of a few seconds.
+  0.1 to 0.2 s on an nRF7002-DK, and restores the power save setting. The network is then joined
+  again, on the channels remembered from before.
 - Ethernet frames to and from [`embassy-net`](https://embassy.dev) through the `NetDriver`: TCP,
   UDP, DHCP and ICMP work on top of it.
 - SPI bus through any [`embedded-hal-async`](https://crates.io/crates/embedded-hal-async)
