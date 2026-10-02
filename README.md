@@ -47,6 +47,10 @@ Working:
   network sleeps 93 to 96% of the time (read from the chip's status register every 7 ms), and
   the driver does not touch the bus between two interrupts. A wake-up from sleep takes 7 ms, and
   throughput stays within 5% of the normal mode's.
+- Turning the chip off with `Control::power_off` (its shutdown state, after leaving the network)
+  and on again with `Control::power_on`, which loads the firmware and brings the interface up in
+  0.2 s on an nRF7002-DK, and restores the power save setting. The network is then joined again,
+  which takes a scan of a few seconds.
 - Ethernet frames to and from [`embassy-net`](https://embassy.dev) through the `NetDriver`: TCP,
   UDP, DHCP and ICMP work on top of it.
 - SPI bus through any [`embedded-hal-async`](https://crates.io/crates/embedded-hal-async)
@@ -64,7 +68,6 @@ Not yet:
   that requires one of them is reported as `ConnectError::SecurityMismatch`.
 - Target wake time, and the current drawn in power save and low power mode, which is not
   measured yet.
-- Turning the chip off and on again without a reset of the host.
 - AP mode.
 
 ## Cargo features

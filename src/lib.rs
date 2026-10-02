@@ -51,6 +51,8 @@ const IRQ_POLL_PERIOD: Duration = Duration::from_millis(50);
 const RPU_IDLE_TIMEOUT: Duration = Duration::from_millis(10);
 /// How long the RPU gets to wake up (NCS `RPU_PS_WAKE_TIMEOUT_S`). The data sheet gives 6.7 ms.
 const RPU_WAKE_TIMEOUT: Duration = Duration::from_secs(1);
+/// How long a deauthentication frame gets to leave before the chip is turned off.
+const POWER_OFF_DELAY: Duration = Duration::from_millis(20);
 /// Scan results buffered between the runner and a [`Scanner`].
 const SCAN_RESULTS_DEPTH: usize = 32;
 /// Authentication and association each get this long (wpa_supplicant's `SME_AUTH_TIMEOUT`).
@@ -78,6 +80,8 @@ enum Request {
     LinkStatus,
     SetPowerSave(bool),
     PowerSave,
+    PowerOff,
+    PowerOn,
 }
 
 enum ScanEvent {
@@ -91,7 +95,8 @@ struct Shared {
     scan_results: Channel<NoopRawMutex, ScanEvent, SCAN_RESULTS_DEPTH>,
     connect_result: Channel<NoopRawMutex, Result<(), ConnectError>, 1>,
     link_status: Channel<NoopRawMutex, Option<LinkStatus>, 1>,
-    power_save: Channel<NoopRawMutex, PowerSave, 1>,
+    power_save: Channel<NoopRawMutex, Option<PowerSave>, 1>,
+    power_done: Channel<NoopRawMutex, (), 1>,
 }
 
 /// An SSID, up to 32 bytes.
@@ -148,6 +153,8 @@ pub enum ConnectError {
     HandshakeFailed,
     /// The connection was lost before it completed.
     Disconnected,
+    /// The chip is off: see [`Control::power_off`].
+    PoweredOff,
 }
 
 pub struct State {
@@ -165,6 +172,7 @@ impl State {
                 connect_result: Channel::new(),
                 link_status: Channel::new(),
                 power_save: Channel::new(),
+                power_done: Channel::new(),
             },
         }
     }
@@ -237,6 +245,9 @@ where
         num_commands: c::RPU_CMD_START_MAGIC,
         irq_pending_ack: false,
         bulk_pktram_reads: false,
+        config,
+        powered: false,
+        power_save: false,
         low_power: config.low_power,
         rpu_awake: true,
         rpu_idle_at: Instant::now(),
@@ -255,7 +266,7 @@ where
         tx_tokens_busy: 0,
         link_status_requested: false,
     };
-    runner.init(&config).await;
+    runner.init().await;
 
     let control = Control {
         shared: &state.shared,
@@ -308,11 +319,35 @@ impl<'a> Control<'a> {
         self.shared.requests.send(Request::SetPowerSave(enabled)).await;
     }
 
-    /// The power save settings as the RPU reports them, or `None` if it does not answer.
+    /// The power save settings as the RPU reports them, or `None` if it does not answer or is
+    /// off.
     pub async fn power_save(&mut self) -> Option<PowerSave> {
         self.shared.power_save.clear();
         self.shared.requests.send(Request::PowerSave).await;
-        with_timeout(EVENT_TIMEOUT, self.shared.power_save.receive()).await.ok()
+        with_timeout(EVENT_TIMEOUT, self.shared.power_save.receive())
+            .await
+            .ok()
+            .flatten()
+    }
+
+    /// Turns the chip off: its shutdown state, where it draws the least (1.7 µA in the data
+    /// sheet). A connection ends first, with a word to the access point, and the link goes down.
+    ///
+    /// Until [`Control::power_on`], a scan aborts, a join fails with
+    /// [`ConnectError::PoweredOff`], and the power save setting is kept for later.
+    pub async fn power_off(&mut self) {
+        self.shared.power_done.clear();
+        self.shared.requests.send(Request::PowerOff).await;
+        self.shared.power_done.receive().await;
+    }
+
+    /// Turns the chip on again after [`Control::power_off`]: loads its firmware and brings the
+    /// interface up, as [`new`] does, and restores the power save setting. The network has to be
+    /// joined again.
+    pub async fn power_on(&mut self) {
+        self.shared.power_done.clear();
+        self.shared.requests.send(Request::PowerOn).await;
+        self.shared.power_done.receive().await;
     }
 
     /// Starts an active scan of every channel. The results arrive through the returned [`Scanner`].
@@ -1145,6 +1180,12 @@ pub struct Runner<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> {
     /// Whether packet RAM reads in one SPI transaction were found to work at boot.
     bulk_pktram_reads: bool,
 
+    /// The board settings, for each time the chip is turned on.
+    config: Config,
+    /// The chip is on: not between [`Control::power_off`] and [`Control::power_on`].
+    powered: bool,
+    /// 802.11 power save as last asked for, to restore it when the chip is turned on again.
+    power_save: bool,
     /// [`Config::low_power`]: the RPU may sleep while the driver does not need the bus.
     low_power: bool,
     /// The driver asks the RPU to stay awake (it does from the wake-up of the boot on).
@@ -1209,7 +1250,15 @@ impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
 }
 
 impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT> {
-    async fn init(&mut self, config: &Config) {
+    /// Turns the chip on, loads its firmware and brings the interface up.
+    async fn init(&mut self) {
+        let config = self.config;
+        self.num_commands = c::RPU_CMD_START_MAGIC;
+        self.irq_pending_ack = false;
+        self.tx_tokens_busy = 0;
+        // The wake-up below asks the RPU to stay awake.
+        self.rpu_awake = true;
+
         info!("power on...");
         Timer::after(Duration::from_millis(10)).await;
         self.bucken.set_high().unwrap();
@@ -1291,7 +1340,7 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
         self.init_rx().await;
 
         info!("Initializing umac...");
-        self.init_umac(&rf_params, config).await;
+        self.init_umac(&rf_params, &config).await;
         self.wait_for_event(
             "INIT_DONE",
             |event| matches!(event, Event::Sys(id) if *id == c::sys_events::EVENT_INIT_DONE as u32),
@@ -1305,6 +1354,41 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
         self.state_ch
             .set_hardware_address(ch::driver::HardwareAddress::Ethernet(mac_addr));
         self.set_interface_up().await;
+        self.powered = true;
+        if self.power_save {
+            self.set_power_save(true).await;
+        }
+    }
+
+    /// Puts the chip in its shutdown state (NCS `rpu_pwroff`), after leaving the network.
+    async fn power_off(&mut self) {
+        match self.conn {
+            ConnState::Idle => {}
+            ConnState::Connected => self.leave().await,
+            _ => self.connect_failed(ConnectError::PoweredOff).await,
+        }
+        if self.scan_deadline.take().is_some() {
+            self.push_scan_event(ScanEvent::Aborted);
+        }
+        // Time for the deauthentication frame to leave.
+        Timer::after(POWER_OFF_DELAY).await;
+        self.iovdd_ctl.set_low().unwrap();
+        self.bucken.set_low().unwrap();
+        self.powered = false;
+        self.rpu_awake = false;
+        self.irq_pending_ack = false;
+        self.tx_tokens_busy = 0;
+        info!("powered off");
+    }
+
+    async fn set_power_save(&mut self, enabled: bool) {
+        let mut cmd: c::umac_cmd_set_power_save = unsafe { zeroed() };
+        cmd.info.ps_state = if enabled {
+            c::ps_state::PS_ENABLED
+        } else {
+            c::ps_state::PS_DISABLED
+        } as _;
+        self.send_cmd(cmd).await;
     }
 
     pub async fn run(&mut self) -> ! {
@@ -1318,8 +1402,8 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
         loop {
             // HOST_IRQ is high while the RPU has events that were not acknowledged. In low power
             // mode the queue is read then only: a poll would wake the RPU up each time.
-            let irq = self.host_irq.is_high().unwrap_or(true);
-            if irq || (!self.low_power && Instant::now() >= poll_at) {
+            let irq = self.powered && self.host_irq.is_high().unwrap_or(true);
+            if irq || (self.powered && !self.low_power && Instant::now() >= poll_at) {
                 let events = self.service_events(&mut buf).await;
                 if events > 0 && !irq {
                     debug!("{} events found without an interrupt", events);
@@ -1336,7 +1420,7 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
             let can_tx = self.link_up && self.tx_tokens_busy.count_ones() < data_tx_tokens;
             // What the loop has to come back for without an interrupt.
             let wake_at = [
-                (!self.low_power).then_some(poll_at),
+                (self.powered && !self.low_power).then_some(poll_at),
                 (self.low_power && self.rpu_awake).then_some(self.rpu_idle_at),
                 self.conn_deadline,
                 self.pending_keys_deadline(),
@@ -1346,10 +1430,19 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
             .min();
             let ch = &mut self.ch;
             let host_irq = &mut self.host_irq;
+            let powered = self.powered;
             let irq = async {
+                // HOST_IRQ means nothing while the chip is off.
+                let irq = async {
+                    if powered {
+                        drop(host_irq.wait_for_high().await)
+                    } else {
+                        core::future::pending().await
+                    }
+                };
                 match wake_at {
-                    Some(at) => drop(with_deadline(at, host_irq.wait_for_high()).await),
-                    None => drop(host_irq.wait_for_high().await),
+                    Some(at) => drop(with_deadline(at, irq).await),
+                    None => irq.await,
                 }
             };
             let tx = async {
@@ -1405,7 +1498,37 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
         }
     }
 
+    /// What a request gets while the chip is off.
+    async fn handle_request_off(&mut self, request: Request) {
+        match request {
+            Request::Scan => {
+                warn!("scan refused: the chip is off");
+                self.push_scan_event(ScanEvent::Aborted);
+            }
+            Request::Connect(..) => {
+                let _ = self.shared.connect_result.try_send(Err(ConnectError::PoweredOff));
+            }
+            Request::LinkStatus => {
+                let _ = self.shared.link_status.try_send(None);
+            }
+            Request::SetPowerSave(enabled) => self.power_save = enabled,
+            Request::PowerSave => {
+                let _ = self.shared.power_save.try_send(None);
+            }
+            Request::PowerOff => {
+                let _ = self.shared.power_done.try_send(());
+            }
+            Request::PowerOn => {
+                self.init().await;
+                let _ = self.shared.power_done.try_send(());
+            }
+        }
+    }
+
     async fn handle_request(&mut self, request: Request) {
+        if !self.powered {
+            return self.handle_request_off(request).await;
+        }
         let scan_running = self.scan_deadline.is_some_and(|deadline| Instant::now() < deadline);
         let connecting = !matches!(self.conn, ConnState::Idle | ConnState::Connected);
         match request {
@@ -1419,13 +1542,15 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
                 self.trigger_scan().await;
             }
             Request::SetPowerSave(enabled) => {
-                let mut cmd: c::umac_cmd_set_power_save = unsafe { zeroed() };
-                cmd.info.ps_state = if enabled {
-                    c::ps_state::PS_ENABLED
-                } else {
-                    c::ps_state::PS_DISABLED
-                } as _;
-                self.send_cmd(cmd).await;
+                self.power_save = enabled;
+                self.set_power_save(enabled).await;
+            }
+            Request::PowerOff => {
+                self.power_off().await;
+                let _ = self.shared.power_done.try_send(());
+            }
+            Request::PowerOn => {
+                let _ = self.shared.power_done.try_send(());
             }
             Request::PowerSave => {
                 let cmd: c::umac_cmd_get_power_save_info = unsafe { zeroed() };
@@ -1587,10 +1712,10 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
                     "power save: enabled {}, mode {}, extended {}, timeout {} ms, listen interval {}, exit strategy {}",
                     event.enabled, event.ps_mode, event.extended_ps, timeout, listen_interval, event.ps_exit_strategy
                 );
-                let _ = self.shared.power_save.try_send(PowerSave {
+                let _ = self.shared.power_save.try_send(Some(PowerSave {
                     enabled: event.enabled != 0,
                     timeout_ms: timeout,
-                });
+                }));
             }
             Ok(UMAC_EVENT_GET_STATION) => {
                 if self.conn == ConnState::Authorizing {
