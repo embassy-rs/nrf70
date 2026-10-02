@@ -69,6 +69,7 @@ enum Credentials {
 enum Request {
     Scan,
     Connect(Ssid, Credentials),
+    LinkStatus,
 }
 
 enum ScanEvent {
@@ -81,6 +82,7 @@ struct Shared {
     requests: Channel<NoopRawMutex, Request, 1>,
     scan_results: Channel<NoopRawMutex, ScanEvent, SCAN_RESULTS_DEPTH>,
     connect_result: Channel<NoopRawMutex, Result<(), ConnectError>, 1>,
+    link_status: Channel<NoopRawMutex, Option<LinkStatus>, 1>,
 }
 
 /// An SSID, up to 32 bytes.
@@ -152,6 +154,7 @@ impl State {
                 requests: Channel::new(),
                 scan_results: Channel::new(),
                 connect_result: Channel::new(),
+                link_status: Channel::new(),
             },
         }
     }
@@ -230,6 +233,7 @@ where
         carrier_on: false,
         link_up: false,
         tx_tokens_busy: 0,
+        link_status_requested: false,
     };
     runner.init(&config).await;
 
@@ -260,6 +264,18 @@ impl<'a> Control<'a> {
         self.shared.connect_result.clear();
         self.shared.requests.send(Request::Connect(ssid, credentials)).await;
         self.shared.connect_result.receive().await
+    }
+
+    /// The state of the link to the access point: its signal strength and the rates in use, as
+    /// the RPU reports them. `None` when the driver is not connected, or if the RPU does not
+    /// answer.
+    pub async fn link_status(&mut self) -> Option<LinkStatus> {
+        self.shared.link_status.clear();
+        self.shared.requests.send(Request::LinkStatus).await;
+        with_timeout(EVENT_TIMEOUT, self.shared.link_status.receive())
+            .await
+            .ok()
+            .flatten()
     }
 
     /// Starts an active scan of every channel. The results arrive through the returned [`Scanner`].
@@ -383,6 +399,40 @@ impl BssInfo {
                 _ => Security::Unknown(security),
             },
             beacon_interval: r.beacon_interval,
+        }
+    }
+}
+
+/// The link to the access point, as the RPU sees it: see [`Control::link_status`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq, defmt::Format)]
+pub struct LinkStatus {
+    /// The access point.
+    pub bssid: [u8; 6],
+    /// Its channel's centre frequency, in MHz.
+    pub frequency: u32,
+    /// Signal strength of the last frame received from it, in dBm.
+    pub rssi: Option<i32>,
+    /// Rate of the last frame sent to it, in kbit/s.
+    pub tx_rate: Option<u32>,
+    /// Rate of the last frame received from it, in kbit/s.
+    pub rx_rate: Option<u32>,
+}
+
+impl LinkStatus {
+    /// From the RPU's station entry for the access point `bss`.
+    fn from_station(bss: &Bss, info: &c::sta_info) -> Self {
+        let valid = info.valid_fields;
+        // The RPU gives rates in units of 100 kbit/s.
+        let rate = |field: u32, rate: c::rate_info| {
+            (valid & field != 0 && rate.valid_fields & c::RATE_INFO_BITRATE_VALID != 0).then_some(rate.bitrate * 100)
+        };
+        let signal = info.signal;
+        Self {
+            bssid: bss.bssid,
+            frequency: bss.frequency,
+            rssi: (valid & c::STA_INFO_SIGNAL_VALID != 0).then_some(signal),
+            tx_rate: rate(c::STA_INFO_TX_BITRATE_VALID, info.tx_bitrate),
+            rx_rate: rate(c::STA_INFO_RX_BITRATE_VALID, info.rx_bitrate),
         }
     }
 }
@@ -1060,6 +1110,8 @@ pub struct Runner<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> {
     link_up: bool,
     /// TX tokens handed to the RPU and not yet reported done, one bit each.
     tx_tokens_busy: u16,
+    /// [`Control::link_status`] is waiting for the RPU's answer.
+    link_status_requested: bool,
 }
 
 /// What the runner asks of `wpa2.rs`, in a build without the `wpa2` feature: nothing.
@@ -1240,6 +1292,15 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
                 self.scan_deadline = Some(Instant::now() + SCAN_TIMEOUT);
                 self.trigger_scan().await;
             }
+            Request::LinkStatus => match self.conn_bss {
+                Some(bss) if self.conn == ConnState::Connected => {
+                    self.get_station(bss).await;
+                    self.link_status_requested = true;
+                }
+                _ => {
+                    let _ = self.shared.link_status.try_send(None);
+                }
+            },
             Request::Connect(ssid, credentials) => {
                 if scan_running || connecting {
                     let _ = self.shared.connect_result.try_send(Err(ConnectError::Busy));
@@ -1381,9 +1442,15 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
                 }
             }
             Ok(UMAC_EVENT_GET_STATION) => {
-                // The answer to the query that follows the opening of the port.
                 if self.conn == ConnState::Authorizing {
+                    // The answer to the query that follows the opening of the port.
                     self.connected();
+                } else if self.link_status_requested {
+                    self.link_status_requested = false;
+                    // The station entry comes in the layout of a new station event.
+                    let info = unsliceit::<c::umac_event_new_station>(body).sta_info;
+                    let status = self.conn_bss.map(|bss| LinkStatus::from_station(&bss, &info));
+                    let _ = self.shared.link_status.try_send(status);
                 }
             }
             Ok(UMAC_EVENT_NEW_STATION) => {
@@ -1452,6 +1519,10 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
         self.carrier_on = false;
         self.conn_credentials = Credentials::Open;
         self.forget_keys();
+        if self.link_status_requested {
+            self.link_status_requested = false;
+            let _ = self.shared.link_status.try_send(None);
+        }
         self.set_link(false);
     }
 
@@ -1667,10 +1738,15 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
             return;
         };
         self.authorize().await;
+        self.get_station(bss).await;
+        self.set_conn(ConnState::Authorizing, EVENT_TIMEOUT);
+    }
+
+    /// Asks the RPU for its station entry of the AP. The answer is `UMAC_EVENT_GET_STATION`.
+    async fn get_station(&mut self, bss: Bss) {
         let mut cmd: c::umac_cmd_get_sta = unsafe { zeroed() };
         cmd.info.mac_addr = bss.bssid;
         self.send_cmd(cmd).await;
-        self.set_conn(ConnState::Authorizing, EVENT_TIMEOUT);
     }
 
     /// Reports the link up: the port is open.
@@ -2902,6 +2978,37 @@ mod tests {
             #[cfg(feature = "wpa2")]
             rsne: None,
         }
+    }
+
+    #[test]
+    fn link_status_is_read_from_the_station_entry() {
+        let ap = Bss {
+            bssid: [1, 2, 3, 4, 5, 6],
+            ..bss(5200, -60)
+        };
+        let mut info: c::sta_info = unsafe { zeroed() };
+
+        // Nothing marked valid: only what the driver knows by itself.
+        let status = LinkStatus::from_station(&ap, &info);
+        assert_eq!(status.bssid, [1, 2, 3, 4, 5, 6]);
+        assert_eq!(status.frequency, 5200);
+        assert_eq!((status.rssi, status.tx_rate, status.rx_rate), (None, None, None));
+
+        // 65 Mbit/s out, 58.5 Mbit/s in, as the RPU gives them: in units of 100 kbit/s.
+        info.valid_fields = c::STA_INFO_SIGNAL_VALID | c::STA_INFO_TX_BITRATE_VALID | c::STA_INFO_RX_BITRATE_VALID;
+        info.signal = -58;
+        info.tx_bitrate.valid_fields = c::RATE_INFO_BITRATE_VALID;
+        info.tx_bitrate.bitrate = 650;
+        info.rx_bitrate.valid_fields = c::RATE_INFO_BITRATE_VALID;
+        info.rx_bitrate.bitrate = 585;
+        let status = LinkStatus::from_station(&ap, &info);
+        assert_eq!(status.rssi, Some(-58));
+        assert_eq!(status.tx_rate, Some(65_000));
+        assert_eq!(status.rx_rate, Some(58_500));
+
+        // A rate the RPU marks valid in the station entry but not in the rate itself.
+        info.rx_bitrate.valid_fields = 0;
+        assert_eq!(LinkStatus::from_station(&ap, &info).rx_rate, None);
     }
 
     #[test]

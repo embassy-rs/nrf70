@@ -137,6 +137,9 @@ async fn main(spawner: Spawner) {
             continue;
         }
         info!("connected");
+        if let Some(link) = control.link_status().await {
+            info!("link: {}", link);
+        }
         // join_wpa2_psk returns when the keys are in and the driver has the link up; embassy-net
         // sees it on its next poll.
         stack.wait_link_up().await;
