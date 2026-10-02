@@ -70,6 +70,8 @@ enum Request {
     Scan,
     Connect(Ssid, Credentials),
     LinkStatus,
+    SetPowerSave(bool),
+    PowerSave,
 }
 
 enum ScanEvent {
@@ -83,6 +85,7 @@ struct Shared {
     scan_results: Channel<NoopRawMutex, ScanEvent, SCAN_RESULTS_DEPTH>,
     connect_result: Channel<NoopRawMutex, Result<(), ConnectError>, 1>,
     link_status: Channel<NoopRawMutex, Option<LinkStatus>, 1>,
+    power_save: Channel<NoopRawMutex, PowerSave, 1>,
 }
 
 /// An SSID, up to 32 bytes.
@@ -155,6 +158,7 @@ impl State {
                 scan_results: Channel::new(),
                 connect_result: Channel::new(),
                 link_status: Channel::new(),
+                power_save: Channel::new(),
             },
         }
     }
@@ -276,6 +280,23 @@ impl<'a> Control<'a> {
             .await
             .ok()
             .flatten()
+    }
+
+    /// Turns 802.11 power save on or off. It is off until asked for.
+    ///
+    /// With it on, the RPU tells the access point that it dozes, sleeps between beacons, and
+    /// collects the frames the access point kept for it when a beacon announces some. The radio
+    /// then draws a fraction of what it does listening all the time, and a frame for the station
+    /// may wait at the access point until the next beacon the RPU wakes for.
+    pub async fn set_power_save(&mut self, enabled: bool) {
+        self.shared.requests.send(Request::SetPowerSave(enabled)).await;
+    }
+
+    /// The power save settings as the RPU reports them, or `None` if it does not answer.
+    pub async fn power_save(&mut self) -> Option<PowerSave> {
+        self.shared.power_save.clear();
+        self.shared.requests.send(Request::PowerSave).await;
+        with_timeout(EVENT_TIMEOUT, self.shared.power_save.receive()).await.ok()
     }
 
     /// Starts an active scan of every channel. The results arrive through the returned [`Scanner`].
@@ -440,6 +461,15 @@ impl LinkStatus {
     }
 }
 
+/// The 802.11 power save settings of the RPU: see [`Control::power_save`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq, defmt::Format)]
+pub struct PowerSave {
+    /// Whether power save is on.
+    pub enabled: bool,
+    /// How long the RPU stays awake after the last frame before it dozes again, in milliseconds.
+    pub timeout_ms: u32,
+}
+
 trait Command {
     const MESSAGE_TYPE: c::host_rpu_msg_type;
     fn fill(&mut self);
@@ -489,6 +519,16 @@ impl_cmd!(umac, c::umac_cmd_assoc, c::umac_commands::UMAC_CMD_ASSOCIATE);
 impl_cmd!(umac, c::umac_cmd_disconn, c::umac_commands::UMAC_CMD_DEAUTHENTICATE);
 impl_cmd!(umac, c::umac_cmd_chg_sta, c::umac_commands::UMAC_CMD_SET_STATION);
 impl_cmd!(umac, c::umac_cmd_get_sta, c::umac_commands::UMAC_CMD_GET_STATION);
+impl_cmd!(
+    umac,
+    c::umac_cmd_set_power_save,
+    c::umac_commands::UMAC_CMD_SET_POWER_SAVE
+);
+impl_cmd!(
+    umac,
+    c::umac_cmd_get_power_save_info,
+    c::umac_commands::UMAC_CMD_GET_POWER_SAVE_INFO
+);
 impl_cmd!(umac, c::umac_cmd_key, c::umac_commands::UMAC_CMD_NEW_KEY);
 impl_cmd!(umac, c::umac_cmd_set_key, c::umac_commands::UMAC_CMD_SET_KEY);
 impl_cmd!(
@@ -1295,6 +1335,19 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
                 self.scan_deadline = Some(Instant::now() + SCAN_TIMEOUT);
                 self.trigger_scan().await;
             }
+            Request::SetPowerSave(enabled) => {
+                let mut cmd: c::umac_cmd_set_power_save = unsafe { zeroed() };
+                cmd.info.ps_state = if enabled {
+                    c::ps_state::PS_ENABLED
+                } else {
+                    c::ps_state::PS_DISABLED
+                } as _;
+                self.send_cmd(cmd).await;
+            }
+            Request::PowerSave => {
+                let cmd: c::umac_cmd_get_power_save_info = unsafe { zeroed() };
+                self.send_cmd(cmd).await;
+            }
             Request::LinkStatus => match self.conn_bss {
                 Some(bss) if self.conn == ConnState::Connected => {
                     self.get_station(bss).await;
@@ -1443,6 +1496,18 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
                         None => self.connect_failed(ConnectError::Timeout).await,
                     }
                 }
+            }
+            Ok(UMAC_EVENT_GET_POWER_SAVE_INFO) => {
+                let event: &c::umac_event_power_save_info = unsliceit(body);
+                let (timeout, listen_interval) = (event.ps_timeout, event.listen_interval);
+                debug!(
+                    "power save: enabled {}, mode {}, extended {}, timeout {} ms, listen interval {}, exit strategy {}",
+                    event.enabled, event.ps_mode, event.extended_ps, timeout, listen_interval, event.ps_exit_strategy
+                );
+                let _ = self.shared.power_save.try_send(PowerSave {
+                    enabled: event.enabled != 0,
+                    timeout_ms: timeout,
+                });
             }
             Ok(UMAC_EVENT_GET_STATION) => {
                 if self.conn == ConnState::Authorizing {

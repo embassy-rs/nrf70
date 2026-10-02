@@ -36,6 +36,11 @@ Working:
   nRF7002-DK too, against an access point that changes its group key every 30 s.
 - The state of the link with `Control::link_status`: the access point, its channel, the signal
   strength and the rates in use, as the chip reports them.
+- 802.11 power save with `Control::set_power_save`, off until asked for: the chip sleeps between
+  the access point's beacons and fetches what was kept for it. Traffic towards an idle station
+  then waits for a beacon (a ping to an nRF7002-DK is answered in 50 to 130 ms on average instead
+  of 4 ms), and throughput is unchanged, as the chip stays awake while frames flow.
+  `Control::power_save` reads the setting back.
 - Ethernet frames to and from [`embassy-net`](https://embassy.dev) through the `NetDriver`: TCP,
   UDP, DHCP and ICMP work on top of it.
 - SPI bus through any [`embedded-hal-async`](https://crates.io/crates/embedded-hal-async)
@@ -50,7 +55,10 @@ Not yet:
 - Beyond WPA2-Personal with CCMP, which works (see above): WPA3 (SAE), management frame protection,
   and access points that still use TKIP for the group key (WPA/WPA2 mixed mode). An access point
   that requires one of them is reported as `ConnectError::SecurityMismatch`.
-- AP mode, low power mode.
+- The chip's own sleep state between bus accesses, and target wake time: the host keeps the chip's
+  bus interface awake, so 802.11 power save alone does not reach the datasheet's lowest currents.
+- Turning the chip off and on again without a reset of the host.
+- AP mode.
 
 ## Cargo features
 
