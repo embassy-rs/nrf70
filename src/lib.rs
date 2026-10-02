@@ -2115,7 +2115,11 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
             rx_buf_pools: [rx_buf_pool; c::MAX_NUM_OF_RX_QUEUES as usize],
             data_config_params: c::data_config_params {
                 rate_protection_type: 0,
-                aggregation: 1,
+                // No A-MPDU aggregation. The driver hands the RPU one frame per token, so there
+                // is nothing to aggregate, and with it on the RPU gives up on a frame after a few
+                // tries: 0.2% of them lost on a 5 GHz link, 1.5% on a busy 2.4 GHz one, each of
+                // which stalls a TCP sender.
+                aggregation: 0,
                 wmm: 1,
                 max_num_tx_agg_sessions: 4,
                 max_num_rx_agg_sessions: 8,
