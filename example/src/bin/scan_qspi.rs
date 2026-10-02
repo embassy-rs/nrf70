@@ -62,6 +62,7 @@ const WIFI_CONFIG: nrf70::Config = nrf70::Config {
         mcs7_5g_high: 13,
     },
     country_code: *b"00",
+    low_power: false,
 };
 
 /// SCK = 96 MHz / (SCKFREQ + 1) with HFCLK192M undivided: 3 gives 24 MHz, the SDK's frequency for

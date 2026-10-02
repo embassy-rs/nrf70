@@ -46,6 +46,11 @@ const SCAN_TIMEOUT: Duration = Duration::from_secs(30);
 /// The RPU raises HOST_IRQ when it has events. The event queue is read this often as well, in
 /// case an interrupt goes missing.
 const IRQ_POLL_PERIOD: Duration = Duration::from_millis(50);
+/// In low power mode, how long after the last bus access the RPU may sleep again (NCS
+/// `NRF70_RPU_PS_IDLE_TIMEOUT_MS`).
+const RPU_IDLE_TIMEOUT: Duration = Duration::from_millis(10);
+/// How long the RPU gets to wake up (NCS `RPU_PS_WAKE_TIMEOUT_S`). The data sheet gives 6.7 ms.
+const RPU_WAKE_TIMEOUT: Duration = Duration::from_secs(1);
 /// Scan results buffered between the runner and a [`Scanner`].
 const SCAN_RESULTS_DEPTH: usize = 32;
 /// Authentication and association each get this long (wpa_supplicant's `SME_AUTH_TIMEOUT`).
@@ -181,6 +186,13 @@ pub struct Config {
     pub max_tx_power: TxPowerCeiling,
     /// ISO 3166-1 alpha-2 country code of the regulatory domain, `*b"00"` for the world domain.
     pub country_code: [u8; 2],
+    /// Lets the RPU sleep whenever it has nothing to do (the SDK's low power mode). The driver
+    /// then wakes it up before each bus access, which costs a few milliseconds after an idle time,
+    /// and lets it sleep again once the bus has been idle for 10 ms.
+    ///
+    /// The RPU only finds time to sleep while it does not have to listen: with 802.11 power save
+    /// on ([`Control::set_power_save`]), or while not connected.
+    pub low_power: bool,
 }
 
 /// Highest TX power per band and modulation, in dBm (the devicetree's `wifi-max-tx-pwr-*`).
@@ -225,6 +237,9 @@ where
         num_commands: c::RPU_CMD_START_MAGIC,
         irq_pending_ack: false,
         bulk_pktram_reads: false,
+        low_power: config.low_power,
+        rpu_awake: true,
+        rpu_idle_at: Instant::now(),
         scan_deadline: None,
         conn: ConnState::Idle,
         conn_ssid: Ssid { len: 0, bytes: [0; 32] },
@@ -1130,6 +1145,13 @@ pub struct Runner<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> {
     /// Whether packet RAM reads in one SPI transaction were found to work at boot.
     bulk_pktram_reads: bool,
 
+    /// [`Config::low_power`]: the RPU may sleep while the driver does not need the bus.
+    low_power: bool,
+    /// The driver asks the RPU to stay awake (it does from the wake-up of the boot on).
+    rpu_awake: bool,
+    /// In low power mode, when the RPU may sleep again: some time after the last bus access.
+    rpu_idle_at: Instant,
+
     /// Set while a display scan is running, so a lost one does not block the next.
     scan_deadline: Option<Instant>,
 
@@ -1178,6 +1200,10 @@ impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
     async fn frame_sent(&mut self, _token: usize) {}
 
     async fn check_pending_keys(&mut self) {}
+
+    fn pending_keys_deadline(&self) -> Option<Instant> {
+        None
+    }
 
     fn forget_keys(&mut self) {}
 }
@@ -1290,9 +1316,10 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
         let mut poll_at = Instant::now();
 
         loop {
-            // HOST_IRQ is high while the RPU has events that were not acknowledged.
+            // HOST_IRQ is high while the RPU has events that were not acknowledged. In low power
+            // mode the queue is read then only: a poll would wake the RPU up each time.
             let irq = self.host_irq.is_high().unwrap_or(true);
-            if irq || Instant::now() >= poll_at {
+            if irq || (!self.low_power && Instant::now() >= poll_at) {
                 let events = self.service_events(&mut buf).await;
                 if events > 0 && !irq {
                     debug!("{} events found without an interrupt", events);
@@ -1301,13 +1328,30 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
             }
             self.check_conn_timeout().await;
             self.check_pending_keys().await;
+            self.rpu_ps_sleep().await;
 
             let shared = self.shared;
             // With WPA2, one token stays free for the supplicant.
             let data_tx_tokens = MAX_TX_TOKENS as u32 - Self::EAPOL_TX_TOKENS;
             let can_tx = self.link_up && self.tx_tokens_busy.count_ones() < data_tx_tokens;
+            // What the loop has to come back for without an interrupt.
+            let wake_at = [
+                (!self.low_power).then_some(poll_at),
+                (self.low_power && self.rpu_awake).then_some(self.rpu_idle_at),
+                self.conn_deadline,
+                self.pending_keys_deadline(),
+            ]
+            .into_iter()
+            .flatten()
+            .min();
             let ch = &mut self.ch;
-            let irq = with_deadline(poll_at, self.host_irq.wait_for_high());
+            let host_irq = &mut self.host_irq;
+            let irq = async {
+                match wake_at {
+                    Some(at) => drop(with_deadline(at, host_irq.wait_for_high()).await),
+                    None => drop(host_irq.wait_for_high().await),
+                }
+            };
             let tx = async {
                 if can_tx {
                     ch.tx_buf().await
@@ -2311,7 +2355,7 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
     }
 
     /// Sends the system init command (NCS `umac_cmd_sys_init`), with the SDK's defaults for a
-    /// station without low power mode.
+    /// station.
     async fn init_umac(&mut self, rf_params: &c::phy_rf_params, config: &Config) {
         let mut rf_params_bytes = [0u8; c::RF_PARAMS_SIZE as usize];
         rf_params_bytes.copy_from_slice(sliceit(rf_params));
@@ -2324,7 +2368,11 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
             sys_head: unsafe { zeroed() },
             wdev_id: 0,
             sys_params: c::sys_params {
-                sleep_enable: 0, // TODO for low power
+                sleep_enable: if config.low_power {
+                    c::HW_SLEEP_ENABLE
+                } else {
+                    c::SLEEP_DISABLE
+                },
                 hw_bringup_time: c::HW_DELAY,
                 sw_bringup_time: c::SW_DELAY,
                 bcn_time_out: c::BCN_TIMEOUT,
@@ -2371,7 +2419,7 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
             // NCS CONFIG_NRF_WIFI_AP_DEAD_DETECT_TIMEOUT, in seconds.
             discon_timeout: 20,
             ps_exit_strategy: c::ps_exit_strategy::EVERY_TIM as _,
-            // The watchdog serves the SDK's RPU recovery, which comes with low power mode: off.
+            // The watchdog serves the SDK's RPU recovery, which the driver does not have: off.
             watchdog_timer_val: 0xFFFFFF,
             keep_alive_enable: 0,
             keep_alive_period: 0,
@@ -2605,20 +2653,43 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
         self.rpu_wait_until_awake().await;
     }
 
-    #[allow(unused)]
-    async fn rpu_sleep(&mut self) {
-        self.bus.write_sr2(0).await;
+    /// Makes sure the RPU is awake before a bus access, in low power mode (NCS
+    /// `hal_rpu_ps_wake`). Without it the wake-up request of the boot stays for good.
+    async fn rpu_ps_wake(&mut self) {
+        if !self.low_power {
+            return;
+        }
+        if !self.rpu_awake {
+            const AWAKE: u8 = SR1_RPU_AWAKE | SR1_RPU_READY;
+            self.bus.write_sr2(SR2_RPU_WAKEUP_REQ).await;
+            // NCS waits before it reads the state, "to avoid a race condition in the RPU".
+            Timer::after(Duration::from_millis(1)).await;
+            let deadline = Instant::now() + RPU_WAKE_TIMEOUT;
+            while self.bus.read_sr1().await & AWAKE != AWAKE {
+                if Instant::now() >= deadline {
+                    panic!("the RPU did not wake up");
+                }
+                Timer::after(Duration::from_millis(1)).await;
+            }
+            self.rpu_awake = true;
+        }
+        self.rpu_idle_at = Instant::now() + RPU_IDLE_TIMEOUT;
     }
 
-    #[allow(unused)]
-    async fn rpu_sleep_status(&mut self) -> u8 {
-        self.bus.read_sr1().await
+    /// Lets the RPU sleep once the bus has been idle for long enough, in low power mode (NCS
+    /// `hal_rpu_ps_sleep`).
+    async fn rpu_ps_sleep(&mut self) {
+        if self.low_power && self.rpu_awake && Instant::now() >= self.rpu_idle_at {
+            self.bus.write_sr2(0).await;
+            self.rpu_awake = false;
+        }
     }
 
     async fn raw_read32_inner(&mut self, mem: &MemoryRegion, offs: u32) -> u32 {
         assert!(mem.start + offs + 4 <= mem.end);
         let lat = mem.latency as usize;
 
+        self.rpu_ps_wake().await;
         let mut buf = [0u32; 3];
         self.bus.read(mem.start + offs, &mut buf[..lat + 1]).await;
         buf[lat]
@@ -2635,6 +2706,7 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
 
         if mem.latency == 0 && self.bulk_pktram_reads {
             // One transaction with the address incrementing, as NCS reads packet RAM.
+            self.rpu_ps_wake().await;
             self.bus.read((mem.start + offs) | ADDR_INCREMENT, buf).await;
         } else {
             for (i, val) in buf.iter_mut().enumerate() {
@@ -2660,6 +2732,7 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
             buf.len() * 4,
             slice8(buf)
         );
+        self.rpu_ps_wake().await;
         self.bus.write(mem.start + offs, buf).await;
     }
 

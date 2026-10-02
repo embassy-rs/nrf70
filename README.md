@@ -41,6 +41,12 @@ Working:
   then waits for a beacon (a ping to an nRF7002-DK is answered in 50 to 130 ms on average instead
   of 4 ms), and throughput is unchanged, as the chip stays awake while frames flow.
   `Control::power_save` reads the setting back.
+- Low power mode with `Config::low_power`, as in the nRF Connect SDK: the chip may sleep whenever
+  it has nothing to do, and the driver wakes it up before each bus access and leaves it alone
+  once the bus has been idle for 10 ms. Together with power save, an idle nRF7002-DK on a 5 GHz
+  network sleeps 93 to 96% of the time (read from the chip's status register every 7 ms), and
+  the driver does not touch the bus between two interrupts. A wake-up from sleep takes 7 ms, and
+  throughput stays within 5% of the normal mode's.
 - Ethernet frames to and from [`embassy-net`](https://embassy.dev) through the `NetDriver`: TCP,
   UDP, DHCP and ICMP work on top of it.
 - SPI bus through any [`embedded-hal-async`](https://crates.io/crates/embedded-hal-async)
@@ -48,15 +54,16 @@ Working:
 - Any other bus through the `Bus` trait. The `scan_qspi` example implements it on the nRF5340's
   QSPI peripheral in quad mode, as the nRF Connect SDK drives the nRF7002-DK: it loads the
   firmware in 19 ms, against 103 ms over SPI at 8 MHz.
-- Using the host IRQ for device events, with a slow poll as a fallback.
+- Using the host IRQ for device events, with a slow poll as a fallback (not in low power mode,
+  where it would wake the chip up).
 
 Not yet:
 
 - Beyond WPA2-Personal with CCMP, which works (see above): WPA3 (SAE), management frame protection,
   and access points that still use TKIP for the group key (WPA/WPA2 mixed mode). An access point
   that requires one of them is reported as `ConnectError::SecurityMismatch`.
-- The chip's own sleep state between bus accesses, and target wake time: the host keeps the chip's
-  bus interface awake, so 802.11 power save alone does not reach the datasheet's lowest currents.
+- Target wake time, and the current drawn in power save and low power mode, which is not
+  measured yet.
 - Turning the chip off and on again without a reset of the host.
 - AP mode.
 

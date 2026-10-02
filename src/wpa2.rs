@@ -203,6 +203,11 @@ impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
         }
     }
 
+    /// When [`Self::check_pending_keys`] has to run at the latest.
+    pub(super) fn pending_keys_deadline(&self) -> Option<Instant> {
+        self.wpa2.pending_keys.as_ref().map(|keys| keys.deadline)
+    }
+
     /// The association is over: its keys and its supplicant go with it.
     pub(super) fn forget_keys(&mut self) {
         self.wpa2.supplicant = None;

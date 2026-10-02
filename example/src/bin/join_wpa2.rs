@@ -65,6 +65,7 @@ const WIFI_CONFIG: nrf70::Config = nrf70::Config {
         mcs7_5g_high: 13,
     },
     country_code: *b"00",
+    low_power: false,
 };
 
 type Bus = nrf70::SpiBus<ExclusiveDevice<Spim<'static>, Output<'static>, Delay>>;
