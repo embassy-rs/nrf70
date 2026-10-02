@@ -986,6 +986,18 @@ struct Bss {
     rsne: Option<supplicant::Rsne>,
 }
 
+/// How much weaker a 5 GHz access point may be than a 2.4 GHz one of the same network and still
+/// be the one to join.
+const BAND_5GHZ_BONUS_DB: i32 = 10;
+
+/// Whether `candidate` is a better access point to join than `best`: the stronger one, a 5 GHz
+/// one counting for [`BAND_5GHZ_BONUS_DB`] more than its signal. wpa_supplicant ranks by estimated
+/// throughput, which favours 5 GHz in the same way: its channels are wider and less crowded.
+fn better_bss(candidate: &Bss, best: &Bss) -> bool {
+    let rank = |bss: &Bss| bss.signal_dbm + if bss.frequency >= 5000 { BAND_5GHZ_BONUS_DB } else { 0 };
+    rank(candidate) > rank(best)
+}
+
 /// Progress of joining a network (NCS leaves this to wpa_supplicant's SME).
 #[derive(Clone, Copy, PartialEq, Eq, Debug, defmt::Format)]
 enum ConnState {
@@ -1558,7 +1570,7 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
             );
             if !suitable {
                 self.conn_security_mismatch = true;
-            } else if self.conn_bss.is_none_or(|best| bss.signal_dbm > best.signal_dbm) {
+            } else if self.conn_bss.is_none_or(|best| better_bss(&bss, &best)) {
                 self.conn_bss = Some(bss);
             }
         }
@@ -2850,6 +2862,33 @@ mod tests {
         let frame = from_ds_frame(&[0; 100]);
         let mut out = [0u8; 64];
         assert_eq!(rx_to_ethernet(&frame, c::PKT_TYPE_MPDU, 24, &mut out), None);
+    }
+
+    fn bss(frequency: u32, signal_dbm: i32) -> Bss {
+        Bss {
+            bssid: [0; 6],
+            frequency,
+            capability: 0,
+            beacon_interval: 100,
+            tsf: 0,
+            signal_dbm,
+            #[cfg(feature = "wpa2")]
+            rsne: None,
+        }
+    }
+
+    #[test]
+    fn the_stronger_access_point_is_better_and_5_ghz_counts_for_more() {
+        // Same band: the stronger one.
+        assert!(better_bss(&bss(2412, -50), &bss(2462, -60)));
+        assert!(!better_bss(&bss(2412, -60), &bss(2462, -50)));
+        assert!(!better_bss(&bss(5200, -60), &bss(5745, -60)));
+
+        // 5 GHz wins when a little weaker, and loses when much weaker.
+        assert!(better_bss(&bss(5200, -60), &bss(2412, -55)));
+        assert!(!better_bss(&bss(2412, -55), &bss(5200, -60)));
+        assert!(!better_bss(&bss(5200, -70), &bss(2412, -55)));
+        assert!(better_bss(&bss(2412, -55), &bss(5200, -70)));
     }
 
     #[test]
