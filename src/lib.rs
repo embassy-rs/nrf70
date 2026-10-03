@@ -53,6 +53,8 @@ const RPU_IDLE_TIMEOUT: Duration = Duration::from_millis(10);
 const RPU_WAKE_TIMEOUT: Duration = Duration::from_secs(1);
 /// How long a deauthentication frame gets to leave before the chip is turned off.
 const POWER_OFF_DELAY: Duration = Duration::from_millis(20);
+/// How many access points of a network a join tries in turn, best first.
+const CANDIDATES: usize = 4;
 /// How many channels of a network are remembered for the next join.
 const KNOWN_CHANNELS: usize = 4;
 /// A scan of the remembered channels takes 50 ms per channel, 150 ms where the RPU may only
@@ -262,6 +264,7 @@ where
         conn_credentials: Credentials::Open,
         conn_bss: None,
         conn_security_mismatch: false,
+        conn_candidates: Candidates::new(),
         conn_deadline: None,
         known: None,
         known_scan: false,
@@ -742,6 +745,19 @@ fn mlme_status(event: &c::umac_event_mlme, offset: usize) -> Option<u16> {
     ]))
 }
 
+/// The BSSID of the management frame in a MLME event: its third address.
+fn mlme_bssid(event: &c::umac_event_mlme) -> Option<[u8; 6]> {
+    let frame = event.frame;
+    if (frame.frame_len as usize) < 22 {
+        return None;
+    }
+    let mut bssid = [0; 6];
+    for (to, from) in bssid.iter_mut().zip(&frame.frame[16..22]) {
+        *to = *from as u8;
+    }
+    Some(bssid)
+}
+
 /// Packet RAM address of RX buffer `desc_id`. The RX buffers follow the TX area.
 fn rx_buf_addr(desc_id: usize) -> u32 {
     c::RPU_MEM_PKT_BASE + (TX_TOTAL_SIZE + RX_BUF_SIZE * desc_id) as u32
@@ -1153,6 +1169,50 @@ struct Bss {
     rsne: Option<supplicant::Rsne>,
 }
 
+/// The access points of the network that a connect scan found, best first. A join tries the next
+/// one when one refuses the station: an access point that steers its stations to its other band
+/// does that.
+#[derive(Clone, Copy)]
+struct Candidates {
+    list: [Option<Bss>; CANDIDATES],
+}
+
+impl Candidates {
+    const fn new() -> Self {
+        Self {
+            list: [None; CANDIDATES],
+        }
+    }
+
+    /// Puts `bss` in its place, keeping the best ones. An access point reported twice keeps its
+    /// better report.
+    fn add(&mut self, bss: Bss) {
+        let same = |listed: &Option<Bss>| listed.is_some_and(|listed| listed.bssid == bss.bssid);
+        if let Some(i) = self.list.iter().position(same) {
+            if self.list[i].is_some_and(|listed| !better_bss(&bss, &listed)) {
+                return;
+            }
+            self.list[i..].rotate_left(1);
+            self.list[CANDIDATES - 1] = None;
+        }
+        let place = self
+            .list
+            .iter()
+            .position(|listed| listed.is_none_or(|listed| better_bss(&bss, &listed)));
+        if let Some(place) = place {
+            self.list[place..].rotate_right(1);
+            self.list[place] = Some(bss);
+        }
+    }
+
+    /// The best access point left, which leaves the list.
+    fn take_best(&mut self) -> Option<Bss> {
+        let best = self.list[0].take();
+        self.list.rotate_left(1);
+        best
+    }
+}
+
 /// The channels where a scan of every channel found a network, for the next join to scan only
 /// these: a fraction of a second instead of several.
 #[derive(Clone, Copy)]
@@ -1279,6 +1339,8 @@ pub struct Runner<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> {
     /// The connect scan found the SSID on an access point that does not offer the security asked
     /// for.
     conn_security_mismatch: bool,
+    /// The access points of the network not tried yet.
+    conn_candidates: Candidates,
     /// When the current connection step times out.
     conn_deadline: Option<Instant>,
     /// Where the last scan of every channel found the network that was joined then.
@@ -1655,6 +1717,7 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
                 self.conn_ssid = ssid;
                 self.conn_credentials = credentials;
                 self.conn_bss = None;
+                self.conn_candidates = Candidates::new();
                 self.conn_security_mismatch = false;
                 // Where the network was last time first, if this is the one joined then.
                 match self.known {
@@ -1726,8 +1789,12 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
             }
             Ok(c::umac_data_commands::CMD_CARRIER_OFF) => {
                 debug!("carrier off");
-                self.carrier_on = false;
-                self.connection_lost().await;
+                // It names no access point: one that was left for the next one of the network
+                // reports it after the next one is in hand, when the carrier is off already.
+                if self.carrier_on {
+                    self.carrier_on = false;
+                    self.connection_lost().await;
+                }
             }
             _ => debug!("unhandled data event {}", id),
         }
@@ -1769,7 +1836,7 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
             }
             Ok(UMAC_EVENT_SCAN_RESULT) => self.handle_scan_result(body).await,
             Ok(UMAC_EVENT_AUTHENTICATE) => {
-                if self.conn == ConnState::Authenticating {
+                if self.conn == ConnState::Authenticating && self.is_conn_bss(mlme_bssid(unsliceit(body))) {
                     // Authentication frame: header, then algorithm, transaction and status.
                     match mlme_status(unsliceit(body), 28) {
                         Some(0) => self.associate().await,
@@ -1779,7 +1846,7 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
                 }
             }
             Ok(UMAC_EVENT_ASSOCIATE) => {
-                if self.conn == ConnState::Associating {
+                if self.conn == ConnState::Associating && self.is_conn_bss(mlme_bssid(unsliceit(body))) {
                     // Association response: header, then capabilities and status.
                     match mlme_status(unsliceit(body), 26) {
                         Some(0) => {
@@ -1817,14 +1884,20 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
                 }
             }
             Ok(UMAC_EVENT_NEW_STATION) => {
-                debug!("AP added as peer");
-                self.peer_known = true;
-                self.check_associated().await;
+                let peer = unsliceit::<c::umac_event_new_station>(body).mac_addr;
+                debug!("AP {:02x} added as peer", peer);
+                if self.is_conn_bss(Some(peer)) {
+                    self.peer_known = true;
+                    self.check_associated().await;
+                }
             }
             Ok(UMAC_EVENT_DEL_STATION) => {
-                debug!("AP removed as peer");
-                self.peer_known = false;
-                self.connection_lost().await;
+                let peer = unsliceit::<c::umac_event_new_station>(body).mac_addr;
+                debug!("AP {:02x} removed as peer", peer);
+                if self.is_conn_bss(Some(peer)) {
+                    self.peer_known = false;
+                    self.connection_lost().await;
+                }
             }
             Ok(
                 UMAC_EVENT_DEAUTHENTICATE
@@ -1833,9 +1906,12 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
                 | UMAC_EVENT_UNPROT_DISASSOCIATE,
             ) => {
                 // The reason code follows the 24-byte header of the frame.
-                let reason = mlme_status(unsliceit(body), 24);
-                debug!("disconnect event {}, reason {}", id, reason);
-                self.connection_lost().await;
+                let event: &c::umac_event_mlme = unsliceit(body);
+                let (reason, bssid) = (mlme_status(event, 24), mlme_bssid(event));
+                debug!("disconnect event {} from {:02x}, reason {}", id, bssid, reason);
+                if self.is_conn_bss(bssid) {
+                    self.connection_lost().await;
+                }
             }
             Ok(UMAC_EVENT_IFFLAGS_STATUS) => {
                 let status = unsliceit::<c::umac_event_vif_state>(body).status;
@@ -1889,17 +1965,39 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
         self.set_link(false);
     }
 
-    /// Gives up on joining: leaves the AP if already authenticated, and reports `error`.
+    /// Gives up on joining: leaves the AP if already authenticated, and reports `error`. When the
+    /// access point refused the station or did not answer, the next one of the network is tried
+    /// first, if there is one.
     async fn connect_failed(&mut self, error: ConnectError) {
         warn!("connection failed: {}", error);
-        // The next try looks at every channel again.
-        self.known = None;
+        let refused = matches!(
+            error,
+            ConnectError::AuthenticationRejected(_)
+                | ConnectError::AssociationRejected(_)
+                | ConnectError::Timeout
+                | ConnectError::Disconnected
+        ) && matches!(
+            self.conn,
+            ConnState::Authenticating | ConnState::Associating | ConnState::Associated
+        );
         if matches!(
             self.conn,
             ConnState::Associating | ConnState::Associated | ConnState::Handshake | ConnState::Authorizing
         ) {
             self.deauthenticate().await;
         }
+        if refused {
+            if let Some(bss) = self.conn_candidates.take_best() {
+                info!("trying the next access point of the network");
+                self.peer_known = false;
+                self.carrier_on = false;
+                self.forget_keys();
+                self.authenticate(bss).await;
+                return;
+            }
+        }
+        // The next try looks at every channel again.
+        self.known = None;
         self.reset_conn();
         let _ = self.shared.connect_result.try_send(Err(error));
     }
@@ -1916,6 +2014,22 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
             ConnState::Handshake => self.connect_failed(ConnectError::HandshakeFailed).await,
             _ => self.connect_failed(ConnectError::Disconnected).await,
         }
+    }
+
+    /// Whether an event about `bssid` concerns the access point being joined. One left for the
+    /// next access point of the network still reports its end, after the next one is in hand.
+    fn is_conn_bss(&self, bssid: Option<[u8; 6]>) -> bool {
+        let current = match (self.conn_bss, bssid) {
+            (Some(bss), Some(bssid)) => bss.bssid == bssid,
+            // Nothing being joined.
+            (None, _) => false,
+            // The event does not say: a timed out request.
+            (Some(_), None) => true,
+        };
+        if !current {
+            debug!("event ignored: not about the access point being joined");
+        }
+        current
     }
 
     /// Leaves the current network.
@@ -1949,8 +2063,7 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
     }
 
     /// Scans for the target SSID so that the RPU knows its access points before authentication
-    /// (NCS `nrf_wifi_wpa_supp_scan2`).
-    /// With `known`, on its channels only.
+    /// (NCS `nrf_wifi_wpa_supp_scan2`), on the channels of `known` only if given.
     async fn trigger_connect_scan(&mut self, known: Option<&KnownNetwork>) {
         let mut cmd: c::umac_cmd_scan = unsafe { zeroed() };
         cmd.info.scan_reason = c::scan_reason::SCAN_CONNECT as _;
@@ -1971,13 +2084,14 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
         self.known_scan = false;
         self.known = Some(KnownNetwork::new(self.conn_ssid));
         self.conn_bss = None;
+        self.conn_candidates = Candidates::new();
         self.conn_security_mismatch = false;
         self.set_conn(ConnState::Scanning, SCAN_TIMEOUT);
         self.trigger_connect_scan(None).await;
     }
 
-    /// Keeps the strongest access point of the target SSID, and authenticates with it after the
-    /// last result (NCS `nrf_wifi_wpa_supp_event_proc_scan_res`).
+    /// Keeps the best access points of the target SSID, and authenticates with the best one after
+    /// the last result (NCS `nrf_wifi_wpa_supp_event_proc_scan_res`).
     async fn handle_scan_result(&mut self, body: &[u8]) {
         if self.conn != ConnState::Scanning {
             return;
@@ -2041,15 +2155,13 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
                 if let (false, Some(known)) = (self.known_scan, self.known.as_mut()) {
                     known.note(&bss);
                 }
-                if self.conn_bss.is_none_or(|best| better_bss(&bss, &best)) {
-                    self.conn_bss = Some(bss);
-                }
+                self.conn_candidates.add(bss);
             }
         }
 
         // The last result has a zero sequence number.
         if event.umac_hdr.seq == 0 {
-            match self.conn_bss {
+            match self.conn_candidates.take_best() {
                 Some(bss) => self.authenticate(bss).await,
                 None if self.known_scan => {
                     debug!("the network is not where it was: scanning every channel");
@@ -2076,6 +2188,7 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
         cmd.info.capability = bss.capability;
         cmd.info.beacon_interval = bss.beacon_interval;
         cmd.info.tsf = bss.tsf;
+        self.conn_bss = Some(bss);
         self.set_conn(ConnState::Authenticating, MLME_TIMEOUT);
         self.send_cmd(cmd).await;
     }
@@ -3453,6 +3566,42 @@ mod tests {
         assert!(!better_bss(&bss(2412, -55), &bss(5200, -60)));
         assert!(!better_bss(&bss(5200, -70), &bss(2412, -55)));
         assert!(better_bss(&bss(2412, -55), &bss(5200, -70)));
+    }
+
+    #[test]
+    fn a_join_tries_the_best_access_points_in_turn() {
+        let ap = |id: u8, frequency: u32, signal_dbm: i32| Bss {
+            bssid: [id; 6],
+            ..bss(frequency, signal_dbm)
+        };
+        let order = |candidates: &mut Candidates| {
+            core::iter::from_fn(|| candidates.take_best())
+                .map(|bss| bss.bssid[0])
+                .collect::<Vec<_>>()
+        };
+
+        // Best first, a 5 GHz one counting for 10 dB more.
+        let mut candidates = Candidates::new();
+        candidates.add(ap(1, 2412, -50));
+        candidates.add(ap(2, 5260, -58));
+        candidates.add(ap(3, 2437, -70));
+        assert_eq!(order(&mut candidates), [2, 1, 3]);
+        assert!(candidates.take_best().is_none());
+
+        // An access point reported twice keeps its better report, in its new place.
+        let mut candidates = Candidates::new();
+        candidates.add(ap(1, 2412, -50));
+        candidates.add(ap(2, 2437, -60));
+        candidates.add(ap(2, 2437, -40));
+        candidates.add(ap(1, 2412, -70));
+        assert_eq!(order(&mut candidates), [2, 1]);
+
+        // With more than room, the weakest go.
+        let mut candidates = Candidates::new();
+        for (id, signal_dbm) in [(1, -80), (2, -50), (3, -70), (4, -60), (5, -90), (6, -40)] {
+            candidates.add(ap(id, 2412, signal_dbm));
+        }
+        assert_eq!(order(&mut candidates), [6, 2, 4, 3]);
     }
 
     #[test]

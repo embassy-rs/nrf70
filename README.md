@@ -22,7 +22,9 @@ Working:
   BSSID, band, channel, signal strength and security for each network found.
 - Joining open networks with `Control::join_open`, as the nRF Connect SDK's supplicant does it: a
   scan for the SSID, open system authentication with its strongest access point, association and
-  port authorisation. `ConnectError` says which step failed. The driver reports a lost connection
+  port authorisation. If that access point refuses the station or does not answer (a dual band
+  one may refuse on one band to steer it to the other), the next best one of the same scan is
+  tried, up to four. `ConnectError` says which step failed. The driver reports a lost connection
   as link down, and the application joins again.
   The driver remembers the channels where that scan found the network (up to four, the best
   access points' first), and the next join of the same network scans those only: 0.1 s instead
