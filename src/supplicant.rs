@@ -658,9 +658,7 @@ pub(crate) fn wrap_key_data(kek: &[u8; 16], data: &[u8], out: &mut [u8]) -> Opti
         *padded.get_mut(len)? = 0xDD;
         len = (len + 1).next_multiple_of(8).max(16);
     }
-    let kw = KwAes128::new_from_slice(kek).ok()?;
-    kw.wrap_key(padded.get(..len)?, out.get_mut(..len + 8)?).ok()?;
-    Some(len + 8)
+    aes_key_wrap(kek, padded.get(..len)?, out)
 }
 
 /// A group temporal key, as the RPU takes it.
@@ -1146,6 +1144,34 @@ fn aes_key_unwrap<'a>(kek: &[u8; 16], wrapped: &[u8], out: &'a mut [u8]) -> Opti
     (difference == 0).then_some(out)
 }
 
+/// AES key wrap (RFC 3394, 2.2.1) of `data`, whole 64-bit blocks, at least two, into `out`: the
+/// access point's side of [`aes_key_unwrap`]. Returns the wrapped length, 8 bytes more, or `None`
+/// if `data` is not whole blocks or `out` is too short.
+#[cfg(any(feature = "ap", test))]
+fn aes_key_wrap(kek: &[u8; 16], data: &[u8], out: &mut [u8]) -> Option<usize> {
+    if data.len() < 16 || !data.len().is_multiple_of(8) {
+        return None;
+    }
+    let n = data.len() / 8;
+    let out = out.get_mut(..8 * (n + 1))?;
+    out[8..].copy_from_slice(data);
+    let mut a = KEY_WRAP_IV;
+    let aes = Aes128::new(kek);
+    for j in 0..6 {
+        for i in 1..=n {
+            let mut block = [0; 16];
+            block[..8].copy_from_slice(&a);
+            block[8..].copy_from_slice(&out[8 * i..8 * i + 8]);
+            aes.encrypt_block(&mut block);
+            let t = (n * j + i) as u64;
+            a = (u64::from_be_bytes(block[..8].try_into().ok()?) ^ t).to_be_bytes();
+            out[8 * i..8 * i + 8].copy_from_slice(&block[8..]);
+        }
+    }
+    out[..8].copy_from_slice(&a);
+    Some(8 * (n + 1))
+}
+
 #[cfg(test)]
 mod tests {
     extern crate std;
@@ -1158,25 +1184,11 @@ mod tests {
 
     use super::*;
 
-    /// AES key wrap (RFC 3394, 2.2.1), the access point's side of [`aes_key_unwrap`].
-    fn aes_key_wrap(kek: &[u8; 16], data: &[u8]) -> Vec<u8> {
-        let n = data.len() / 8;
-        let mut a = KEY_WRAP_IV;
-        let mut r = data.to_vec();
-        let aes = Aes128::new(kek);
-        for j in 0..6 {
-            for i in 0..n {
-                let mut block = [0; 16];
-                block[..8].copy_from_slice(&a);
-                block[8..].copy_from_slice(&r[8 * i..8 * i + 8]);
-                aes.encrypt_block(&mut block);
-                let t = (n * j + i + 1) as u64;
-                a = (u64::from_be_bytes(block[..8].try_into().unwrap()) ^ t).to_be_bytes();
-                r[8 * i..8 * i + 8].copy_from_slice(&block[8..]);
-            }
-        }
-        let mut wrapped = a.to_vec();
-        wrapped.extend_from_slice(&r);
+    /// [`aes_key_wrap`] into a vector.
+    fn wrap(kek: &[u8; 16], data: &[u8]) -> Vec<u8> {
+        let mut wrapped = std::vec![0; data.len() + 8];
+        let len = aes_key_wrap(kek, data, &mut wrapped).unwrap();
+        wrapped.truncate(len);
         wrapped
     }
 
@@ -1186,7 +1198,7 @@ mod tests {
         let kek: [u8; 16] = hex("000102030405060708090A0B0C0D0E0F").try_into().unwrap();
         let key = hex("00112233445566778899AABBCCDDEEFF");
         let wrapped = hex("1FA68B0A8112B447AEF34BD8FB5A7B829D3E862371D2CFE5");
-        assert_eq!(aes_key_wrap(&kek, &key), wrapped);
+        assert_eq!(wrap(&kek, &key), wrapped);
 
         let mut out = [0; 32];
         assert_eq!(aes_key_unwrap(&kek, &wrapped, &mut out), Some(key.as_slice()));
@@ -1195,7 +1207,7 @@ mod tests {
     #[test]
     fn key_unwrap_refuses_what_was_not_wrapped_with_the_key() {
         let kek = [0x42; 16];
-        let wrapped = aes_key_wrap(&kek, &[0x11; 24]);
+        let wrapped = wrap(&kek, &[0x11; 24]);
         let mut out = [0; 32];
         assert_eq!(aes_key_unwrap(&kek, &wrapped, &mut out), Some([0x11; 24].as_slice()));
 
@@ -1693,7 +1705,7 @@ mod tests {
                 data.push(0xDD);
                 data.resize(data.len().next_multiple_of(8), 0);
             }
-            aes_key_wrap(&self.ptk.as_ref().unwrap().kek, &data)
+            wrap(&self.ptk.as_ref().unwrap().kek, &data)
         }
 
         fn gtk_kde(gtk: &[u8], index: u8) -> Vec<u8> {

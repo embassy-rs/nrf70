@@ -1260,19 +1260,14 @@ impl Control<'_> {
     /// [`Control::start_ap_open`].
     ///
     /// The 4-way handshake with each station runs in the driver, which needs random numbers for
-    /// its ANonces and the group key. They come from `rng`, as for [`Control::join_wpa2`]: 32
-    /// bytes, before starting. Deriving the key from the passphrase takes as long as for a join.
-    pub async fn start_ap_wpa2(
-        &mut self,
-        ssid: &[u8],
-        channel: u8,
-        passphrase: &[u8],
-        rng: &mut (impl rand_core::CryptoRng + ?Sized),
-    ) -> Result<(), ApError> {
+    /// its ANonces and the group key. They come from the random number generator the application
+    /// registered with `embassy-crypto`, as for [`Control::join_wpa2`]: 32 bytes, before starting.
+    /// Deriving the key from the passphrase takes as long as for a join.
+    pub async fn start_ap_wpa2(&mut self, ssid: &[u8], channel: u8, passphrase: &[u8]) -> Result<(), ApError> {
         let settings = Settings::new(ssid, channel)?;
         let psk = crate::wpa2_psk(ssid, passphrase).ok_or(ApError::InvalidPassphrase)?;
         let mut seed = [0; 32];
-        rng.fill_bytes(&mut seed);
+        embassy_crypto::rng_fill_bytes(&mut seed);
         let settings = Settings {
             security: Security::Wpa2 { psk, seed },
             ..settings
