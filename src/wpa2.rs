@@ -13,7 +13,7 @@ use embedded_hal::digital::{InputPin, OutputPin};
 use embedded_hal_async::digital::Wait;
 use rand_core::CryptoRng;
 
-use crate::supplicant::{self, Gtk, Outcome, Rsne, Supplicant};
+use crate::supplicant::{self, Gtk, Igtk, Outcome, Rsne, Supplicant};
 use crate::{
     c, find_ie, llc_ethertype, rx_to_ethernet, slice8_mut, write_ethernet, Bss, Bus, ConnState, ConnectError, Control,
     Credentials, Runner, MAX_TX_TOKENS,
@@ -41,6 +41,7 @@ struct PendingKeys {
     token: usize,
     tk: Option<[u8; 16]>,
     gtk: Option<Gtk>,
+    igtk: Option<Igtk>,
     /// When the keys go in even if the RPU has not reported the message sent.
     deadline: Instant,
 }
@@ -144,16 +145,17 @@ impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
     /// keeps the port closed until the keys are in.
     pub(super) fn secure_association(&mut self, bss: &Bss, info: &mut c::connect_common_info) {
         self.wpa2.supplicant = match (self.conn_credentials, bss.rsne) {
-            (Credentials::Wpa2(wpa2), Some(ap_rsne)) => Some(Supplicant::new(
-                wpa2.psk,
-                bss.bssid,
-                self.wpa2.mac_addr,
-                ap_rsne,
-                wpa2.nonce_seed,
-            )),
+            (Credentials::Wpa2(wpa2), Some(ap_rsne)) => {
+                Supplicant::new(wpa2.psk, bss.bssid, self.wpa2.mac_addr, ap_rsne, wpa2.nonce_seed)
+            }
             _ => None,
         };
         if let Some(supplicant) = &self.wpa2.supplicant {
+            let suite = supplicant.suite();
+            debug!("WPA2 association: {}", suite);
+            if suite.mfp {
+                info.use_mfp = c::mfp::MFP_REQUIRED as _;
+            }
             let rsne = supplicant.rsne().as_bytes();
             info.valid_fields |= c::CONNECT_COMMON_INFO_WPA_IE_VALID;
             info.flags |= c::CONNECT_COMMON_INFO_SECURITY;
@@ -235,7 +237,12 @@ impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
             Outcome::Reply(len) => {
                 self.send_eapol(&reply[..len]).await;
             }
-            Outcome::Keys { reply: len, tk, gtk } => {
+            Outcome::Keys {
+                reply: len,
+                tk,
+                gtk,
+                igtk,
+            } => {
                 // The keys of a handshake go in once its last message has left. If one is
                 // still waiting, its keys go in now.
                 self.install_pending_keys().await;
@@ -245,6 +252,7 @@ impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
                     token: token.unwrap_or(MAX_TX_TOKENS),
                     tk,
                     gtk,
+                    igtk,
                     deadline: Instant::now() + KEY_INSTALL_TIMEOUT,
                 });
                 if token.is_none() {
@@ -289,27 +297,40 @@ impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
         };
         if let Some(tk) = keys.tk {
             // A new pairwise key starts counting packets from zero.
-            self.add_key(Some(bss.bssid), 0, &tk, &[0; 6]).await;
+            self.add_key(Some(bss.bssid), supplicant::CIPHER_SUITE_CCMP, 0, &tk, &[0; 6])
+                .await;
             self.set_default_key(0).await;
             debug!("pairwise key installed");
         }
         if let Some(gtk) = keys.gtk {
-            self.add_key(None, gtk.index, &gtk.key, &gtk.rsc).await;
+            self.add_key(None, supplicant::CIPHER_SUITE_CCMP, gtk.index, &gtk.key, &gtk.rsc)
+                .await;
             debug!("group key {} installed", gtk.index);
+        }
+        if let Some(igtk) = keys.igtk {
+            self.add_key(
+                None,
+                supplicant::CIPHER_SUITE_BIP_CMAC_128,
+                igtk.index,
+                &igtk.key,
+                &igtk.ipn,
+            )
+            .await;
+            debug!("management group key {} installed", igtk.index);
         }
         if self.conn == ConnState::Handshake {
             self.open_port().await;
         }
     }
 
-    /// Adds a CCMP key: the pairwise key of `peer`, or without one a group key (NCS
+    /// Adds a key of `cipher_suite`: the pairwise key of `peer`, or without one a group key (NCS
     /// `nrf_wifi_wpa_supp_set_key` and `nrf_wifi_sys_fmac_add_key`). `seq` is the packet number
     /// reception starts from, low byte first.
-    async fn add_key(&mut self, peer: Option<[u8; 6]>, index: u8, key: &[u8; 16], seq: &[u8; 6]) {
+    async fn add_key(&mut self, peer: Option<[u8; 6]>, cipher_suite: u32, index: u8, key: &[u8; 16], seq: &[u8; 6]) {
         let mut cmd: c::umac_cmd_key = unsafe { zeroed() };
         let info = &mut cmd.key_info;
         info.valid_fields = c::CIPHER_SUITE_VALID | c::KEY_VALID | c::SEQ_VALID | c::KEY_TYPE_VALID | c::KEY_IDX_VALID;
-        info.cipher_suite = supplicant::CIPHER_SUITE_CCMP;
+        info.cipher_suite = cipher_suite;
         info.key.key_len = key.len() as _;
         info.key.key[..key.len()].copy_from_slice(key);
         info.seq.seq_len = seq.len() as _;

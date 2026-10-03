@@ -3,18 +3,25 @@
 //! Connect SDK runs wpa_supplicant for this; the checks here follow its `wpa.c`.
 //!
 //! Only what a WPA2-Personal network with CCMP needs: the PSK key management suite (00-0F-AC:2),
-//! CCMP-128 as pairwise and group cipher, and no management frame protection. The RPU does the
-//! encryption itself: the host only derives the keys and hands them over.
+//! or PSK-SHA256 (00-0F-AC:6) where the AP offers it with management frame protection, CCMP-128
+//! as pairwise and group cipher, and management frame protection with BIP-CMAC-128 when the AP
+//! offers or requires it. The RPU does the encryption itself: the host only derives the keys and
+//! hands them over.
 //!
 //! Nothing here touches the RPU. [`Supplicant::handle`] takes an EAPOL frame and says what to
 //! send back and which keys to install, so that it can be tested on its own.
 
+use aes::Aes128;
 use aes_kw::KwAes128;
+use cmac::Cmac;
 use defmt::debug;
 use hmac::{Hmac, KeyInit, Mac};
 use sha1::Sha1;
+use sha2::Sha256;
 
 type HmacSha1 = Hmac<Sha1>;
+type HmacSha256 = Hmac<Sha256>;
+type CmacAes128 = Cmac<Aes128>;
 
 /// Ethertype of EAPOL frames (IEEE 802.1X).
 pub(crate) const ETHERTYPE_EAPOL: u16 = 0x888E;
@@ -24,15 +31,23 @@ pub(crate) const IE_RSN: u8 = 48;
 
 /// CCMP-128 as the RPU's key commands take a cipher suite: the selector's OUI then its type.
 pub(crate) const CIPHER_SUITE_CCMP: u32 = 0x000F_AC04;
+/// BIP-CMAC-128, the group management cipher, in the same form.
+pub(crate) const CIPHER_SUITE_BIP_CMAC_128: u32 = 0x000F_AC06;
 
 /// Suite selectors as they appear in an RSNE and in key data: OUI 00-0F-AC, then the type.
 const SUITE_CCMP: [u8; 4] = [0x00, 0x0F, 0xAC, 4];
 const AKM_PSK: [u8; 4] = [0x00, 0x0F, 0xAC, 2];
+const AKM_PSK_SHA256: [u8; 4] = [0x00, 0x0F, 0xAC, 6];
+const SUITE_BIP_CMAC_128: [u8; 4] = [0x00, 0x0F, 0xAC, 6];
 /// The GTK key data encapsulation (KDE): OUI 00-0F-AC, data type 1.
 const KDE_GTK: [u8; 4] = [0x00, 0x0F, 0xAC, 1];
+/// The IGTK KDE: data type 9.
+const KDE_IGTK: [u8; 4] = [0x00, 0x0F, 0xAC, 9];
 
-/// RSN capabilities bit: the AP requires management frame protection.
+/// RSN capabilities bit: management frame protection required.
 const RSN_CAP_MFPR: u16 = 1 << 6;
+/// RSN capabilities bit: management frame protection capable.
+const RSN_CAP_MFPC: u16 = 1 << 7;
 
 /// Length of a CCMP-128 temporal key.
 const TK_LEN: usize = 16;
@@ -62,6 +77,62 @@ fn hmac_sha1(key: &[u8]) -> HmacSha1 {
     }
 }
 
+fn hmac_sha256(key: &[u8]) -> HmacSha256 {
+    match HmacSha256::new_from_slice(key) {
+        Ok(mac) => mac,
+        Err(_) => defmt::unreachable!(),
+    }
+}
+
+/// The 802.11 key derivation function over HMAC-SHA256 (IEEE 802.11-2020, 12.7.1.6.2): fills
+/// `out` with HMAC-SHA256(`key`, i || `label` || `context` || length) for i = 1, 2, and so on, i
+/// and the length of `out` in bits as 16-bit little-endian numbers.
+fn kdf_sha256(key: &[u8], label: &[u8], context: &[u8], out: &mut [u8]) {
+    let bits = (out.len() * 8) as u16;
+    for (i, chunk) in out.chunks_mut(32).enumerate() {
+        let mut mac = hmac_sha256(key);
+        mac.update(&(i as u16 + 1).to_le_bytes());
+        mac.update(label);
+        mac.update(context);
+        mac.update(&bits.to_le_bytes());
+        chunk.copy_from_slice(&mac.finalize().into_bytes()[..chunk.len()]);
+    }
+}
+
+/// The key management suites the driver handles.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, defmt::Format)]
+pub(crate) enum Akm {
+    /// PSK (00-0F-AC:2): keys from the PRF over HMAC-SHA1, HMAC-SHA1 MICs.
+    Psk,
+    /// PSK-SHA256 (00-0F-AC:6): keys from the KDF over HMAC-SHA256, AES-128-CMAC MICs.
+    PskSha256,
+}
+
+impl Akm {
+    fn selector(self) -> [u8; 4] {
+        match self {
+            Akm::Psk => AKM_PSK,
+            Akm::PskSha256 => AKM_PSK_SHA256,
+        }
+    }
+
+    /// The key descriptor version of its EAPOL-Key frames, which says how their MIC is made.
+    fn key_version(self) -> u16 {
+        match self {
+            Akm::Psk => INFO_VERSION_HMAC_SHA1_AES,
+            Akm::PskSha256 => INFO_VERSION_AES_CMAC,
+        }
+    }
+}
+
+/// What an association with an AP uses, as negotiated from its RSNE.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, defmt::Format)]
+pub(crate) struct Suite {
+    pub(crate) akm: Akm,
+    /// Management frame protection, with BIP-CMAC-128.
+    pub(crate) mfp: bool,
+}
+
 /// The 802.11 pseudo-random function over HMAC-SHA1 (IEEE 802.11-2020, 12.7.1.2): fills `out`
 /// with HMAC-SHA1(`key`, `label` || 0 || `data` || i) for i = 0, 1, and so on.
 fn prf(key: &[u8], label: &[u8], data: &[u8], out: &mut [u8]) {
@@ -86,9 +157,10 @@ struct Ptk {
 
 impl Ptk {
     /// PRF-384(PMK, "Pairwise key expansion", Min(AA, SPA) || Max(AA, SPA) || Min(ANonce, SNonce)
-    /// || Max(ANonce, SNonce)) (IEEE 802.11-2020, 12.7.1.3). `aa` is the authenticator's address
-    /// (the BSSID) and `spa` the supplicant's.
-    fn derive(pmk: &[u8; 32], aa: &[u8; 6], spa: &[u8; 6], anonce: &[u8; 32], snonce: &[u8; 32]) -> Self {
+    /// || Max(ANonce, SNonce)) (IEEE 802.11-2020, 12.7.1.3), with the KDF over HMAC-SHA256 in
+    /// place of the PRF for PSK-SHA256. `aa` is the authenticator's address (the BSSID) and `spa`
+    /// the supplicant's.
+    fn derive(akm: Akm, pmk: &[u8; 32], aa: &[u8; 6], spa: &[u8; 6], anonce: &[u8; 32], snonce: &[u8; 32]) -> Self {
         let mut data = [0; 76];
         let (min, max) = if aa < spa { (aa, spa) } else { (spa, aa) };
         data[0..6].copy_from_slice(min);
@@ -102,7 +174,10 @@ impl Ptk {
         data[44..76].copy_from_slice(max);
 
         let mut out = [0; 48];
-        prf(pmk, b"Pairwise key expansion", &data, &mut out);
+        match akm {
+            Akm::Psk => prf(pmk, b"Pairwise key expansion", &data, &mut out),
+            Akm::PskSha256 => kdf_sha256(pmk, b"Pairwise key expansion", &data, &mut out),
+        }
         let mut ptk = Ptk {
             kck: [0; 16],
             kek: [0; 16],
@@ -141,16 +216,19 @@ impl Rsne {
     }
 
     /// What the driver asks for in its association request and repeats in message 2: RSN version
-    /// 1, CCMP-128 as group and pairwise cipher, PSK key management, no optional capability.
-    pub(crate) fn wpa2_psk_ccmp() -> Self {
+    /// 1, CCMP-128 as group and pairwise cipher, the suite's key management, and management frame
+    /// protection capable if the suite has it. BIP-CMAC-128, the default group management cipher,
+    /// goes without saying.
+    pub(crate) fn for_suite(suite: Suite) -> Self {
         let mut body = [0; 20];
         body[0..2].copy_from_slice(&1u16.to_le_bytes());
         body[2..6].copy_from_slice(&SUITE_CCMP);
         body[6..8].copy_from_slice(&1u16.to_le_bytes());
         body[8..12].copy_from_slice(&SUITE_CCMP);
         body[12..14].copy_from_slice(&1u16.to_le_bytes());
-        body[14..18].copy_from_slice(&AKM_PSK);
-        // RSN capabilities: none.
+        body[14..18].copy_from_slice(&suite.akm.selector());
+        let capabilities = if suite.mfp { RSN_CAP_MFPC } else { 0 };
+        body[18..20].copy_from_slice(&capabilities.to_le_bytes());
         match Self::from_body(&body) {
             Some(rsne) => rsne,
             None => defmt::unreachable!(),
@@ -161,14 +239,12 @@ impl Rsne {
         &self.bytes[..self.len as usize]
     }
 
-    /// Whether an AP announcing this element accepts [`Rsne::wpa2_psk_ccmp`]: CCMP-128 as its
-    /// group cipher and among its pairwise ciphers, PSK among its key management suites, and
-    /// management frame protection not required.
-    pub(crate) fn offers_wpa2_psk_ccmp(&self) -> bool {
-        self.check().unwrap_or(false)
-    }
-
-    fn check(&self) -> Option<bool> {
+    /// What an association with an AP announcing this element uses, if the driver can join it:
+    /// CCMP-128 as the group cipher and among the pairwise ciphers, PSK or PSK-SHA256 key
+    /// management. Management frame protection is used when the AP is capable of it with
+    /// BIP-CMAC-128, and PSK-SHA256 then if the AP offers it. An AP that requires management frame
+    /// protection with another cipher cannot be joined.
+    pub(crate) fn negotiate(&self) -> Option<Suite> {
         let body = &self.as_bytes()[2..];
         let u16_at = |at: usize| Some(u16::from_le_bytes(body.get(at..at + 2)?.try_into().ok()?));
         // A list of suite selectors: its count, then its entries.
@@ -178,19 +254,38 @@ impl Rsne {
         };
 
         if u16_at(0)? != 1 {
-            return Some(false);
+            return None;
         }
         let group = body.get(2..6)?;
         let (pairwise, at) = list(6)?;
         let (akms, at) = list(at)?;
         // The capabilities are optional: without them, nothing is required.
         let capabilities = u16_at(at).unwrap_or(0);
-        Some(
-            group == SUITE_CCMP
-                && pairwise.chunks(4).any(|suite| suite == SUITE_CCMP)
-                && akms.chunks(4).any(|suite| suite == AKM_PSK)
-                && capabilities & RSN_CAP_MFPR == 0,
-        )
+        // Then the PMKIDs (16 bytes each) and the group management cipher, BIP-CMAC-128 when it
+        // is not there.
+        let group_management = u16_at(at + 2)
+            .and_then(|pmkids| {
+                let at = at + 4 + 16 * pmkids as usize;
+                body.get(at..at + 4)
+            })
+            .unwrap_or(&SUITE_BIP_CMAC_128);
+        if group != SUITE_CCMP || !pairwise.chunks(4).any(|suite| suite == SUITE_CCMP) {
+            return None;
+        }
+
+        let mfp = capabilities & RSN_CAP_MFPC != 0 && group_management == SUITE_BIP_CMAC_128;
+        if capabilities & RSN_CAP_MFPR != 0 && !mfp {
+            return None;
+        }
+        let offers = |akm: [u8; 4]| akms.chunks(4).any(|suite| suite == akm);
+        let akm = if mfp && offers(AKM_PSK_SHA256) {
+            Akm::PskSha256
+        } else if offers(AKM_PSK) {
+            Akm::Psk
+        } else {
+            return None;
+        };
+        Some(Suite { akm, mfp })
     }
 }
 
@@ -215,6 +310,8 @@ const MIC_LEN: usize = 16;
 /// Key descriptor version 2: HMAC-SHA1-128 as MIC, AES key wrap for the key data. It is the one
 /// that goes with CCMP and PSK key management.
 const INFO_VERSION_HMAC_SHA1_AES: u16 = 2;
+/// Key descriptor version 3: AES-128-CMAC as MIC, AES key wrap for the key data, with PSK-SHA256.
+const INFO_VERSION_AES_CMAC: u16 = 3;
 const INFO_VERSION_MASK: u16 = 0x0007;
 const INFO_PAIRWISE: u16 = 1 << 3;
 const INFO_INSTALL: u16 = 1 << 6;
@@ -267,16 +364,45 @@ impl<'a> KeyFrame<'a> {
         })
     }
 
-    /// Whether the frame's MIC is the one `kck` gives: HMAC-SHA1 over the frame with its MIC
-    /// field zeroed, truncated to 128 bits.
+    /// Whether the frame's MIC is the one `kck` gives over the frame with its MIC field zeroed,
+    /// for the key descriptor version of the frame.
     fn mic_is_valid(&self, kck: &[u8; 16]) -> bool {
-        let mut mac = hmac_sha1(kck);
-        mac.update(&self.pdu[..OFFSET_MIC]);
-        mac.update(&[0; MIC_LEN]);
-        mac.update(&self.pdu[OFFSET_MIC + MIC_LEN..]);
-        mac.verify_truncated_left(&self.pdu[OFFSET_MIC..OFFSET_MIC + MIC_LEN])
-            .is_ok()
+        let expected = mic(
+            self.info,
+            kck,
+            &[
+                &self.pdu[..OFFSET_MIC],
+                &[0; MIC_LEN],
+                &self.pdu[OFFSET_MIC + MIC_LEN..],
+            ],
+        );
+        // Compared in constant time.
+        let received = &self.pdu[OFFSET_MIC..OFFSET_MIC + MIC_LEN];
+        expected.iter().zip(received).fold(0, |diff, (a, b)| diff | (a ^ b)) == 0
     }
+}
+
+/// The MIC of the EAPOL-Key frame made of `parts`, for the key descriptor version in `info`:
+/// HMAC-SHA1 truncated to 128 bits, or AES-128-CMAC.
+fn mic(info: u16, kck: &[u8; 16], parts: &[&[u8]]) -> [u8; MIC_LEN] {
+    let mut out = [0; MIC_LEN];
+    if info & INFO_VERSION_MASK == INFO_VERSION_AES_CMAC {
+        let mut mac = match CmacAes128::new_from_slice(kck) {
+            Ok(mac) => mac,
+            Err(_) => defmt::unreachable!(),
+        };
+        for part in parts {
+            mac.update(part);
+        }
+        out.copy_from_slice(&mac.finalize().into_bytes());
+    } else {
+        let mut mac = hmac_sha1(kck);
+        for part in parts {
+            mac.update(part);
+        }
+        out.copy_from_slice(&mac.finalize().into_bytes()[..MIC_LEN]);
+    }
+    out
 }
 
 /// Writes an EAPOL-Key frame with its MIC into `out`, and returns its length. The key length, IV,
@@ -302,10 +428,8 @@ fn write_key_frame(
     frame[OFFSET_KEY_DATA_LEN..KEY_FRAME_LEN].copy_from_slice(&(key_data.len() as u16).to_be_bytes());
     frame[KEY_FRAME_LEN..].copy_from_slice(key_data);
 
-    let mut mac = hmac_sha1(kck);
-    mac.update(frame);
-    let mic = mac.finalize().into_bytes();
-    frame[OFFSET_MIC..OFFSET_MIC + MIC_LEN].copy_from_slice(&mic[..MIC_LEN]);
+    let mic = mic(info, kck, &[frame]);
+    frame[OFFSET_MIC..OFFSET_MIC + MIC_LEN].copy_from_slice(&mic);
     len
 }
 
@@ -319,19 +443,35 @@ pub(crate) struct Gtk {
     pub(crate) rsc: [u8; 6],
 }
 
+/// An integrity group temporal key, for BIP-CMAC-128, as the AP hands it over.
+#[derive(Clone, PartialEq, Eq)]
+pub(crate) struct Igtk {
+    /// Key ID, 4 or 5.
+    pub(crate) index: u8,
+    pub(crate) key: [u8; 16],
+    /// The packet number the AP has reached with this key, low byte first.
+    pub(crate) ipn: [u8; 6],
+}
+
 /// What the key data of message 3 or of a group key message holds, as far as the driver uses it.
 struct KeyData<'a> {
     /// The first RSNE, with its header.
     rsne: Option<&'a [u8]>,
     /// The GTK KDE's body: key ID and flags, a reserved byte, then the key.
     gtk: Option<&'a [u8]>,
+    /// The IGTK KDE's body: key ID, IPN, then the key.
+    igtk: Option<&'a [u8]>,
 }
 
 impl<'a> KeyData<'a> {
     /// Walks the elements and KDEs of unwrapped key data (IEEE 802.11-2020, 12.7.2).
     fn parse(mut data: &'a [u8]) -> Self {
         const KDE: u8 = 0xDD;
-        let mut found = Self { rsne: None, gtk: None };
+        let mut found = Self {
+            rsne: None,
+            gtk: None,
+            igtk: None,
+        };
         while let [id, len, rest @ ..] = data {
             // Padding: a KDE of length zero, then zeros.
             if *id == KDE && *len == 0 {
@@ -343,6 +483,7 @@ impl<'a> KeyData<'a> {
             match *id {
                 IE_RSN if found.rsne.is_none() => found.rsne = Some(&data[..2 + body.len()]),
                 KDE if body.len() >= 4 && body[..4] == KDE_GTK => found.gtk = Some(&body[4..]),
+                KDE if body.len() >= 4 && body[..4] == KDE_IGTK => found.igtk = Some(&body[4..]),
                 _ => {}
             }
             data = &rest[body.len()..];
@@ -358,6 +499,19 @@ impl<'a> KeyData<'a> {
             index: flags & 0x03,
             key: (*key).try_into().ok()?,
             rsc,
+        })
+    }
+
+    fn igtk(&self) -> Option<Igtk> {
+        let body = self.igtk?;
+        let index = u16::from_le_bytes(body.get(0..2)?.try_into().ok()?);
+        if !(4..=5).contains(&index) || body.len() != 24 {
+            return None;
+        }
+        Some(Igtk {
+            index: index as u8,
+            ipn: body[2..8].try_into().ok()?,
+            key: body[8..24].try_into().ok()?,
         })
     }
 }
@@ -378,6 +532,9 @@ pub(crate) enum Outcome {
         tk: Option<[u8; TK_LEN]>,
         /// The group temporal key, when it is a new one.
         gtk: Option<Gtk>,
+        /// The integrity group temporal key, when it is a new one: with management frame
+        /// protection only.
+        igtk: Option<Igtk>,
     },
     /// The AP's message 3 contradicts what it announced (a downgrade attack looks like this), or
     /// lacks a usable group key: leave the network.
@@ -391,6 +548,8 @@ pub(crate) struct Supplicant {
     aa: [u8; 6],
     /// The supplicant's address: the station's.
     spa: [u8; 6],
+    /// What the association uses.
+    suite: Suite,
     /// The RSNE of the association request, which message 2 repeats.
     rsne: Rsne,
     /// The RSNE of the AP's beacon or probe response, which message 3 must repeat.
@@ -412,18 +571,23 @@ pub(crate) struct Supplicant {
     tk_installed: bool,
     /// The last GTK handed over, for the same reason.
     gtk: Option<Gtk>,
+    /// The last IGTK handed over.
+    igtk: Option<Igtk>,
     /// Replay counter of the last frame whose MIC was valid.
     replay_counter: Option<u64>,
 }
 
 impl Supplicant {
-    /// `seed` is what the SNonces are drawn from: 32 random bytes.
-    pub(crate) fn new(pmk: [u8; 32], aa: [u8; 6], spa: [u8; 6], ap_rsne: Rsne, seed: [u8; 32]) -> Self {
-        Self {
+    /// `seed` is what the SNonces are drawn from: 32 random bytes. `None` if the AP's RSNE offers
+    /// nothing the driver can use.
+    pub(crate) fn new(pmk: [u8; 32], aa: [u8; 6], spa: [u8; 6], ap_rsne: Rsne, seed: [u8; 32]) -> Option<Self> {
+        let suite = ap_rsne.negotiate()?;
+        Some(Self {
             pmk,
             aa,
             spa,
-            rsne: Rsne::wpa2_psk_ccmp(),
+            suite,
+            rsne: Rsne::for_suite(suite),
             ap_rsne,
             nonce_seed: seed,
             nonce_counter: 0,
@@ -434,8 +598,14 @@ impl Supplicant {
             ptk: None,
             tk_installed: false,
             gtk: None,
+            igtk: None,
             replay_counter: None,
-        }
+        })
+    }
+
+    /// What the association uses.
+    pub(crate) fn suite(&self) -> Suite {
+        self.suite
     }
 
     /// The RSNE to put in the association request.
@@ -452,7 +622,7 @@ impl Supplicant {
         };
         // Every frame of the authenticator asks for an answer, and none is a request or an error
         // report: those go the other way.
-        if key.info & INFO_VERSION_MASK != INFO_VERSION_HMAC_SHA1_AES
+        if key.info & INFO_VERSION_MASK != self.suite.akm.key_version()
             || key.info & INFO_ACK == 0
             || key.info & (INFO_REQUEST | INFO_ERROR) != 0
         {
@@ -497,10 +667,17 @@ impl Supplicant {
             self.renew_snonce = false;
         }
         self.anonce = key.nonce;
-        let tptk = Ptk::derive(&self.pmk, &self.aa, &self.spa, &self.anonce, &self.snonce);
+        let tptk = Ptk::derive(
+            self.suite.akm,
+            &self.pmk,
+            &self.aa,
+            &self.spa,
+            &self.anonce,
+            &self.snonce,
+        );
         let len = write_key_frame(
             reply,
-            INFO_VERSION_HMAC_SHA1_AES | INFO_PAIRWISE | INFO_MIC,
+            self.suite.akm.key_version() | INFO_PAIRWISE | INFO_MIC,
             key.replay_counter,
             &self.snonce,
             self.rsne.as_bytes(),
@@ -538,10 +715,14 @@ impl Supplicant {
             debug!("4-way handshake: message 3 has no usable GTK");
             return Outcome::Abort;
         };
+        let igtk = self.suite.mfp.then(|| data.igtk()).flatten();
+        if self.suite.mfp && igtk.is_none() {
+            debug!("4-way handshake: message 3 has no usable IGTK");
+        }
 
         let len = write_key_frame(
             reply,
-            INFO_VERSION_HMAC_SHA1_AES | INFO_PAIRWISE | INFO_MIC | (key.info & INFO_SECURE),
+            self.suite.akm.key_version() | INFO_PAIRWISE | INFO_MIC | (key.info & INFO_SECURE),
             key.replay_counter,
             &[0; 32],
             &[],
@@ -559,6 +740,7 @@ impl Supplicant {
             reply: len,
             tk,
             gtk: self.new_gtk(gtk),
+            igtk: igtk.and_then(|igtk| self.new_igtk(igtk)),
         }
     }
 
@@ -568,14 +750,18 @@ impl Supplicant {
             return Outcome::Ignored;
         };
         let mut buf = [0; KEY_DATA_MAX];
-        let Some(gtk) = unwrap_key_data(key, &ptk.kek, &mut buf).and_then(|data| KeyData::parse(data).gtk(key.rsc))
-        else {
+        let Some(data) = unwrap_key_data(key, &ptk.kek, &mut buf).map(KeyData::parse) else {
+            debug!("group key handshake: message 1 ignored, its key data does not unwrap");
+            return Outcome::Ignored;
+        };
+        let Some(gtk) = data.gtk(key.rsc) else {
             debug!("group key handshake: message 1 ignored, no usable GTK");
             return Outcome::Ignored;
         };
+        let igtk = self.suite.mfp.then(|| data.igtk()).flatten();
         let len = write_key_frame(
             reply,
-            INFO_VERSION_HMAC_SHA1_AES | INFO_MIC | INFO_SECURE,
+            self.suite.akm.key_version() | INFO_MIC | INFO_SECURE,
             key.replay_counter,
             &[0; 32],
             &[],
@@ -586,6 +772,7 @@ impl Supplicant {
             reply: len,
             tk: None,
             gtk: self.new_gtk(gtk),
+            igtk: igtk.and_then(|igtk| self.new_igtk(igtk)),
         }
     }
 
@@ -600,6 +787,19 @@ impl Supplicant {
         }
         self.gtk = Some(gtk.clone());
         Some(gtk)
+    }
+
+    /// `igtk` if it differs from the one in use, which it then replaces.
+    fn new_igtk(&mut self, igtk: Igtk) -> Option<Igtk> {
+        let current = self
+            .igtk
+            .as_ref()
+            .is_some_and(|current| current.index == igtk.index && current.key == igtk.key);
+        if current {
+            return None;
+        }
+        self.igtk = Some(igtk.clone());
+        Some(igtk)
     }
 
     /// A nonce that this supplicant has not used: PRF-256(seed, "Init Counter", address ||
@@ -702,7 +902,7 @@ mod tests {
             psk.as_slice(),
             hex("b856f849794c9b63a715cfd1ef15809adeb2aca6a49f8693a6fae8d678caa3ca")
         );
-        let mut sta = Supplicant::new(psk, [2, 0, 0, 0, 0, 1], [2, 0, 0, 0, 0, 2], rsne(AP_RSNE), [0x5E; 32]);
+        let mut sta = Supplicant::new(psk, [2, 0, 0, 0, 0, 1], [2, 0, 0, 0, 0, 2], rsne(AP_RSNE), [0x5E; 32]).unwrap();
         let mut reply = [0; REPLY_MAX];
 
         let message_1 = hex("0203005f02008a00100000000000000001
@@ -727,9 +927,16 @@ mod tests {
              432bbde140c111c82ab45560f8c1a61d 0038
              dc1e61b4588d9816247ae5c33c5fa2729353afcf6b2f4579927b02b251fb5b11
              c0faed4de8abcc5013b23ed8fdadfce1e8161b0cc5fa4eee");
-        let Outcome::Keys { reply: len, tk, gtk } = sta.handle(&message_3, &mut reply) else {
+        let Outcome::Keys {
+            reply: len,
+            tk,
+            gtk,
+            igtk,
+        } = sta.handle(&message_3, &mut reply)
+        else {
             core::panic!("no message 4");
         };
+        assert!(igtk.is_none());
         assert_eq!(
             &reply[..len],
             hex("0103005f02030a00000000000000000002
@@ -744,36 +951,162 @@ mod tests {
         assert_eq!(gtk.rsc, [0x2A, 1, 0, 0, 0, 0]);
     }
 
+    const PSK: Suite = Suite {
+        akm: Akm::Psk,
+        mfp: false,
+    };
+    const PSK_MFP: Suite = Suite {
+        akm: Akm::Psk,
+        mfp: true,
+    };
+    const PSK_SHA256_MFP: Suite = Suite {
+        akm: Akm::PskSha256,
+        mfp: true,
+    };
+
     #[test]
-    fn association_rsne_is_wpa2_psk_ccmp() {
+    fn association_rsne_follows_the_suite() {
         assert_eq!(
-            Rsne::wpa2_psk_ccmp().as_bytes(),
+            Rsne::for_suite(PSK).as_bytes(),
             hex("30 14 0100 000fac04 0100 000fac04 0100 000fac02 0000")
+        );
+        assert_eq!(
+            Rsne::for_suite(PSK_MFP).as_bytes(),
+            hex("30 14 0100 000fac04 0100 000fac04 0100 000fac02 8000")
+        );
+        assert_eq!(
+            Rsne::for_suite(PSK_SHA256_MFP).as_bytes(),
+            hex("30 14 0100 000fac04 0100 000fac04 0100 000fac06 8000")
         );
     }
 
     #[test]
-    fn only_wpa2_psk_with_ccmp_is_offered() {
-        assert!(rsne(AP_RSNE).offers_wpa2_psk_ccmp());
-        // WPA2/WPA3 transition: PSK and SAE, management frame protection capable.
-        assert!(rsne("30 18 0100 000fac04 0100 000fac04 0200 000fac02 000fac08 8000").offers_wpa2_psk_ccmp());
+    fn the_suite_is_negotiated_from_the_aps_rsne() {
+        let negotiate = |element: &str| rsne(element).negotiate();
+        assert_eq!(negotiate(AP_RSNE), Some(PSK));
         // CCMP among several pairwise ciphers.
-        assert!(rsne("30 18 0100 000fac04 0200 000fac02 000fac04 0100 000fac02 0000").offers_wpa2_psk_ccmp());
+        assert_eq!(
+            negotiate("30 18 0100 000fac04 0200 000fac02 000fac04 0100 000fac02 0000"),
+            Some(PSK)
+        );
         // No capabilities field.
-        assert!(rsne("30 12 0100 000fac04 0100 000fac04 0100 000fac02").offers_wpa2_psk_ccmp());
+        assert_eq!(negotiate("30 12 0100 000fac04 0100 000fac04 0100 000fac02"), Some(PSK));
 
-        // WPA3 only: SAE, management frame protection required.
-        assert!(!rsne("30 14 0100 000fac04 0100 000fac04 0100 000fac08 c000").offers_wpa2_psk_ccmp());
-        // PSK, but management frame protection required.
-        assert!(!rsne("30 14 0100 000fac04 0100 000fac04 0100 000fac02 c000").offers_wpa2_psk_ccmp());
+        // Management frame protection capable or required: used, with PSK-SHA256 if offered.
+        assert_eq!(
+            negotiate("30 14 0100 000fac04 0100 000fac04 0100 000fac02 8000"),
+            Some(PSK_MFP)
+        );
+        assert_eq!(
+            negotiate("30 14 0100 000fac04 0100 000fac04 0100 000fac02 c000"),
+            Some(PSK_MFP)
+        );
+        assert_eq!(
+            negotiate("30 18 0100 000fac04 0100 000fac04 0200 000fac02 000fac06 8000"),
+            Some(PSK_SHA256_MFP)
+        );
+        assert_eq!(
+            negotiate("30 14 0100 000fac04 0100 000fac04 0100 000fac06 cc00"),
+            Some(PSK_SHA256_MFP)
+        );
+        // WPA2/WPA3 transition: PSK and SAE, management frame protection capable.
+        assert_eq!(
+            negotiate("30 18 0100 000fac04 0100 000fac04 0200 000fac02 000fac08 8000"),
+            Some(PSK_MFP)
+        );
+        // BIP-CMAC-128 named, after an empty PMKID list.
+        assert_eq!(
+            negotiate("30 1a 0100 000fac04 0100 000fac04 0100 000fac02 8000 0000 000fac06"),
+            Some(PSK_MFP)
+        );
+        // Another group management cipher (BIP-GMAC-256): without protection if it is optional,
+        // not at all if it is required.
+        assert_eq!(
+            negotiate("30 1a 0100 000fac04 0100 000fac04 0100 000fac02 8000 0000 000fac0c"),
+            Some(PSK)
+        );
+        assert_eq!(
+            negotiate("30 1a 0100 000fac04 0100 000fac04 0100 000fac02 c000 0000 000fac0c"),
+            None
+        );
+        // PSK-SHA256 without management frame protection is not used.
+        assert_eq!(negotiate("30 14 0100 000fac04 0100 000fac04 0100 000fac06 0000"), None);
+
+        // WPA3 only: SAE.
+        assert_eq!(negotiate("30 14 0100 000fac04 0100 000fac04 0100 000fac08 c000"), None);
         // WPA/WPA2 mixed mode: TKIP as group cipher.
-        assert!(!rsne("30 14 0100 000fac02 0100 000fac04 0100 000fac02 0000").offers_wpa2_psk_ccmp());
+        assert_eq!(negotiate("30 14 0100 000fac02 0100 000fac04 0100 000fac02 0000"), None);
         // WPA2-Enterprise: 802.1X.
-        assert!(!rsne("30 14 0100 000fac04 0100 000fac04 0100 000fac01 0000").offers_wpa2_psk_ccmp());
+        assert_eq!(negotiate("30 14 0100 000fac04 0100 000fac04 0100 000fac01 0000"), None);
         // Another version, and elements cut short.
-        assert!(!rsne("30 14 0200 000fac04 0100 000fac04 0100 000fac02 0000").offers_wpa2_psk_ccmp());
-        assert!(!rsne("30 0e 0100 000fac04 0100 000fac04 0100").offers_wpa2_psk_ccmp());
-        assert!(!rsne("30 02 0100").offers_wpa2_psk_ccmp());
+        assert_eq!(negotiate("30 14 0200 000fac04 0100 000fac04 0100 000fac02 0000"), None);
+        assert_eq!(negotiate("30 0e 0100 000fac04 0100 000fac04 0100"), None);
+        assert_eq!(negotiate("30 02 0100"), None);
+    }
+
+    // A PSK-SHA256 4-way handshake with management frame protection, computed outside this crate
+    // with OpenSSL (`openssl mac HMAC` with SHA-256 for the KDF, `openssl mac CMAC` with
+    // AES-128-CBC for the MICs, `openssl enc -id-aes128-wrap` for the key data), from the same
+    // PMK, addresses, ANonce and nonce seed as the test above. The AP's RSNE requires management
+    // frame protection; message 3 carries the GTK 10 11 .. 1f with key ID 1, and the IGTK 20 21
+    // .. 2f with key ID 4 and IPN 3.
+    #[test]
+    fn psk_sha256_handshake_matches_vectors_computed_with_openssl() {
+        let psk = psk_from_passphrase(b"nrf70-test-passphrase", b"nrf70-wpa2").unwrap();
+        let ap_rsne = rsne("30 14 0100 000fac04 0100 000fac04 0100 000fac06 cc00");
+        let mut sta = Supplicant::new(psk, [2, 0, 0, 0, 0, 1], [2, 0, 0, 0, 0, 2], ap_rsne, [0x5E; 32]).unwrap();
+        assert_eq!(sta.suite(), PSK_SHA256_MFP);
+        let mut reply = [0; REPLY_MAX];
+
+        let message_1 = hex("0203005f02008b00100000000000000001
+             000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f
+             00000000000000000000000000000000 0000000000000000 0000000000000000
+             00000000000000000000000000000000 0000");
+        let Outcome::Reply(len) = sta.handle(&message_1, &mut reply) else {
+            core::panic!("no message 2");
+        };
+        assert_eq!(
+            &reply[..len],
+            hex("0103007502010b00000000000000000001
+                 3c0eb2aac9a32be8c80969dfe8090faae17974c16d88517404f3515054fb9e8f
+                 00000000000000000000000000000000 0000000000000000 0000000000000000
+                 8d46ca6fbe91cdc686d2f151e1b10ee6 0016
+                 30140100000fac040100000fac040100000fac068000")
+        );
+
+        let message_3 = hex("020300b70213cb00100000000000000002
+             000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f
+             00000000000000000000000000000000 2a01000000000000 0000000000000000
+             fe443de843324f4d1d0a2149cfa6efd6 0058
+             cc89ea94b80fa324ae68a57e86653d7d05f0092a6af547b4f99fad25cb8ab5de
+             ce57626890f09e0c26d5719ff3569727f9de18015135d0fb79d560e763c5fe7b
+             20f4a87644aa4db30bfbf70efc3465c88e3e2ca22a3d15f1");
+        let Outcome::Keys {
+            reply: len,
+            tk,
+            gtk,
+            igtk,
+        } = sta.handle(&message_3, &mut reply)
+        else {
+            core::panic!("no message 4");
+        };
+        assert_eq!(
+            &reply[..len],
+            hex("0103005f02030b00000000000000000002
+                 0000000000000000000000000000000000000000000000000000000000000000
+                 00000000000000000000000000000000 0000000000000000 0000000000000000
+                 06c8a3713108ab7abb6fb6da7fe0a75d 0000")
+        );
+        assert_eq!(tk.unwrap().as_slice(), hex("54c0f30d8bad6e2b38b9d5df22d1c632"));
+        let gtk = gtk.unwrap();
+        assert_eq!(
+            (gtk.index, gtk.key.as_slice()),
+            (1, hex("101112131415161718191a1b1c1d1e1f").as_slice())
+        );
+        let igtk = igtk.unwrap();
+        assert_eq!(igtk.index, 4);
+        assert_eq!(igtk.key.as_slice(), hex("202122232425262728292a2b2c2d2e2f"));
+        assert_eq!(igtk.ipn, [3, 0, 0, 0, 0, 0]);
     }
 
     #[test]
@@ -788,10 +1121,14 @@ mod tests {
     const GTK: [u8; 16] = [0x61; 16];
     const RSC: [u8; 6] = [9, 8, 7, 6, 5, 4];
 
+    const IGTK: [u8; 16] = [0x71; 16];
+    const IPN: [u8; 6] = [1, 2, 3, 0, 0, 0];
+
     /// The authenticator's side, as far as the tests need it.
     struct Ap {
         pmk: [u8; 32],
         rsne: Vec<u8>,
+        suite: Suite,
         replay_counter: u64,
         /// From the SNonce of message 2.
         ptk: Option<Ptk>,
@@ -799,12 +1136,21 @@ mod tests {
 
     impl Ap {
         fn new() -> Self {
+            Self::with_rsne(AP_RSNE)
+        }
+
+        fn with_rsne(element: &str) -> Self {
             Self {
                 pmk: psk_from_passphrase(b"correct horse", b"net").unwrap(),
-                rsne: hex(AP_RSNE),
+                rsne: hex(element),
+                suite: rsne(element).negotiate().unwrap(),
                 replay_counter: 0,
                 ptk: None,
             }
+        }
+
+        fn version(&self) -> u16 {
+            self.suite.akm.key_version()
         }
 
         /// An EAPOL-Key frame with the next replay counter, and a MIC if `info` says so.
@@ -824,10 +1170,8 @@ mod tests {
             frame[OFFSET_KEY_DATA_LEN..KEY_FRAME_LEN].copy_from_slice(&(key_data.len() as u16).to_be_bytes());
             frame[KEY_FRAME_LEN..].copy_from_slice(key_data);
             if info & INFO_MIC != 0 {
-                let mut mac = hmac_sha1(&self.ptk.as_ref().unwrap().kck);
-                mac.update(&frame);
-                let mic = mac.finalize().into_bytes();
-                frame[OFFSET_MIC..OFFSET_MIC + MIC_LEN].copy_from_slice(&mic[..MIC_LEN]);
+                let mic = mic(info, &self.ptk.as_ref().unwrap().kck, &[&frame]);
+                frame[OFFSET_MIC..OFFSET_MIC + MIC_LEN].copy_from_slice(&mic);
             }
             frame
         }
@@ -852,15 +1196,24 @@ mod tests {
             kde
         }
 
+        fn igtk_kde(igtk: &[u8], index: u16) -> Vec<u8> {
+            let mut kde = std::vec![0xDD, (12 + igtk.len()) as u8];
+            kde.extend_from_slice(&KDE_IGTK);
+            kde.extend_from_slice(&index.to_le_bytes());
+            kde.extend_from_slice(&IPN);
+            kde.extend_from_slice(igtk);
+            kde
+        }
+
         fn message_1(&mut self) -> Vec<u8> {
-            self.frame(INFO_VERSION_HMAC_SHA1_AES | INFO_PAIRWISE | INFO_ACK, &ANONCE, &[])
+            self.frame(self.version() | INFO_PAIRWISE | INFO_ACK, &ANONCE, &[])
         }
 
         /// Takes message 2: derives the PTK from its SNonce and checks its MIC.
         fn take_message_2(&mut self, frame: &[u8]) -> KeyFrame<'static> {
             let frame: &'static [u8] = frame.to_vec().leak();
             let key = KeyFrame::parse(frame).unwrap();
-            let ptk = Ptk::derive(&self.pmk, &AA, &SPA, &ANONCE, &key.nonce);
+            let ptk = Ptk::derive(self.suite.akm, &self.pmk, &AA, &SPA, &ANONCE, &key.nonce);
             assert!(key.mic_is_valid(&ptk.kck));
             self.ptk = Some(ptk);
             key
@@ -869,9 +1222,12 @@ mod tests {
         fn message_3_with(&mut self, rsne: &[u8], gtk: &[u8]) -> Vec<u8> {
             let mut data = rsne.to_vec();
             data.extend_from_slice(&Self::gtk_kde(gtk, 1));
+            if self.suite.mfp {
+                data.extend_from_slice(&Self::igtk_kde(&IGTK, 4));
+            }
             let data = self.wrap(data);
             self.frame(
-                INFO_VERSION_HMAC_SHA1_AES
+                self.version()
                     | INFO_PAIRWISE
                     | INFO_INSTALL
                     | INFO_ACK
@@ -889,9 +1245,13 @@ mod tests {
         }
 
         fn group_message_1(&mut self, gtk: &[u8], index: u8) -> Vec<u8> {
-            let data = self.wrap(Self::gtk_kde(gtk, index));
+            let mut data = Self::gtk_kde(gtk, index);
+            if self.suite.mfp {
+                data.extend_from_slice(&Self::igtk_kde(&[index + 0x70; 16], 4 + (index as u16 & 1)));
+            }
+            let data = self.wrap(data);
             self.frame(
-                INFO_VERSION_HMAC_SHA1_AES | INFO_ACK | INFO_MIC | INFO_SECURE | INFO_ENCRYPTED_KEY_DATA,
+                self.version() | INFO_ACK | INFO_MIC | INFO_SECURE | INFO_ENCRYPTED_KEY_DATA,
                 &[0; 32],
                 &data,
             )
@@ -899,13 +1259,18 @@ mod tests {
     }
 
     fn supplicant(passphrase: &[u8]) -> Supplicant {
+        supplicant_for(passphrase, AP_RSNE)
+    }
+
+    fn supplicant_for(passphrase: &[u8], ap_rsne: &str) -> Supplicant {
         Supplicant::new(
             psk_from_passphrase(passphrase, b"net").unwrap(),
             AA,
             SPA,
-            rsne(AP_RSNE),
+            rsne(ap_rsne),
             [0x5E; 32],
         )
+        .unwrap()
     }
 
     /// Runs the 4-way handshake to its end.
@@ -936,9 +1301,15 @@ mod tests {
         assert_eq!(reply[0], EAPOL_VERSION);
         assert_eq!(message_2.info, INFO_VERSION_HMAC_SHA1_AES | INFO_PAIRWISE | INFO_MIC);
         assert_eq!(message_2.replay_counter, 1);
-        assert_eq!(message_2.key_data, Rsne::wpa2_psk_ccmp().as_bytes());
+        assert_eq!(message_2.key_data, Rsne::for_suite(PSK).as_bytes());
 
-        let Outcome::Keys { reply: len, tk, gtk } = sta.handle(&ap.message_3(), &mut reply) else {
+        let Outcome::Keys {
+            reply: len,
+            tk,
+            gtk,
+            igtk,
+        } = sta.handle(&ap.message_3(), &mut reply)
+        else {
             core::panic!("no message 4");
         };
         let ptk = ap.ptk.as_ref().unwrap();
@@ -959,6 +1330,63 @@ mod tests {
                 rsc: RSC
             })
         );
+        assert!(igtk.is_none());
+    }
+
+    #[test]
+    fn psk_sha256_handshake_yields_the_igtk_and_rekeys_it() {
+        for element in [
+            "30 14 0100 000fac04 0100 000fac04 0100 000fac06 cc00",
+            "30 14 0100 000fac04 0100 000fac04 0100 000fac02 8000",
+        ] {
+            let mut ap = Ap::with_rsne(element);
+            let mut sta = supplicant_for(b"correct horse", element);
+            let mut reply = [0; REPLY_MAX];
+            let Outcome::Reply(len) = sta.handle(&ap.message_1(), &mut reply) else {
+                core::panic!("no message 2");
+            };
+            let message_2 = ap.take_message_2(&reply[..len]);
+            assert_eq!(message_2.info, ap.version() | INFO_PAIRWISE | INFO_MIC);
+            assert_eq!(message_2.key_data, Rsne::for_suite(ap.suite).as_bytes());
+
+            let Outcome::Keys {
+                reply: len,
+                tk,
+                gtk,
+                igtk,
+            } = sta.handle(&ap.message_3(), &mut reply)
+            else {
+                core::panic!("no message 4");
+            };
+            assert!(KeyFrame::parse(&reply[..len])
+                .unwrap()
+                .mic_is_valid(&ap.ptk.as_ref().unwrap().kck));
+            assert_eq!(tk, Some(ap.ptk.as_ref().unwrap().tk));
+            assert!(gtk.is_some());
+            assert!(
+                igtk == Some(Igtk {
+                    index: 4,
+                    key: IGTK,
+                    ipn: IPN
+                })
+            );
+
+            // A group rekey brings a new GTK and a new IGTK, once.
+            let Outcome::Keys { igtk, .. } = sta.handle(&ap.group_message_1(&[0x62; 16], 1), &mut reply) else {
+                core::panic!("no group message 2");
+            };
+            assert!(
+                igtk == Some(Igtk {
+                    index: 5,
+                    key: [0x71; 16],
+                    ipn: IPN
+                })
+            );
+            let Outcome::Keys { gtk, igtk, .. } = sta.handle(&ap.group_message_1(&[0x62; 16], 1), &mut reply) else {
+                core::panic!("no group message 2");
+            };
+            assert!(gtk.is_none() && igtk.is_none());
+        }
     }
 
     #[test]
@@ -971,7 +1399,7 @@ mod tests {
         };
         // The AP cannot verify message 2. Should it send message 3 anyway, its MIC is refused.
         let key = KeyFrame::parse(&reply[..len]).unwrap();
-        let ap_ptk = Ptk::derive(&ap.pmk, &AA, &SPA, &ANONCE, &key.nonce);
+        let ap_ptk = Ptk::derive(Akm::Psk, &ap.pmk, &AA, &SPA, &ANONCE, &key.nonce);
         assert!(!key.mic_is_valid(&ap_ptk.kck));
         ap.ptk = Some(ap_ptk);
         assert!(matches!(sta.handle(&ap.message_3(), &mut reply), Outcome::Ignored));
@@ -1022,7 +1450,10 @@ mod tests {
         let (mut ap, mut sta) = connected();
         let mut reply = [0; REPLY_MAX];
         // The AP did not get message 4: it sends message 3 again, with the next replay counter.
-        let Outcome::Keys { reply: len, tk, gtk } = sta.handle(&ap.message_3(), &mut reply) else {
+        let Outcome::Keys {
+            reply: len, tk, gtk, ..
+        } = sta.handle(&ap.message_3(), &mut reply)
+        else {
             core::panic!("no message 4");
         };
         assert!(KeyFrame::parse(&reply[..len])
@@ -1079,13 +1510,7 @@ mod tests {
         // A valid MIC over another ANonce.
         let data = ap.wrap(ap.rsne.clone());
         let other = ap.frame(
-            INFO_VERSION_HMAC_SHA1_AES
-                | INFO_PAIRWISE
-                | INFO_INSTALL
-                | INFO_ACK
-                | INFO_MIC
-                | INFO_SECURE
-                | INFO_ENCRYPTED_KEY_DATA,
+            ap.version() | INFO_PAIRWISE | INFO_INSTALL | INFO_ACK | INFO_MIC | INFO_SECURE | INFO_ENCRYPTED_KEY_DATA,
             &[0x11; 32],
             &data,
         );
@@ -1097,7 +1522,10 @@ mod tests {
         let (mut ap, mut sta) = connected();
         let mut reply = [0; REPLY_MAX];
         let new_gtk = [0x62; 16];
-        let Outcome::Keys { reply: len, tk, gtk } = sta.handle(&ap.group_message_1(&new_gtk, 2), &mut reply) else {
+        let Outcome::Keys {
+            reply: len, tk, gtk, ..
+        } = sta.handle(&ap.group_message_1(&new_gtk, 2), &mut reply)
+        else {
             core::panic!("no group message 2");
         };
         let message_2 = KeyFrame::parse(&reply[..len]).unwrap();

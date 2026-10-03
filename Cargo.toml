@@ -36,12 +36,23 @@ features = ["wpa2"]
 [features]
 default = []
 # `Control::join_wpa2`: WPA2-Personal networks. The nRF70 firmware has no supplicant, so the key
-# handshakes run in the driver, which costs about 17 KB of flash and the crates below.
-wpa2 = ["dep:aes-kw", "dep:hmac", "dep:pbkdf2", "dep:rand_core", "dep:sha1"]
+# handshakes run in the driver, which costs about 30 KB of flash and the crates below.
+wpa2 = [
+    "dep:aes",
+    "dep:aes-kw",
+    "dep:cmac",
+    "dep:hmac",
+    "dep:pbkdf2",
+    "dep:rand_core",
+    "dep:sha1",
+    "dep:sha2",
+]
 
 [dependencies]
+aes = { version = "0.9.0", default-features = false, optional = true }
 aes-kw = { version = "0.3.1", default-features = false, optional = true }
 align-data = "0.1.0"
+cmac = { version = "0.8.0", default-features = false, optional = true }
 defmt = "1.0.1"
 embassy-futures = "0.1.2"
 embassy-net-driver-channel = "0.4.0"
@@ -54,3 +65,4 @@ num_enum = { version = "0.7.4", default-features = false }
 pbkdf2 = { version = "0.13.0", default-features = false, features = ["hmac"], optional = true }
 rand_core = { version = "0.10.1", optional = true }
 sha1 = { version = "0.11.0", default-features = false, optional = true }
+sha2 = { version = "0.11.0", default-features = false, optional = true }

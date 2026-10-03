@@ -2143,7 +2143,7 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
             let suitable = match self.conn_credentials {
                 Credentials::Open => bss.capability & CAPABILITY_PRIVACY == 0,
                 #[cfg(feature = "wpa2")]
-                Credentials::Wpa2(_) => bss.rsne.is_some_and(|rsne| rsne.offers_wpa2_psk_ccmp()),
+                Credentials::Wpa2(_) => bss.rsne.is_some_and(|rsne| rsne.negotiate().is_some()),
             };
             debug!(
                 "found {:02x} at {} MHz, {} dBm, suitable: {}",

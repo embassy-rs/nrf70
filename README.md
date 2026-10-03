@@ -40,6 +40,10 @@ Working:
   nRF5340 at 64 MHz built for size, 0.5 s at 128 MHz built for speed. A wrong passphrase shows as
   `ConnectError::HandshakeFailed` after about 3 s. The group key handshake was checked on an
   nRF7002-DK too, against an access point that changes its group key every 30 s.
+  Management frame protection (IEEE 802.11w) is used when the access point offers it, required
+  or not, with BIP-CMAC-128: the driver then takes PSK-SHA256 key management if the access point
+  offers it (AES-128-CMAC MICs, keys derived with SHA-256), and hands the chip the management
+  group key (IGTK) too. The handshakes are checked against vectors computed with OpenSSL.
 - The state of the link with `Control::link_status`: the access point, its channel, the signal
   strength and the rates in use, as the chip reports them.
 - 802.11 power save with `Control::set_power_save`, off until asked for: the chip sleeps between
@@ -69,9 +73,10 @@ Working:
 
 Not yet:
 
-- Beyond WPA2-Personal with CCMP, which works (see above): WPA3 (SAE), management frame protection,
-  and access points that still use TKIP for the group key (WPA/WPA2 mixed mode). An access point
-  that requires one of them is reported as `ConnectError::SecurityMismatch`.
+- Beyond WPA2-Personal with CCMP, which works with or without management frame protection (see
+  above): WPA3 (SAE), and access points that still use TKIP for the group key (WPA/WPA2 mixed
+  mode). An access point that requires one of them is reported as
+  `ConnectError::SecurityMismatch`.
 - Target wake time, and the current drawn in power save and low power mode, which is not
   measured yet.
 - AP mode.
@@ -79,8 +84,8 @@ Not yet:
 ## Cargo features
 
 - `wpa2` (off by default): `Control::join_wpa2`, `Control::join_wpa2_psk` and `wpa2_psk`. It adds
-  about 17 KB of flash and 2 KB of RAM on an nRF5340, and the `aes-kw`, `hmac`, `pbkdf2`, `sha1`
-  and `rand_core` crates. Without it the driver joins open networks only, and depends on none of
+  about 30 KB of flash and 2 KB of RAM on an nRF5340, and the `aes`, `aes-kw`, `cmac`, `hmac`,
+  `pbkdf2`, `sha1`, `sha2` and `rand_core` crates. Without it the driver joins open networks only, and depends on none of
   them.
 
 ```toml
