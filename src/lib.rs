@@ -29,6 +29,8 @@ mod c {
     pub const RX_BUF_HEADROOM: u32 = 4;
 }
 
+#[cfg(feature = "ap")]
+mod ap;
 #[cfg(feature = "wpa3")]
 mod sae;
 #[cfg(feature = "wpa2")]
@@ -38,6 +40,8 @@ mod wpa2;
 #[cfg(feature = "wpa3")]
 mod wpa3;
 
+#[cfg(feature = "ap")]
+pub use ap::ApError;
 #[cfg(feature = "wpa2")]
 pub use wpa2::wpa2_psk;
 
@@ -98,6 +102,10 @@ enum Request {
     PowerSave,
     PowerOff,
     PowerOn,
+    #[cfg(feature = "ap")]
+    StartAp(ap::Settings),
+    #[cfg(feature = "ap")]
+    StopAp,
 }
 
 enum ScanEvent {
@@ -113,6 +121,8 @@ struct Shared {
     link_status: Channel<NoopRawMutex, Option<LinkStatus>, 1>,
     power_save: Channel<NoopRawMutex, Option<PowerSave>, 1>,
     power_done: Channel<NoopRawMutex, (), 1>,
+    #[cfg(feature = "ap")]
+    ap_result: Channel<NoopRawMutex, Result<(), ApError>, 1>,
 }
 
 /// An SSID, up to 32 bytes.
@@ -177,12 +187,16 @@ pub enum ConnectError {
 pub struct State {
     shared: Shared,
     ch: ch::State<MTU, 4, 4>,
+    #[cfg(feature = "ap")]
+    ap_held: ap::HeldFrames,
 }
 
 impl State {
     pub fn new() -> Self {
         Self {
             ch: ch::State::new(),
+            #[cfg(feature = "ap")]
+            ap_held: ap::HeldFrames::new(),
             shared: Shared {
                 requests: Channel::new(),
                 scan_results: Channel::new(),
@@ -190,6 +204,8 @@ impl State {
                 link_status: Channel::new(),
                 power_save: Channel::new(),
                 power_done: Channel::new(),
+                #[cfg(feature = "ap")]
+                ap_result: Channel::new(),
             },
         }
     }
@@ -287,6 +303,8 @@ where
         link_up: false,
         tx_tokens_busy: 0,
         link_status_requested: false,
+        #[cfg(feature = "ap")]
+        ap: ap::State::new(&mut state.ap_held),
     };
     runner.init().await;
 
@@ -624,6 +642,23 @@ impl_cmd!(
     c::umac_cmd_get_scan_results,
     c::umac_commands::UMAC_CMD_GET_SCAN_RESULTS
 );
+#[cfg(feature = "ap")]
+mod ap_cmds {
+    use super::*;
+    impl_cmd!(umac, c::umac_cmd_chg_vif_attr, c::umac_commands::UMAC_CMD_SET_INTERFACE);
+    impl_cmd!(
+        umac,
+        c::umac_cmd_mgmt_frame_reg,
+        c::umac_commands::UMAC_CMD_REGISTER_FRAME
+    );
+    impl_cmd!(umac, c::umac_cmd_mgmt_tx, c::umac_commands::UMAC_CMD_FRAME);
+    impl_cmd!(umac, c::umac_cmd_set_wiphy, c::umac_commands::UMAC_CMD_SET_WIPHY);
+    impl_cmd!(umac, c::umac_cmd_start_ap, c::umac_commands::UMAC_CMD_START_AP);
+    impl_cmd!(umac, c::umac_cmd_stop_ap, c::umac_commands::UMAC_CMD_STOP_AP);
+    impl_cmd!(umac, c::umac_cmd_set_bss, c::umac_commands::UMAC_CMD_SET_BSS);
+    impl_cmd!(umac, c::umac_cmd_add_sta, c::umac_commands::UMAC_CMD_NEW_STATION);
+    impl_cmd!(umac, c::umac_cmd_del_sta, c::umac_commands::UMAC_CMD_DEL_STATION);
+}
 
 fn sliceit<T>(t: &T) -> &[u8] {
     unsafe { slice::from_raw_parts(t as *const _ as _, size_of::<T>()) }
@@ -1378,6 +1413,9 @@ pub struct Runner<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> {
     tx_tokens_busy: u16,
     /// [`Control::link_status`] is waiting for the RPU's answer.
     link_status_requested: bool,
+    /// The access point.
+    #[cfg(feature = "ap")]
+    ap: ap::State<'a>,
 }
 
 /// What the runner asks of `wpa3.rs`, in a build without the `wpa3` feature: nothing.
@@ -1416,6 +1454,28 @@ impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
     }
 
     fn forget_keys(&mut self) {}
+}
+
+/// What the runner asks of `ap.rs`, in a build without the `ap` feature: nothing.
+#[cfg(not(feature = "ap"))]
+impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
+    fn ap_running(&self) -> bool {
+        false
+    }
+
+    fn ap_has_room(&self) -> bool {
+        true
+    }
+
+    fn set_ap_address(&mut self, _mac_addr: [u8; 6]) {}
+
+    fn forget_ap(&mut self) {}
+
+    async fn ap_hold(&mut self, _frame: &[u32], _len: usize) -> bool {
+        false
+    }
+
+    async fn ap_deliver(&mut self) {}
 }
 
 impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT> {
@@ -1520,9 +1580,10 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
         info!("Bringing the interface up...");
         self.set_mac_address(mac_addr).await;
         self.set_station_address(mac_addr);
+        self.set_ap_address(mac_addr);
         self.state_ch
             .set_hardware_address(ch::driver::HardwareAddress::Ethernet(mac_addr));
-        self.set_interface_up().await;
+        self.set_interface_state(true).await;
         self.powered = true;
         if self.power_save {
             self.set_power_save(true).await;
@@ -1546,6 +1607,7 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
         self.powered = false;
         self.rpu_awake = false;
         self.irq_pending_ack = false;
+        self.forget_ap();
         self.tx_tokens_busy = 0;
         info!("powered off");
     }
@@ -1581,12 +1643,13 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
             }
             self.check_conn_timeout().await;
             self.check_pending_keys().await;
+            self.ap_deliver().await;
             self.rpu_ps_sleep().await;
 
             let shared = self.shared;
             // With WPA2, one token stays free for the supplicant.
             let data_tx_tokens = MAX_TX_TOKENS as u32 - Self::EAPOL_TX_TOKENS;
-            let can_tx = self.link_up && self.tx_tokens_busy.count_ones() < data_tx_tokens;
+            let can_tx = self.link_up && self.tx_tokens_busy.count_ones() < data_tx_tokens && self.ap_has_room();
             // What the loop has to come back for without an interrupt.
             let wake_at = [
                 (self.powered && !self.low_power).then_some(poll_at),
@@ -1629,7 +1692,9 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
                     let len = frame.len();
                     slice8_mut(&mut tx_frame)[..len].copy_from_slice(frame);
                     self.ch.tx_done();
-                    self.send_frame(&tx_frame, len).await;
+                    if !self.ap_hold(&tx_frame, len).await {
+                        self.send_frame(&tx_frame, len).await;
+                    }
                 }
                 Either3::Third(_) => {}
             }
@@ -1691,6 +1756,14 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
                 self.init().await;
                 let _ = self.shared.power_done.try_send(());
             }
+            #[cfg(feature = "ap")]
+            Request::StartAp(_) => {
+                let _ = self.shared.ap_result.try_send(Err(ApError::PoweredOff));
+            }
+            #[cfg(feature = "ap")]
+            Request::StopAp => {
+                let _ = self.shared.ap_result.try_send(Ok(()));
+            }
         }
     }
 
@@ -1702,8 +1775,8 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
         let connecting = !matches!(self.conn, ConnState::Idle | ConnState::Connected);
         match request {
             Request::Scan => {
-                if scan_running || connecting {
-                    warn!("scan refused: a scan or a connection is in progress");
+                if scan_running || connecting || self.ap_running() {
+                    warn!("scan refused: a scan, a connection or the access point is in progress");
                     self.push_scan_event(ScanEvent::Aborted);
                     return;
                 }
@@ -1725,6 +1798,16 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
                 let cmd: c::umac_cmd_get_power_save_info = unsafe { zeroed() };
                 self.send_cmd(cmd).await;
             }
+            #[cfg(feature = "ap")]
+            Request::StartAp(settings) => {
+                let result = self.start_ap(settings).await;
+                let _ = self.shared.ap_result.try_send(result);
+            }
+            #[cfg(feature = "ap")]
+            Request::StopAp => {
+                self.stop_ap().await;
+                let _ = self.shared.ap_result.try_send(Ok(()));
+            }
             Request::LinkStatus => match self.conn_bss {
                 Some(bss) if self.conn == ConnState::Connected => {
                     self.get_station(bss).await;
@@ -1735,7 +1818,7 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
                 }
             },
             Request::Connect(ssid, credentials) => {
-                if scan_running || connecting {
+                if scan_running || connecting || self.ap_running() {
                     let _ = self.shared.connect_result.try_send(Err(ConnectError::Busy));
                     return;
                 }
@@ -1810,6 +1893,10 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
                     warn!("TX done for invalid token {}", token);
                 }
             }
+            #[cfg(feature = "ap")]
+            Ok(c::umac_data_commands::CMD_PM_MODE) => self.ap_power_save(body).await,
+            #[cfg(feature = "ap")]
+            Ok(c::umac_data_commands::CMD_PS_GET_FRAMES) => self.ap_get_frames(body).await,
             Ok(c::umac_data_commands::CMD_CARRIER_ON) => {
                 debug!("carrier on");
                 self.carrier_on = true;
@@ -1914,6 +2001,21 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
                     let _ = self.shared.link_status.try_send(status);
                 }
             }
+            #[cfg(feature = "ap")]
+            Ok(UMAC_EVENT_NEW_STATION) if self.ap_running() => {
+                let station = unsliceit::<c::umac_event_new_station>(body).mac_addr;
+                debug!("station {:02x} added as peer", station);
+            }
+            #[cfg(feature = "ap")]
+            Ok(UMAC_EVENT_DEL_STATION) if self.ap_running() => self.ap_station_removed(body).await,
+            #[cfg(feature = "ap")]
+            Ok(UMAC_EVENT_FRAME) => self.ap_frame(body).await,
+            #[cfg(feature = "ap")]
+            Ok(UMAC_EVENT_FRAME_TX_STATUS) => self.ap_frame_sent(body).await,
+            #[cfg(feature = "ap")]
+            Ok(UMAC_EVENT_SET_INTERFACE) => self.interface_type_set(body),
+            #[cfg(feature = "ap")]
+            Ok(UMAC_EVENT_COOKIE_RESP) => {}
             Ok(UMAC_EVENT_NEW_STATION) => {
                 let peer = unsliceit::<c::umac_event_new_station>(body).mac_addr;
                 debug!("AP {:02x} added as peer", peer);
@@ -2343,6 +2445,12 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
     /// token). The RPU builds the 802.11 header from the Ethernet one. Returns the token, or `None`
     /// if the frame was not sent: it is shorter than an Ethernet header, or no token is free.
     async fn send_frame(&mut self, frame: &[u32], len: usize) -> Option<usize> {
+        self.send_frame_flags(frame, len, false, true).await
+    }
+
+    /// [`Self::send_frame`], with the power save bits of a frame for a station of the access
+    /// point: `more_data` says more frames are kept for it, `eosp` ends its service period.
+    async fn send_frame_flags(&mut self, frame: &[u32], len: usize, more_data: bool, eosp: bool) -> Option<usize> {
         let bytes = &slice8(frame)[..len];
         let token = self.tx_tokens_busy.trailing_ones() as usize;
         if len < 14 || token >= MAX_TX_TOKENS {
@@ -2375,8 +2483,8 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
         cmd.buff.mac_hdr_info.src = src;
         cmd.buff.mac_hdr_info.etype = u16::from_be_bytes([bytes[12], bytes[13]]);
         cmd.buff.mac_hdr_info.tx_flags = tx_priority(bytes);
-        // No power save buffering towards an AP: every frame ends the service period.
-        cmd.buff.mac_hdr_info.eosp = 1;
+        cmd.buff.mac_hdr_info.more_data = more_data as u8;
+        cmd.buff.mac_hdr_info.eosp = eosp as u8;
         cmd.buff.num_tx_pkts = 1;
         cmd.info = c::tx_buff_info {
             pkt_length: len as u16,
@@ -2849,11 +2957,11 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
         self.send_cmd(cmd).await;
     }
 
-    /// Brings the default interface up and waits for the RPU to confirm (NCS
+    /// Brings the default interface up or down and waits for the RPU to confirm (NCS
     /// `nrf_wifi_sys_fmac_chg_vif_state`).
-    async fn set_interface_up(&mut self) {
+    async fn set_interface_state(&mut self, up: bool) {
         let mut cmd: c::umac_cmd_chg_vif_state = unsafe { zeroed() };
-        cmd.info.state = 1;
+        cmd.info.state = up as _;
         cmd.info.if_index = 0;
         self.send_cmd(cmd).await;
 

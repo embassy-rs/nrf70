@@ -60,6 +60,17 @@ Working:
   against the test vectors of IEEE 802.11-2020, J.10, and the handshake after it against vectors
   computed with OpenSSL. Both PWE derivations were checked on an nRF7002-DK against hostapd, with
   group key renewals every 30 s.
+- Access point mode with `Control::start_ap_open`, with the `ap` cargo feature: an open network on
+  a 2.4 GHz channel (1 to 13) or a 5 GHz one that needs no radar detection (36 to 48, 149 to
+  177), for up to four stations. The firmware sends the beacons; the driver answers probe,
+  authentication and association requests and adds the stations to the chip, as hostapd does in
+  the nRF Connect SDK. It keeps the frames for a station that dozes (802.11 power save) and hands
+  them over when the station wakes up; while they fill its four places it takes no more frames
+  from embassy-net, so TCP slows down instead of losing segments. `Control::stop_ap` ends it.
+  On an nRF7002-DK with a laptop as station: 9.7 Mbit/s up and 12.2 Mbit/s down on channel 36,
+  as in station mode, with the laptop's power save on or off. On 2.4 GHz that laptop announced
+  itself away 80 ms out of every 100 even with its power save off (its Bluetooth coexistence,
+  most likely), and got 3 Mbit/s.
 - The state of the link with `Control::link_status`: the access point, its channel, the signal
   strength and the rates in use, as the chip reports them.
 - 802.11 power save with `Control::set_power_save`, off until asked for: the chip sleeps between
@@ -95,7 +106,11 @@ Not yet:
   `ConnectError::SecurityMismatch`.
 - Target wake time, and the current drawn in power save and low power mode, which is not
   measured yet.
-- AP mode.
+- In AP mode: WPA2 and WPA3, 802.11n and WMM (the access point announces the 802.11a/b/g rates
+  only), and letting go of stations that vanish without a word (they keep their place until they
+  come back). Delivery to sleeping stations was checked with a laptop that wakes up when a beacon
+  says frames wait for it; PS-Poll, U-APSD and group frames while a station sleeps are not
+  tested.
 
 ## Cargo features
 
@@ -105,9 +120,12 @@ Not yet:
   only, and depends on none of them.
 - `wpa3` (off by default, implies `wpa2`): `Control::join_wpa3`. It adds about 27 KB of flash and
   3 KB of RAM to a WPA2 application on an nRF5340, and the `p256` crate.
+- `ap` (off by default): `Control::start_ap_open` and `Control::stop_ap`. It adds about 15 KB of
+  flash and 9 KB of RAM on an nRF5340, 6 KB of which in `State`: the frames kept for stations
+  that sleep.
 
 ```toml
-nrf70 = { version = "0.2", features = ["wpa3"] }
+nrf70 = { version = "0.2", features = ["wpa3", "ap"] }
 ```
 
 ## Running the example

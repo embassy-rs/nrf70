@@ -31,7 +31,7 @@ include = [
 
 # docs.rs shows the whole API.
 [package.metadata.docs.rs]
-features = ["wpa3"]
+features = ["wpa3", "ap"]
 
 [features]
 default = []
@@ -50,6 +50,10 @@ wpa2 = [
 # `Control::join_wpa3`: WPA3-Personal networks, whose SAE key exchange runs in the driver too, on
 # the P-256 curve of the `p256` crate.
 wpa3 = ["wpa2", "dep:p256"]
+# `Control::start_ap_open`: access point mode. The firmware beacons and keeps the stations' links;
+# the driver answers probe, authentication and association requests and keeps the frames of
+# stations that sleep, as hostapd does in the nRF Connect SDK.
+ap = []
 
 [dependencies]
 aes = { version = "0.9.0", default-features = false, optional = true }
