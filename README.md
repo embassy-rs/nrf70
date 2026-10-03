@@ -109,6 +109,12 @@ Working:
   A station not heard from for 5 minutes is polled with a frame it has to acknowledge (hostapd's
   `ap_max_inactivity`, which the SDK's driver cannot poll for and gives up on stations instead),
   through the frames kept for sleeping stations, and let go if it does not within 10 s.
+  A station that is let go (its poll or handshake unanswered, the access point stopping) stays in
+  the chip until it acknowledges its deauthentication. The chip sends management frames right
+  away, and one of two deauthentications to a dozing laptop went unheard, which left the laptop
+  associated in its own eyes. A dozing station gets its TIM bit set instead, and the
+  deauthentication once it wakes up: the laptop woke up for it within 0.15 to 0.35 s, and heard 8
+  out of 8.
 - The state of the link with `Control::link_status`: the access point, its channel, the signal
   strength and the rates in use, as the chip reports them.
 - 802.11 power save with `Control::set_power_save`, off until asked for: the chip sleeps between

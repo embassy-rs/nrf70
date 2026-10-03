@@ -47,6 +47,11 @@ const INACTIVITY: Duration = Duration::from_secs(300);
 const POLL_TIMEOUT: Duration = Duration::from_secs(10);
 /// Ethertype of the poll: IEEE 802's first local experimental one, which a station's stack drops.
 const ETHERTYPE_POLL: u16 = 0x88B5;
+/// How long a station that is let go may take to acknowledge its deauthentication, which waits
+/// for it to wake up if it dozes, before it goes all the same.
+const LEAVE_TIMEOUT: Duration = Duration::from_secs(2);
+/// How many times the deauthentication goes out before the station goes all the same.
+const DEAUTH_TRIES: u8 = 3;
 
 /// Management frame subtypes, as the first byte of the frame control field (type 0).
 const ASSOC_REQ: u8 = 0x00;
@@ -607,6 +612,20 @@ enum Phase {
     Associated,
 }
 
+/// What a station that is let go waits for: to hear why. It stays in the RPU until it
+/// acknowledges its deauthentication, as hostapd's stations stay until its TX status
+/// (`ap_sta_deauth_cb`).
+#[derive(Clone, Copy)]
+struct Leaving {
+    reason: u16,
+    /// The deauthentication went out, and its TX status is awaited.
+    sent: bool,
+    /// How many times it went out.
+    tries: u8,
+    /// When the station goes, told or not.
+    deadline: Instant,
+}
+
 #[derive(Clone, Copy)]
 struct Station {
     addr: [u8; 6],
@@ -629,6 +648,8 @@ struct Station {
     last_seen: Instant,
     /// When a poll that went unanswered lets it go.
     poll_deadline: Option<Instant>,
+    /// It is being let go: it keeps its place in the RPU until it hears why.
+    leaving: Option<Leaving>,
     /// With WPA2, the RSNE of its association request, which message 2 must repeat.
     #[cfg(feature = "wpa2")]
     rsne: Option<(Rsne, Suite)>,
@@ -666,6 +687,7 @@ impl Station {
             service_period: 0,
             last_seen: Instant::MIN,
             poll_deadline: None,
+            leaving: None,
             #[cfg(feature = "wpa2")]
             rsne: None,
             #[cfg(feature = "wpa2")]
@@ -1071,6 +1093,13 @@ impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
                 self.remove_station(slot, Some(REASON_LEAVING)).await;
             }
         }
+        // Each one hears it before the access point goes, or the time it gets runs out.
+        let told = |r: &Self| r.ap.storage.stations.0.iter().flatten().all(|s| s.leaving.is_none());
+        if !self.wait_until(LEAVE_TIMEOUT, told).await {
+            for slot in 0..MAX_STATIONS {
+                self.remove_station(slot, None).await;
+            }
+        }
         self.set_link(false);
         // Without settings no frame is answered any more; the access point counts as running until
         // the RPU has stopped it, so that the station removals it reports meanwhile land here.
@@ -1324,6 +1353,9 @@ impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
         let Some(mgmt) = Mgmt::parse(mlme_frame(event)) else {
             return;
         };
+        if mgmt.subtype == DEAUTH {
+            return self.deauthentication_sent(&mgmt.to, acked).await;
+        }
         if !matches!(mgmt.subtype, ASSOC_RESP | REASSOC_RESP) || mgmt.le16(2) != Some(STATUS_SUCCESS) {
             return;
         }
@@ -1422,20 +1454,17 @@ impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
     }
 
     /// Forgets the station of `slot` and removes it from the RPU, after telling it why if there
-    /// is a `reason` (hostapd's `ap_sta_deauthenticate` and `ap_free_sta`).
+    /// is a `reason` (hostapd's `ap_sta_deauthenticate` and `ap_free_sta`). An associated station
+    /// is let go first, and removed once it has heard why (see [`Self::let_go`]).
     async fn remove_station(&mut self, slot: usize, reason: Option<u16>) {
-        let Some(station) = self.ap.storage.stations.0[slot].take() else {
+        let Some(station) = self.ap.storage.stations.0[slot] else {
             return;
         };
-        self.ap.storage.held.drop_station(slot);
-        #[cfg(feature = "wpa2")]
-        {
-            self.ap.storage.handshakes[slot] = None;
-            #[cfg(feature = "wpa3")]
-            {
-                self.ap.storage.exchanges[slot] = None;
-            }
+        if let (Some(reason), Phase::Associated, None) = (reason, station.phase, station.leaving) {
+            return self.let_go(slot, reason).await;
         }
+        self.ap.storage.stations.0[slot] = None;
+        self.forget_frames(slot);
         if let Some(reason) = reason {
             let mut frame = [0; 26];
             let len = deauthentication(&self.ap.mac_addr, &station.addr, reason, &mut frame);
@@ -1453,6 +1482,100 @@ impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
         self.finish_rekey().await;
     }
 
+    /// Drops what the station of `slot` has under way: its kept frames, its handshake, its SAE
+    /// exchange.
+    fn forget_frames(&mut self, slot: usize) {
+        self.ap.storage.held.drop_station(slot);
+        #[cfg(feature = "wpa2")]
+        {
+            self.ap.storage.handshakes[slot] = None;
+            #[cfg(feature = "wpa3")]
+            {
+                self.ap.storage.exchanges[slot] = None;
+            }
+        }
+    }
+
+    /// Lets the associated station of `slot` go: it loses its port and its frames, and gets a
+    /// deauthentication, which it has to hear before it is removed. The RPU sends a management
+    /// frame right away, and of two deauthentications to a dozing laptop, one went unheard (the
+    /// laptop then stays associated in its own eyes, and the RPU tells nothing of the frames it
+    /// still sends). So a dozing station gets its TIM bit set, and the deauthentication once it
+    /// wakes up or polls, as mac80211 keeps deauthentications for dozing stations; it is removed on
+    /// the acknowledgement, after [`DEAUTH_TRIES`] tries, or after [`LEAVE_TIMEOUT`].
+    async fn let_go(&mut self, slot: usize, reason: u16) {
+        self.forget_frames(slot);
+        let Some(station) = self.ap.storage.stations.get(slot) else {
+            return;
+        };
+        station.authorized = false;
+        station.poll_deadline = None;
+        station.leaving = Some(Leaving {
+            reason,
+            sent: false,
+            tries: 0,
+            deadline: Instant::now() + LEAVE_TIMEOUT,
+        });
+        #[cfg(feature = "wpa2")]
+        {
+            station.retry_at = None;
+            station.sa_query = None;
+        }
+        self.tell_leaving(slot).await;
+        // It may have been the last one a group key renewal waited for.
+        #[cfg(feature = "wpa2")]
+        self.finish_rekey().await;
+    }
+
+    /// Sends the station of `slot`, being let go, its deauthentication if it is awake or polls;
+    /// raises its TIM bit if it dozes.
+    async fn tell_leaving(&mut self, slot: usize) {
+        let Some(station) = self.ap.storage.stations.get(slot) else {
+            return;
+        };
+        let Some(leaving) = station.leaving.as_mut().filter(|leaving| !leaving.sent) else {
+            return;
+        };
+        if station.asleep && station.service_period == 0 {
+            debug!("station {:02x} dozes: its deauthentication waits", station.addr);
+            return self.write_pending_bits(slot).await;
+        }
+        leaving.sent = true;
+        leaving.tries += 1;
+        station.service_period = 0;
+        let (to, reason) = (station.addr, leaving.reason);
+        let mut frame = [0; 26];
+        let len = deauthentication(&self.ap.mac_addr, &to, reason, &mut frame);
+        self.send_mgmt(&frame[..len], false).await;
+        self.write_pending_bits(slot).await;
+    }
+
+    /// The TX status of a deauthentication: the station being let go goes once it is
+    /// acknowledged, or tried often enough; until then it gets it again, when awake.
+    async fn deauthentication_sent(&mut self, to: &[u8; 6], acked: bool) {
+        let Some(slot) = self.ap.storage.stations.find(to) else {
+            return;
+        };
+        let Some(leaving) = self.ap.storage.stations.0[slot]
+            .and_then(|s| s.leaving)
+            .filter(|l| l.sent)
+        else {
+            return;
+        };
+        if acked || leaving.tries >= DEAUTH_TRIES {
+            if acked {
+                debug!("station {:02x} heard its deauthentication", to);
+            } else {
+                info!("station {:02x} did not acknowledge its deauthentication", to);
+            }
+            return self.remove_station(slot, None).await;
+        }
+        if let Some(leaving) = self.ap.storage.stations.get(slot).and_then(|s| s.leaving.as_mut()) {
+            leaving.sent = false;
+        }
+        self.tell_leaving(slot).await;
+    }
+
     /// The RPU removed a station on its own (`UMAC_EVENT_DEL_STATION`).
     pub(super) async fn ap_station_removed(&mut self, body: &[u8]) {
         let addr = unsliceit::<c::umac_event_new_station>(body).mac_addr;
@@ -1460,15 +1583,7 @@ impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
             if self.ap.storage.stations.0[slot].is_some_and(|s| s.phase == Phase::Associated) {
                 info!("station {:02x} removed by the RPU", addr);
                 self.ap.storage.stations.0[slot] = None;
-                self.ap.storage.held.drop_station(slot);
-                #[cfg(feature = "wpa2")]
-                {
-                    self.ap.storage.handshakes[slot] = None;
-                    #[cfg(feature = "wpa3")]
-                    {
-                        self.ap.storage.exchanges[slot] = None;
-                    }
-                }
+                self.forget_frames(slot);
                 self.write_pending_entry(slot, &[0; 6]).await;
                 #[cfg(feature = "wpa2")]
                 self.finish_rekey().await;
@@ -1485,9 +1600,14 @@ impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
         self.write(pending_entry_addr(slot), None, &entry).await;
     }
 
-    /// Updates the pending frame bits of station `slot` (the SDK's `update_pend_q_bmp`).
+    /// Updates the pending frame bits of station `slot` (the SDK's `update_pend_q_bmp`): its kept
+    /// frames, and its deauthentication if it waits.
     async fn write_pending_bits(&mut self, slot: usize) {
-        let bits = self.ap.storage.held.categories(slot);
+        let mut bits = self.ap.storage.held.categories(slot);
+        let leaving = self.ap.storage.stations.0[slot].and_then(|s| s.leaving);
+        if leaving.is_some_and(|leaving| !leaving.sent) {
+            bits |= 1 << access_category(0);
+        }
         self.write32(pending_entry_addr(slot) + 8, None, bits).await;
     }
 
@@ -1509,6 +1629,10 @@ impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
         let Some(slot) = self.ap.storage.stations.find(&to) else {
             return false;
         };
+        // A station being let go gets no more frames.
+        if self.ap.storage.stations.0[slot].is_some_and(|s| s.leaving.is_some()) {
+            return true;
+        }
         self.hold_for(slot, frame, len).await
     }
 
@@ -1564,6 +1688,7 @@ impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
         );
         // The RPU saw a frame of the station's go by: it is there.
         self.station_seen(slot);
+        self.tell_leaving(slot).await;
         self.ap_deliver().await;
     }
 
@@ -1577,6 +1702,7 @@ impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
         };
         self.ap.storage.stations.get(slot).unwrap().service_period = count.max(1) as u8;
         self.station_seen(slot);
+        self.tell_leaving(slot).await;
         self.ap_deliver().await;
     }
 
@@ -1634,6 +1760,9 @@ impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
             .filter(|s| s.phase == Phase::Associated);
         stations
             .flat_map(|s| {
+                if let Some(leaving) = s.leaving {
+                    return [Some(leaving.deadline), None, None];
+                }
                 #[cfg(feature = "wpa2")]
                 let retry = s.retry_at;
                 #[cfg(not(feature = "wpa2"))]
@@ -1667,6 +1796,13 @@ impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
             let Some(station) = self.ap.storage.stations.0[slot].filter(|s| s.phase == Phase::Associated) else {
                 continue;
             };
+            if let Some(leaving) = station.leaving {
+                if now >= leaving.deadline {
+                    info!("station {:02x} did not hear its deauthentication in time", station.addr);
+                    self.remove_station(slot, None).await;
+                }
+                continue;
+            }
             #[cfg(feature = "wpa2")]
             if station.retry_at.is_some_and(|at| now >= at) {
                 self.send_handshake_message(slot).await;
