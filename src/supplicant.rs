@@ -298,12 +298,6 @@ impl Rsne {
         &self.bytes[..self.len as usize]
     }
 
-    /// What an association with an AP announcing this element uses, if the driver can join it:
-    /// CCMP-128 as the group cipher and among the pairwise ciphers, and with a pre-shared key, PSK
-    /// or PSK-SHA256 key management; with `sae`, SAE. Management frame protection is used when
-    /// the AP is capable of it with BIP-CMAC-128, and PSK-SHA256 then if the AP offers it; SAE
-    /// requires it. An AP that requires management frame protection with another cipher cannot be
-    /// joined.
     /// The fields of the element, if it is an RSN version 1 one with a group cipher and lists of
     /// pairwise ciphers and key management suites.
     fn fields(&self) -> Option<RsneFields<'_>> {
@@ -325,21 +319,26 @@ impl Rsne {
         let capabilities = u16_at(at).unwrap_or(0);
         // Then the PMKIDs (16 bytes each) and the group management cipher, BIP-CMAC-128 when it
         // is not there.
-        let group_management = u16_at(at + 2)
-            .and_then(|pmkids| {
-                let at = at + 4 + 16 * pmkids as usize;
-                body.get(at..at + 4)
-            })
+        let pmkids = u16_at(at + 2).and_then(|count| body.get(at + 4..at + 4 + 16 * count as usize));
+        let group_management = pmkids
+            .and_then(|pmkids| body.get(at + 4 + pmkids.len()..at + 8 + pmkids.len()))
             .unwrap_or(&SUITE_BIP_CMAC_128);
         Some(RsneFields {
             group,
             pairwise,
             akms,
             capabilities,
+            pmkids: pmkids.unwrap_or(&[]),
             group_management,
         })
     }
 
+    /// What an association with an AP announcing this element uses, if the driver can join it:
+    /// CCMP-128 as the group cipher and among the pairwise ciphers, and with a pre-shared key, PSK
+    /// or PSK-SHA256 key management; with `sae`, SAE. Management frame protection is used when
+    /// the AP is capable of it with BIP-CMAC-128, and PSK-SHA256 then if the AP offers it; SAE
+    /// requires it. An AP that requires management frame protection with another cipher cannot be
+    /// joined.
     pub(crate) fn negotiate(&self, sae: bool) -> Option<Suite> {
         let RsneFields {
             group,
@@ -347,6 +346,7 @@ impl Rsne {
             akms,
             capabilities,
             group_management,
+            ..
         } = self.fields()?;
         let group = match group {
             selector if selector == SUITE_CCMP => GroupCipher::Ccmp,
@@ -456,6 +456,14 @@ impl Rsne {
             group: GroupCipher::Ccmp,
         })
     }
+
+    /// Whether the element names `pmkid` among its PMKIDs: a station that asks to use a PMK
+    /// cached from an earlier SAE exchange names it in its association request.
+    #[cfg(all(feature = "ap", feature = "wpa3"))]
+    pub(crate) fn names_pmkid(&self, pmkid: &[u8; 16]) -> bool {
+        self.fields()
+            .is_some_and(|fields| fields.pmkids.chunks(16).any(|named| named == pmkid))
+    }
 }
 
 /// The key management an access point of the driver offers.
@@ -476,6 +484,9 @@ struct RsneFields<'a> {
     /// The key management suite selectors, 4 bytes each.
     akms: &'a [u8],
     capabilities: u16,
+    /// The PMKIDs, 16 bytes each.
+    #[cfg_attr(not(all(feature = "ap", feature = "wpa3")), allow(dead_code))]
+    pmkids: &'a [u8],
     group_management: &'a [u8],
 }
 

@@ -656,9 +656,10 @@ struct Station {
     /// With WPA2, the RSNXE of its association request, if any, which message 2 must repeat.
     #[cfg(feature = "wpa2")]
     rsnxe: Option<Rsnxe>,
-    /// With WPA3, the PMK of the SAE exchange that authenticated it.
+    /// With WPA3, the PMK of the SAE exchange that authenticated it, or of an earlier one that its
+    /// association request named.
     #[cfg(feature = "wpa3")]
-    pmk: Option<[u8; 32]>,
+    pmksa: Option<wpa3::Pmksa>,
     /// With WPA2, when the last handshake message goes out again if unanswered.
     #[cfg(feature = "wpa2")]
     retry_at: Option<Instant>,
@@ -693,7 +694,7 @@ impl Station {
             #[cfg(feature = "wpa2")]
             rsnxe: None,
             #[cfg(feature = "wpa3")]
-            pmk: None,
+            pmksa: None,
             #[cfg(feature = "wpa2")]
             retry_at: None,
             #[cfg(feature = "wpa2")]
@@ -838,6 +839,9 @@ pub(crate) struct Storage {
     /// The SAE exchange of each station, with WPA3.
     #[cfg(feature = "wpa3")]
     exchanges: [Option<wpa3::Exchange>; MAX_STATIONS],
+    /// The PMKs of earlier SAE exchanges, with WPA3.
+    #[cfg(feature = "wpa3")]
+    pmksa_cache: wpa3::PmksaCache,
 }
 
 impl Storage {
@@ -854,6 +858,8 @@ impl Storage {
             handshakes: [Self::NO_HANDSHAKE; MAX_STATIONS],
             #[cfg(feature = "wpa3")]
             exchanges: [Self::NO_EXCHANGE; MAX_STATIONS],
+            #[cfg(feature = "wpa3")]
+            pmksa_cache: wpa3::PmksaCache::new(),
         }
     }
 
@@ -865,6 +871,8 @@ impl Storage {
         self.handshakes.iter_mut().for_each(|handshake| *handshake = None);
         #[cfg(feature = "wpa3")]
         self.exchanges.iter_mut().for_each(|exchange| *exchange = None);
+        #[cfg(feature = "wpa3")]
+        self.pmksa_cache.clear();
     }
 }
 
@@ -1273,25 +1281,34 @@ impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
                     // Associating again: the RPU's entry goes, the new one comes with the answer.
                     // The PMK of the SAE exchange just before stays.
                     #[cfg(feature = "wpa3")]
-                    let pmk = self.ap.storage.stations.0[slot].and_then(|s| s.pmk);
+                    let pmksa = self.ap.storage.stations.0[slot].and_then(|s| s.pmksa);
                     self.remove_station(slot, None).await;
                     slot = self.ap.storage.stations.find_or_add(&mgmt.from).unwrap();
                     #[cfg(feature = "wpa3")]
                     if let Some(station) = self.ap.storage.stations.get(slot) {
-                        station.pmk = pmk;
+                        station.pmksa = pmksa;
                     }
                 }
                 let body = mgmt.body.get(if reassoc { 6 } else { 0 }..).unwrap_or(&[]);
                 let request = settings.association_request(body);
-                // SAE needs the PMK of an SAE exchange (hostapd: no PMKSA for the station).
+                // SAE needs the PMK of an SAE exchange: the one just before, or after an open system
+                // authentication, a cached one that the request names (hostapd's `check_assoc_ies`).
                 #[cfg(feature = "wpa3")]
                 let request = request.and_then(|request| {
-                    let sae = request.rsne.is_some_and(|(_, suite)| suite.akm == supplicant::Akm::Sae);
-                    let pmk = self.ap.storage.stations.0[slot].is_some_and(|s| s.pmk.is_some());
-                    if sae && !pmk {
-                        Err(STATUS_INVALID_PMKID)
-                    } else {
-                        Ok(request)
+                    let Some((rsne, suite)) = request.rsne.filter(|(_, suite)| suite.akm == supplicant::Akm::Sae)
+                    else {
+                        return Ok(request);
+                    };
+                    let station = self.ap.storage.stations.get(slot).unwrap();
+                    if station.pmksa.is_none() {
+                        station.pmksa = self.ap.storage.pmksa_cache.find(&mgmt.from, &rsne, Instant::now());
+                        if station.pmksa.is_some() {
+                            debug!("association request from {:02x}: cached PMK, {}", mgmt.from, suite);
+                        }
+                    }
+                    match station.pmksa {
+                        Some(_) => Ok(request),
+                        None => Err(STATUS_INVALID_PMKID),
                     }
                 });
                 let status = match &request {
@@ -2014,15 +2031,14 @@ impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
         else {
             return;
         };
-        // The PMK: the SAE exchange's with SAE, else the pre-shared key.
+        // The PMK: the SAE exchange's with SAE, which message 1 names, else the pre-shared key.
         #[cfg(feature = "wpa3")]
-        let pmk = if suite.akm == supplicant::Akm::Sae {
-            station.pmk
-        } else {
-            security.psk()
+        let (pmk, pmkid) = match station.pmksa {
+            Some(pmksa) if suite.akm == supplicant::Akm::Sae => (Some(pmksa.pmk), Some(pmksa.pmkid)),
+            _ => (security.psk(), None),
         };
         #[cfg(not(feature = "wpa3"))]
-        let pmk = security.psk();
+        let (pmk, pmkid) = (security.psk(), None);
         let Some(pmk) = pmk else {
             return;
         };
@@ -2032,7 +2048,8 @@ impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
         let ap_rsne = Rsne::access_point(offer);
         debug!("4-way handshake with {:02x}: {}", station.addr, suite);
         let handshake = Authenticator::new(pmk, aa, station.addr, ap_rsne, sta_rsne, suite, anonce)
-            .with_rsnxe(security.rsnxe(), station.rsnxe);
+            .with_rsnxe(security.rsnxe(), station.rsnxe)
+            .with_pmkid(pmkid);
         self.ap.storage.handshakes[slot] = Some(handshake);
         self.send_handshake_message(slot).await;
     }
@@ -2055,6 +2072,9 @@ impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
                 self.remove_station(slot, Some(REASON_GROUP_KEY_UPDATE_TIMEOUT)).await;
             } else {
                 info!("station {:02x} did not complete the 4-way handshake", station.addr);
+                // Maybe the PMK it named is not the one it has.
+                #[cfg(feature = "wpa3")]
+                self.ap.storage.pmksa_cache.remove(&station.addr);
                 self.remove_station(slot, Some(REASON_4WAY_HANDSHAKE_TIMEOUT)).await;
             }
             return;
@@ -2116,6 +2136,8 @@ impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
                     "station {:02x} contradicts its association request, letting it go",
                     from
                 );
+                #[cfg(feature = "wpa3")]
+                self.ap.storage.pmksa_cache.remove(&from);
                 self.remove_station(slot, Some(REASON_IE_IN_4WAY_DIFFERS)).await;
             }
         }

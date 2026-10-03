@@ -97,6 +97,11 @@ Working:
   76), which only a station that receives at its address learns: a flood of commits from forged
   addresses takes neither station places nor curve computations. Asked for one, the laptop sent
   it back 0.4 s later.
+  The PMK of each SAE exchange is kept for 12 hours (hostapd's PMKSA cache, here 8 of them): a
+  station that comes back names its PMKID in its association request, after an open system
+  authentication, and skips SAE; message 1 names it too. Let go, the laptop was back with its keys
+  0.1 s after its deauthentication; to an access point that had lost it (restarted), its
+  association got status 53, and it went through SAE 0.46 s later.
   The access point's EAPOL frames go through the frames kept for sleeping stations: sent right
   away, the group key handshakes of a dozing laptop got lost.
   The chip sends group frames right away, and a dozing station misses them: 13 broadcasts out of
@@ -150,9 +155,9 @@ Not yet:
   `ConnectError::SecurityMismatch`.
 - Target wake time, and the current drawn in power save and low power mode, which is not
   measured yet.
-- In AP mode: PMK caching (a station goes through SAE at each join), and U-APSD (not announced). The nRF70 has
-  20 MHz channels only. Delivery to sleeping stations was checked with a laptop that wakes up
-  when a beacon says frames wait for it; PS-Poll is not tested.
+- In AP mode: U-APSD (not announced). The nRF70 has 20 MHz channels only. Delivery to sleeping
+  stations was checked with a laptop that wakes up when a beacon says frames wait for it; PS-Poll
+  is not tested.
 
 ## Cargo features
 

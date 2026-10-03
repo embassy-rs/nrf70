@@ -162,7 +162,7 @@ pub(crate) struct Sae {
     peer: Option<(Scalar, AffinePoint)>,
     kck: [u8; LEN],
     pmk: [u8; LEN],
-    #[cfg_attr(not(test), allow(dead_code))]
+    #[cfg_attr(not(any(test, feature = "ap")), allow(dead_code))]
     pmkid: [u8; 16],
     send_confirm: u16,
 }
@@ -325,8 +325,8 @@ impl Sae {
         self.pmk
     }
 
-    /// Names the PMK (for PMK caching, which the driver does not do).
-    #[cfg(test)]
+    /// Names the PMK, for PMK caching: the access point keeps it.
+    #[cfg(any(test, feature = "ap"))]
     pub(crate) fn pmkid(&self) -> [u8; 16] {
         self.pmkid
     }

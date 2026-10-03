@@ -19,6 +19,10 @@ pub(crate) const TRIES: u8 = 4;
 /// Length of a GTK KDE, and of an IGTK KDE.
 const GTK_KDE_LEN: usize = 2 + 4 + 2 + TK_LEN;
 const IGTK_KDE_LEN: usize = 2 + 4 + 2 + 6 + 16;
+/// The PMKID KDE's selector, and its length: message 1 names the PMK that the handshake uses when it
+/// comes from an SAE exchange (IEEE 802.11-2020, 12.7.6.2).
+const KDE_PMKID: [u8; 4] = [0x00, 0x0F, 0xAC, 4];
+const PMKID_KDE_LEN: usize = 2 + 4 + 16;
 /// Key data of message 3 at most: the RSNE, the RSNXE, the GTK and IGTK KDEs, padding, and the 8 bytes of
 /// the key wrap.
 const KEY_DATA_MAX: usize = RSNE_MAX + RSNXE_MAX + GTK_KDE_LEN + IGTK_KDE_LEN + 8 + 8;
@@ -145,6 +149,8 @@ pub(crate) struct Authenticator {
     ap_rsnxe: Option<Rsnxe>,
     /// The station's RSNXE, if its association request had one, which message 2 must repeat.
     sta_rsnxe: Option<Rsnxe>,
+    /// The PMKID of the PMK, which message 1 names, if it is an SAE exchange's.
+    pmkid: Option<[u8; 16]>,
     anonce: [u8; 32],
     /// The replay counter of the last message sent.
     replay_counter: u64,
@@ -178,6 +184,7 @@ impl Authenticator {
             ap_rsnxe: None,
             sta_rsnxe: None,
             anonce,
+            pmkid: None,
             replay_counter: 0,
             ptk: None,
             stage: Stage::Message1,
@@ -191,6 +198,13 @@ impl Authenticator {
     pub(crate) fn with_rsnxe(mut self, ap_rsnxe: Option<Rsnxe>, sta_rsnxe: Option<Rsnxe>) -> Self {
         self.ap_rsnxe = ap_rsnxe;
         self.sta_rsnxe = sta_rsnxe;
+        self
+    }
+
+    /// The PMKID of the PMK, if it is an SAE exchange's: message 1 names it, as hostapd's does.
+    #[cfg_attr(not(feature = "wpa3"), allow(dead_code))]
+    pub(crate) fn with_pmkid(mut self, pmkid: Option<[u8; 16]>) -> Self {
+        self.pmkid = pmkid;
         self
     }
 
@@ -246,7 +260,17 @@ impl Authenticator {
                     nonce: self.anonce,
                     rsc: [0; 6],
                 };
-                Some(header.write(out, &[], None))
+                let mut data = [0; PMKID_KDE_LEN];
+                let len = match self.pmkid {
+                    Some(pmkid) => {
+                        data[..2].copy_from_slice(&[0xDD, PMKID_KDE_LEN as u8 - 2]);
+                        data[2..6].copy_from_slice(&KDE_PMKID);
+                        data[6..].copy_from_slice(&pmkid);
+                        PMKID_KDE_LEN
+                    }
+                    None => 0,
+                };
+                Some(header.write(out, &data[..len], None))
             }
             (Stage::Message3, Some(ptk)) => {
                 // The access point's RSNE and RSNXE, then the group keys.
@@ -517,6 +541,25 @@ mod tests {
         let mut ap = Authenticator::new(pmk, AA, SPA, ap_rsne, sta_rsne, suite, anonce(&[3; 32], &AA, &SPA, 0))
             .with_rsnxe(rsnxe, rsnxe);
         let keys = GroupKeys::derive(&[3; 32], &AA, 0);
+        handshake(&mut ap, &mut station, &keys);
+        assert!(ap.done());
+
+        // Message 1 names the PMK of the SAE exchange by its PMKID; a station that does not look
+        // at it goes through all the same.
+        let pmkid = [0x87; 16];
+        let mut ap = Authenticator::new(pmk, AA, SPA, ap_rsne, sta_rsne, suite, anonce(&[3; 32], &AA, &SPA, 2))
+            .with_rsnxe(rsnxe, rsnxe)
+            .with_pmkid(Some(pmkid));
+        let mut out = [0; MESSAGE_MAX];
+        let len = ap.next_message(&keys, &mut out).unwrap();
+        let mut kde = std::vec![0xDD, 20, 0x00, 0x0F, 0xAC, 4];
+        kde.extend_from_slice(&pmkid);
+        assert_eq!(KeyFrame::parse(&out[..len]).unwrap().key_data, &kde[..]);
+        ap.sent = 0;
+        ap.replay_counter = 0;
+        let mut station = Supplicant::new(pmk, AA, SPA, ap_rsne, [7; 32], true)
+            .unwrap()
+            .with_rsnxe(rsnxe, rsnxe);
         handshake(&mut ap, &mut station, &keys);
         assert!(ap.done());
 

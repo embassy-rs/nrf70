@@ -6,11 +6,13 @@
 //! Behind the `ap` and `wpa3` features.
 
 use defmt::{debug, info};
+use embassy_time::{Duration, Instant};
 use embedded_hal::digital::{InputPin, OutputPin};
 use embedded_hal_async::digital::Wait;
 
 use super::{Mgmt, Security, Writer, AUTH, STATUS_SUCCESS, STATUS_TOO_MANY_STATIONS, STATUS_UNSPECIFIED};
 use crate::sae::{self, Refusal, Sae};
+use crate::supplicant::Rsne;
 use crate::wpa3::{scalars, Wpa3};
 use crate::{Bus, Runner};
 
@@ -30,6 +32,73 @@ const TOKEN_LEN: usize = 32;
 /// (255), then extension 93.
 const IE_EXTENSION: u8 = 255;
 const IE_EXT_ANTI_CLOGGING_TOKEN: u8 = 93;
+/// How many PMKs of earlier SAE exchanges the access point keeps, one per station address.
+const PMKSA_CACHE: usize = 2 * super::MAX_STATIONS;
+/// How long a PMK of an SAE exchange serves (hostapd's and wpa_supplicant's
+/// `dot11RSNAConfigPMKLifetime`: 12 hours).
+const PMK_LIFETIME: Duration = Duration::from_secs(12 * 60 * 60);
+
+/// The PMK of an SAE exchange, and its PMKID: a PMK security association.
+#[derive(Clone, Copy)]
+pub(super) struct Pmksa {
+    pub(super) pmk: [u8; 32],
+    pub(super) pmkid: [u8; 16],
+}
+
+#[derive(Clone, Copy)]
+struct CachedPmksa {
+    addr: [u8; 6],
+    pmksa: Pmksa,
+    expires: Instant,
+}
+
+/// The PMKs of earlier SAE exchanges (hostapd's `pmksa_cache_auth`): a station that comes back
+/// within their lifetime names its PMKID in its association request, after an open system
+/// authentication, and skips SAE.
+pub(super) struct PmksaCache([Option<CachedPmksa>; PMKSA_CACHE]);
+
+impl PmksaCache {
+    pub(super) const fn new() -> Self {
+        Self([None; PMKSA_CACHE])
+    }
+
+    pub(super) fn clear(&mut self) {
+        self.0 = [None; PMKSA_CACHE];
+    }
+
+    /// Keeps the PMKSA of the station `addr`, in place of the one it had, or of the one that
+    /// expires first if the cache is full.
+    fn insert(&mut self, addr: &[u8; 6], pmksa: Pmksa, now: Instant) {
+        let entry = CachedPmksa {
+            addr: *addr,
+            pmksa,
+            expires: now + PMK_LIFETIME,
+        };
+        let place = (self.0.iter())
+            .position(|cached| cached.is_some_and(|cached| cached.addr == *addr))
+            .or_else(|| self.0.iter().position(Option::is_none))
+            .or_else(|| (0..PMKSA_CACHE).min_by_key(|&i| self.0[i].map_or(Instant::MIN, |cached| cached.expires)));
+        if let Some(place) = place {
+            self.0[place] = Some(entry);
+        }
+    }
+
+    /// The PMKSA of the station `addr` that `rsne` names, if it has not expired.
+    pub(super) fn find(&self, addr: &[u8; 6], rsne: &Rsne, now: Instant) -> Option<Pmksa> {
+        (self.0.iter().flatten())
+            .find(|cached| cached.addr == *addr && cached.expires > now && rsne.names_pmkid(&cached.pmksa.pmkid))
+            .map(|cached| cached.pmksa)
+    }
+
+    /// Forgets the PMKSA of the station `addr`: its 4-way handshake failed with it.
+    pub(super) fn remove(&mut self, addr: &[u8; 6]) {
+        for cached in &mut self.0 {
+            if cached.is_some_and(|cached| cached.addr == *addr) {
+                *cached = None;
+            }
+        }
+    }
+}
 
 /// An SAE exchange with a station.
 pub(super) struct Exchange {
@@ -42,8 +111,6 @@ pub(super) struct Exchange {
     confirmed: bool,
 }
 
-/// An SAE authentication frame from the access point: `sequence` 1 for a commit, 2 for a
-/// confirm, then `status` and `body`.
 /// The anti-clogging token of the station `from`: HMAC-SHA256(seed, label || address), which only
 /// a station that receives frames at that address learns (IEEE 802.11-2020, 12.4.6).
 fn anti_clogging_token(seed: &[u8; 32], from: &[u8; 6]) -> [u8; TOKEN_LEN] {
@@ -69,6 +136,8 @@ fn commit_token(body: &[u8], h2e: bool) -> Option<&[u8]> {
     None
 }
 
+/// An SAE authentication frame from the access point: `sequence` 1 for a commit, 2 for a
+/// confirm, then `status` and `body`.
 fn sae_authentication(bssid: &[u8; 6], to: &[u8; 6], sequence: u16, status: u16, body: &[u8], out: &mut [u8]) -> usize {
     let mut w = Writer::new(out);
     w.header(AUTH, to, bssid)
@@ -210,8 +279,9 @@ impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
         }
     }
 
-    /// A station's confirm: right, it gets the access point's confirm and the station the PMK
-    /// of the exchange; wrong (another password), it gets status 15.
+    /// A station's confirm: right, it gets the access point's confirm, and the station the PMK of
+    /// the exchange, which the access point keeps for its next associations; wrong (another
+    /// password), it gets status 15.
     async fn ap_sae_confirm(&mut self, from: &[u8; 6], body: &[u8]) {
         let Some(slot) = self.ap.storage.stations.find(from) else {
             return;
@@ -227,10 +297,14 @@ impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
         exchange.confirmed = true;
         let mut confirm = [0; sae::CONFIRM_LEN];
         let len = exchange.sae.write_confirm(&mut confirm);
-        let pmk = exchange.sae.pmk();
+        let pmksa = Pmksa {
+            pmk: exchange.sae.pmk(),
+            pmkid: exchange.sae.pmkid(),
+        };
         if let Some(station) = self.ap.storage.stations.get(slot) {
-            station.pmk = Some(pmk);
+            station.pmksa = Some(pmksa);
         }
+        self.ap.storage.pmksa_cache.insert(from, pmksa, Instant::now());
         debug!("SAE with {:02x}: confirmed", from);
         self.ap_sae_reply(from, 2, STATUS_SUCCESS, &confirm[..len]).await;
     }
@@ -264,5 +338,52 @@ mod tests {
         assert_eq!(commit_token(&h2e, true), Some(&token[..]));
         // Each address has its own token.
         assert!(anti_clogging_token(&[1; 32], &[3; 6]) != token);
+    }
+
+    #[test]
+    fn a_cached_pmk_serves_the_station_that_names_it_until_it_expires() {
+        let pmksa = |n: u8| Pmksa {
+            pmk: [n; 32],
+            pmkid: [n; 16],
+        };
+        // An association request's RSNE naming `pmkids`.
+        let rsne = |pmkids: &[[u8; 16]]| {
+            let offer = crate::supplicant::Offer { psk: false, sae: true };
+            let mut body = Rsne::access_point(offer).as_bytes()[2..].to_vec();
+            body.extend_from_slice(&(pmkids.len() as u16).to_le_bytes());
+            pmkids.iter().for_each(|pmkid| body.extend_from_slice(pmkid));
+            Rsne::from_body(&body).unwrap()
+        };
+        let (a, b) = ([0xA; 6], [0xB; 6]);
+        let start = Instant::from_secs(1000);
+        let found =
+            |cache: &PmksaCache, addr, pmkids: &[[u8; 16]], at| cache.find(addr, &rsne(pmkids), at).map(|p| p.pmk);
+        let mut cache = PmksaCache::new();
+        cache.insert(&a, pmksa(1), start);
+        assert_eq!(found(&cache, &a, &[[1; 16]], start), Some([1; 32]));
+        assert_eq!(found(&cache, &a, &[[9; 16], [1; 16]], start), Some([1; 32]));
+        // Not without its PMKID, nor for another station, nor once expired.
+        assert_eq!(found(&cache, &a, &[], start), None);
+        assert_eq!(found(&cache, &b, &[[1; 16]], start), None);
+        let expiry = start + PMK_LIFETIME;
+        assert_eq!(
+            found(&cache, &a, &[[1; 16]], expiry - Duration::from_secs(1)),
+            Some([1; 32])
+        );
+        assert_eq!(found(&cache, &a, &[[1; 16]], expiry), None);
+        // A new SAE exchange takes the place of the station's last one.
+        cache.insert(&a, pmksa(2), start);
+        assert_eq!(found(&cache, &a, &[[1; 16]], start), None);
+        assert_eq!(found(&cache, &a, &[[2; 16]], start), Some([2; 32]));
+        // Full, the cache drops the one that expires first: here the station's.
+        for n in 1..PMKSA_CACHE as u8 {
+            cache.insert(&[n; 6], pmksa(n), start + Duration::from_secs(n as u64));
+        }
+        assert_eq!(found(&cache, &a, &[[2; 16]], start), Some([2; 32]));
+        cache.insert(&b, pmksa(3), start);
+        assert_eq!(found(&cache, &a, &[[2; 16]], start), None);
+        assert_eq!(found(&cache, &b, &[[3; 16]], start), Some([3; 32]));
+        cache.remove(&b);
+        assert_eq!(found(&cache, &b, &[[3; 16]], start), None);
     }
 }
