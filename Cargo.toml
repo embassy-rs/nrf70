@@ -36,19 +36,12 @@ features = ["wpa3", "ap"]
 [features]
 default = []
 # `Control::join_wpa2`: WPA2-Personal networks. The nRF70 firmware has no supplicant, so the key
-# handshakes run in the driver, which costs about 30 KB of flash and the crates below.
-wpa2 = [
-    "dep:aes",
-    "dep:aes-kw",
-    "dep:cmac",
-    "dep:hmac",
-    "dep:pbkdf2",
-    "dep:rand_core",
-    "dep:sha1",
-    "dep:sha2",
-]
+# handshakes run in the driver. Their HMAC-SHA1, HMAC-SHA256, AES-128, AES-128-CMAC and random
+# numbers come from `embassy-crypto`, whose drivers the application chooses: the
+# microcontroller's accelerator or software.
+wpa2 = ["dep:embassy-crypto"]
 # `Control::join_wpa3`: WPA3-Personal networks, whose SAE key exchange runs in the driver too, on
-# the P-256 curve of the `p256` crate.
+# the P-256 arithmetic of the `p256` crate (its hashes on `embassy-crypto`'s HMAC-SHA256).
 wpa3 = ["wpa2", "dep:p256"]
 # `Control::start_ap_open`: access point mode. The firmware beacons and keeps the stations' links;
 # the driver answers probe, authentication and association requests and keeps the frames of
@@ -56,21 +49,29 @@ wpa3 = ["wpa2", "dep:p256"]
 ap = []
 
 [dependencies]
-aes = { version = "0.9.0", default-features = false, optional = true }
-aes-kw = { version = "0.3.1", default-features = false, optional = true }
 align-data = "0.1.0"
-cmac = { version = "0.8.0", default-features = false, optional = true }
 defmt = "1.0.1"
+embassy-crypto = { version = "0.1.0", optional = true }
 embassy-futures = "0.1.2"
 embassy-net-driver-channel = "0.4.0"
 embassy-sync = "0.8.0"
 embassy-time = "0.5.1"
 embedded-hal = "1.0.0"
 embedded-hal-async = "1.0.0"
-hmac = { version = "0.13.0", default-features = false, optional = true }
 num_enum = { version = "0.7.4", default-features = false }
 p256 = { version = "0.14", default-features = false, features = ["arithmetic", "hash2curve"], optional = true }
-pbkdf2 = { version = "0.13.0", default-features = false, features = ["hmac"], optional = true }
-rand_core = { version = "0.10.1", optional = true }
-sha1 = { version = "0.11.0", default-features = false, optional = true }
-sha2 = { version = "0.11.0", default-features = false, optional = true }
+
+# The host tests run the supplicant on software HMAC-SHA1 and AES-128.
+[dev-dependencies]
+embassy-crypto-rustcrypto = { version = "0.1.0", features = ["embassy-crypto-aes128-cmac", "embassy-crypto-aes128-ecb", "embassy-crypto-hmac-sha1", "embassy-crypto-hmac-sha256"] }
+
+# Experiment: embassy's main branch, where embassy-net runs on xarxa instead of smoltcp and
+# embassy-net-driver-channel hands packets over as xarxa `PacketBuf`s.
+[patch.crates-io]
+embassy-crypto = { git = "https://github.com/embassy-rs/embassy", rev = "a404c7806196df0403b90fb6bef13c80dcee5f2b" }
+embassy-crypto-rustcrypto = { git = "https://github.com/embassy-rs/embassy", rev = "a404c7806196df0403b90fb6bef13c80dcee5f2b" }
+embassy-futures = { git = "https://github.com/embassy-rs/embassy", rev = "a404c7806196df0403b90fb6bef13c80dcee5f2b" }
+embassy-net-driver-channel = { git = "https://github.com/embassy-rs/embassy", rev = "a404c7806196df0403b90fb6bef13c80dcee5f2b" }
+embassy-sync = { git = "https://github.com/embassy-rs/embassy", rev = "a404c7806196df0403b90fb6bef13c80dcee5f2b" }
+embassy-time = { git = "https://github.com/embassy-rs/embassy", rev = "a404c7806196df0403b90fb6bef13c80dcee5f2b" }
+embassy-time-driver = { git = "https://github.com/embassy-rs/embassy", rev = "a404c7806196df0403b90fb6bef13c80dcee5f2b" }

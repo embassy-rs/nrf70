@@ -6,8 +6,17 @@ license = "MIT OR Apache-2.0"
 default-run = "nrf70-example"
 
 [features]
-# The driver's WPA2 support, which `join_wpa2` needs.
-wpa2 = ["nrf70/wpa2"]
+# The driver's WPA2 support, which `join_wpa2` needs, with the nRF5340's CryptoCell as the
+# `embassy-crypto` drivers for the HMAC-SHA1, HMAC-SHA256, AES-128 and AES-128-CMAC it runs on.
+# Its random numbers come from the CryptoCell too, as every example's do (`embassy-crypto-rng`
+# below).
+wpa2 = [
+    "nrf70/wpa2",
+    "embassy-nrf/embassy-crypto-aes128-cmac",
+    "embassy-nrf/embassy-crypto-aes128-ecb",
+    "embassy-nrf/embassy-crypto-hmac-sha1",
+    "embassy-nrf/embassy-crypto-hmac-sha256",
+]
 
 [[bin]]
 name = "join_wpa2"
@@ -19,10 +28,11 @@ cortex-m = { version = "0.7.7", features = ["inline-asm", "critical-section-sing
 cortex-m-rt = "0.7.3"
 defmt = "1.0.1"
 defmt-rtt = "1.0.0"
+embassy-crypto = "0.1.0"
 embassy-executor = { version = "0.10.0", features = ["platform-cortex-m", "executor-thread", "defmt"] }
 embassy-futures = "0.1.2"
-embassy-net = { version = "0.9.1", features = ["auto-icmp-echo-reply", "defmt", "dhcpv4", "medium-ethernet", "proto-ipv4", "tcp"] }
-embassy-nrf = { version = "0.11.0", features = ["defmt", "gpiote", "nrf5340-app-s", "time-driver-rtc1", "unstable-pac"] }
+embassy-net = { version = "0.9.1", features = ["defmt", "dhcpv4", "icmp-ping-reply", "ipv4", "medium-ethernet", "tcp", "tcp-listener"] }
+embassy-nrf = { version = "0.11.0", features = ["defmt", "embassy-crypto-rng", "gpiote", "nrf5340-app-s", "time-driver-rtc1", "unstable-pac"] }
 embassy-time = { version = "0.5.1", features = ["defmt", "defmt-timestamp-uptime"] }
 embedded-hal-bus = { version = "0.3.0", features = ["async"] }
 embedded-io-async = "0.7.0"
@@ -44,3 +54,21 @@ codegen-units = 1
 incremental = false
 debug-assertions = false
 overflow-checks = false
+
+# Experiment: embassy's main branch, where embassy-net runs on xarxa instead of smoltcp.
+[patch.crates-io]
+embassy-crypto = { git = "https://github.com/embassy-rs/embassy", rev = "a404c7806196df0403b90fb6bef13c80dcee5f2b" }
+embassy-embedded-hal = { git = "https://github.com/embassy-rs/embassy", rev = "a404c7806196df0403b90fb6bef13c80dcee5f2b" }
+embassy-executor = { git = "https://github.com/embassy-rs/embassy", rev = "a404c7806196df0403b90fb6bef13c80dcee5f2b" }
+embassy-executor-macros = { git = "https://github.com/embassy-rs/embassy", rev = "a404c7806196df0403b90fb6bef13c80dcee5f2b" }
+embassy-executor-timer-queue = { git = "https://github.com/embassy-rs/embassy", rev = "a404c7806196df0403b90fb6bef13c80dcee5f2b" }
+embassy-futures = { git = "https://github.com/embassy-rs/embassy", rev = "a404c7806196df0403b90fb6bef13c80dcee5f2b" }
+embassy-hal-internal = { git = "https://github.com/embassy-rs/embassy", rev = "a404c7806196df0403b90fb6bef13c80dcee5f2b" }
+embassy-net = { git = "https://github.com/embassy-rs/embassy", rev = "a404c7806196df0403b90fb6bef13c80dcee5f2b" }
+embassy-net-driver-channel = { git = "https://github.com/embassy-rs/embassy", rev = "a404c7806196df0403b90fb6bef13c80dcee5f2b" }
+embassy-nrf = { git = "https://github.com/embassy-rs/embassy", rev = "a404c7806196df0403b90fb6bef13c80dcee5f2b" }
+embassy-sync = { git = "https://github.com/embassy-rs/embassy", rev = "a404c7806196df0403b90fb6bef13c80dcee5f2b" }
+embassy-time = { git = "https://github.com/embassy-rs/embassy", rev = "a404c7806196df0403b90fb6bef13c80dcee5f2b" }
+embassy-time-driver = { git = "https://github.com/embassy-rs/embassy", rev = "a404c7806196df0403b90fb6bef13c80dcee5f2b" }
+embassy-time-queue-utils = { git = "https://github.com/embassy-rs/embassy", rev = "a404c7806196df0403b90fb6bef13c80dcee5f2b" }
+embassy-usb-driver = { git = "https://github.com/embassy-rs/embassy", rev = "a404c7806196df0403b90fb6bef13c80dcee5f2b" }

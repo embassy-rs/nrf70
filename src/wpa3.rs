@@ -13,9 +13,6 @@ use defmt::{debug, warn};
 use embassy_time::Instant;
 use embedded_hal::digital::{InputPin, OutputPin};
 use embedded_hal_async::digital::Wait;
-use hmac::{Hmac, KeyInit, Mac};
-use rand_core::CryptoRng;
-use sha2::Sha256;
 
 use crate::sae::{self, Pt, Sae};
 use crate::supplicant::Rsnxe;
@@ -96,14 +93,9 @@ impl Control<'_> {
     /// access point announces it, hunting and pecking elsewhere. Returns once the keys are in and
     /// the link is up; see [`Control::join_open`].
     ///
-    /// The exchange runs here, on the host, and needs random numbers: 32 bytes from `rng`, any
-    /// cryptographically secure generator the application has, taken before joining.
-    pub async fn join_wpa3(
-        &mut self,
-        ssid: &[u8],
-        password: &[u8],
-        rng: &mut (impl CryptoRng + ?Sized),
-    ) -> Result<(), ConnectError> {
+    /// The exchange runs here, on the host, and needs random numbers: 32 bytes from the
+    /// `embassy-crypto` generator, taken before joining.
+    pub async fn join_wpa3(&mut self, ssid: &[u8], password: &[u8]) -> Result<(), ConnectError> {
         if password.is_empty() || password.len() > PASSWORD_MAX {
             return Err(ConnectError::InvalidPassphrase);
         }
@@ -116,7 +108,7 @@ impl Control<'_> {
         };
         debug!("SAE: PT derived in {} ms", start.elapsed().as_millis());
         wpa3.password[..password.len()].copy_from_slice(password);
-        rng.fill_bytes(&mut wpa3.seed);
+        embassy_crypto::rng_fill_bytes(&mut wpa3.seed);
         self.join(ssid, Credentials::Wpa3(wpa3)).await
     }
 }
@@ -128,15 +120,12 @@ fn scalars(seed: &[u8; 32], attempt: u32) -> (p256::Scalar, p256::Scalar) {
     let mut next = || loop {
         let mut wide = [0; 48];
         for (i, chunk) in wide.chunks_mut(32).enumerate() {
-            let mut mac = match Hmac::<Sha256>::new_from_slice(seed) {
-                Ok(mac) => mac,
-                Err(_) => defmt::unreachable!(),
-            };
+            let mut mac = embassy_crypto::HmacSha256::new(seed);
             mac.update(b"nrf70 SAE scalars");
             mac.update(&attempt.to_le_bytes());
             mac.update(&counter.to_le_bytes());
             mac.update(&[i as u8]);
-            chunk.copy_from_slice(&mac.finalize().into_bytes()[..chunk.len()]);
+            chunk.copy_from_slice(&mac.finalize()[..chunk.len()]);
         }
         counter += 1;
         if let Some(scalar) = Sae::scalar_from(&wide) {

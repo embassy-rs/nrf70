@@ -9,7 +9,7 @@ use align_data::{include_aligned, Align16};
 use defmt::{assert, panic, unwrap, *};
 use embassy_futures::select::{select3, Either3};
 use embassy_net_driver_channel as ch;
-use embassy_net_driver_channel::driver::LinkState;
+use embassy_net_driver_channel::driver::{LinkState, PacketBuf};
 use embassy_sync::blocking_mutex::raw::NoopRawMutex;
 use embassy_sync::channel::Channel;
 use embassy_time::{with_deadline, with_timeout, Duration, Instant, Timer};
@@ -188,7 +188,7 @@ pub enum ConnectError {
 
 pub struct State {
     shared: Shared,
-    ch: ch::State<MTU, 4, 4>,
+    ch: ch::State<4, 4>,
     #[cfg(feature = "ap")]
     ap_storage: ap::Storage,
 }
@@ -219,7 +219,7 @@ impl Default for State {
     }
 }
 
-pub type NetDriver<'a> = ch::Device<'a, MTU>;
+pub type NetDriver<'a> = ch::Device<'a>;
 
 /// Board settings, which the nRF Connect SDK takes from the devicetree and Kconfig.
 #[derive(Clone, Copy, Debug, defmt::Format)]
@@ -265,7 +265,7 @@ where
     IN: InputPin + Wait,
     OUT: OutputPin,
 {
-    let (ch_runner, device) = ch::new(&mut state.ch, ch::driver::HardwareAddress::Ethernet([0; 6]));
+    let (ch_runner, device) = ch::new(&mut state.ch, ch::driver::HardwareAddress::Ethernet([0; 6]), MTU);
     let state_ch = ch_runner.state_runner();
 
     let mut runner = Runner {
@@ -1348,7 +1348,7 @@ enum ConnState {
 }
 
 pub struct Runner<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> {
-    ch: ch::Runner<'a, MTU>,
+    ch: ch::Runner<'a>,
     state_ch: ch::StateRunner<'a>,
     shared: &'a Shared,
 
@@ -1658,7 +1658,12 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
             let shared = self.shared;
             // With WPA2, one token stays free for the supplicant.
             let data_tx_tokens = MAX_TX_TOKENS as u32 - Self::EAPOL_TX_TOKENS;
-            let can_tx = self.link_up && self.tx_tokens_busy.count_ones() < data_tx_tokens && self.ap_has_room();
+            // Frames wait in the channel only while the link is up and every data token is
+            // busy. With the link down they are taken and dropped: they cannot be sent, and left
+            // there they would fill the channel, so that the stack's first frames after a join
+            // (its DHCP request) would find no room.
+            let link_up = self.link_up;
+            let take_tx = !link_up || (self.tx_tokens_busy.count_ones() < data_tx_tokens && self.ap_has_room());
             // What the loop has to come back for without an interrupt.
             let wake_at = [
                 (self.powered && !self.low_power).then_some(poll_at),
@@ -1688,8 +1693,8 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
                 }
             };
             let tx = async {
-                if can_tx {
-                    ch.tx_buf().await
+                if take_tx {
+                    ch.tx().await
                 } else {
                     core::future::pending().await
                 }
@@ -1699,11 +1704,14 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
             match select3(shared.requests.receive(), tx, irq).await {
                 Either3::First(request) => self.handle_request(request).await,
                 Either3::Second(frame) => {
-                    let len = frame.len();
-                    slice8_mut(&mut tx_frame)[..len].copy_from_slice(frame);
-                    self.ch.tx_done();
-                    if !self.ap_hold(&mut tx_frame, len).await {
-                        self.send_frame(&tx_frame, len).await;
+                    // Dropping the packet gives its buffer back to the pool.
+                    if link_up {
+                        let len = frame.len();
+                        slice8_mut(&mut tx_frame)[..len].copy_from_slice(&frame);
+                        drop(frame);
+                        if !self.ap_hold(&mut tx_frame, len).await {
+                            self.send_frame(&tx_frame, len).await;
+                        }
                     }
                 }
                 Either3::Third(_) => {}
@@ -2559,12 +2567,18 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
             return;
         }
 
-        let Some(out) = self.ch.try_rx_buf() else {
-            debug!("RX frame dropped, embassy-net has no buffer free");
+        let Some(mut out) = PacketBuf::try_new() else {
+            debug!("RX frame dropped, the packet pool is empty");
             return;
         };
-        match rx_to_ethernet(bytes, pkt_type, mac_header_len, out) {
-            Some(n) => self.ch.rx_done(n),
+        out.set_len(out.capacity());
+        match rx_to_ethernet(bytes, pkt_type, mac_header_len, &mut out) {
+            Some(n) => {
+                out.set_len(n);
+                if self.ch.try_rx(out).is_err() {
+                    debug!("RX frame dropped, embassy-net's receive queue is full");
+                }
+            }
             None => warn!("RX frame of type {} not converted", pkt_type),
         }
     }
