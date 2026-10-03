@@ -164,8 +164,9 @@ pub enum ConnectError {
     AssociationRejected(u16),
     /// A step did not complete in time.
     Timeout,
-    /// The 4-way handshake did not complete. Most often the passphrase is wrong: the access
-    /// point then ignores the station, and gives no reason.
+    /// The key handshake did not complete: the 4-way handshake, or with WPA3 the SAE confirm. Most
+    /// often the passphrase or password is wrong: with WPA2 the access point then ignores the
+    /// station and gives no reason, with WPA3 it refuses the confirm.
     HandshakeFailed,
     /// The connection was lost before it completed.
     Disconnected,

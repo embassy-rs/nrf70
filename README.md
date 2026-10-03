@@ -49,9 +49,11 @@ Working:
   WPA3 and WPA2/WPA3 transition networks. The chip sends the SAE messages as authentication
   frames; the driver computes them. It uses hash to element where the access point announces it
   in its RSNXE (22 ms on an nRF5340 at 128 MHz, once per join), and hunting and pecking
-  elsewhere. SAE is checked against the test vectors of IEEE 802.11-2020, J.10, and the
-  handshake after it against vectors computed with OpenSSL. Both were checked on an nRF7002-DK
-  against hostapd, with group key renewals every 30 s.
+  elsewhere (0.39 s, for each access point). A wrong password shows as
+  `ConnectError::HandshakeFailed` once the access point refuses the confirm. SAE is checked
+  against the test vectors of IEEE 802.11-2020, J.10, and the handshake after it against vectors
+  computed with OpenSSL. Both PWE derivations were checked on an nRF7002-DK against hostapd, with
+  group key renewals every 30 s.
 - The state of the link with `Control::link_status`: the access point, its channel, the signal
   strength and the rates in use, as the chip reports them.
 - 802.11 power save with `Control::set_power_save`, off until asked for: the chip sleeps between

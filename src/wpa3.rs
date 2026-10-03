@@ -34,6 +34,8 @@ const AUTH_ALGORITHM_SAE: u16 = 3;
 const STATUS_SUCCESS: u16 = 0;
 const STATUS_ANTI_CLOGGING_TOKEN_REQUIRED: u16 = 76;
 const STATUS_SAE_HASH_TO_ELEMENT: u16 = 126;
+/// "Challenge failure": for SAE, the access point found our confirm wrong, the passwords differ.
+const STATUS_CHALLENGE_FAILURE: u16 = 15;
 
 /// The element that carries an anti-clogging token with hash to element: Element ID Extension
 /// (255), then extension 93.
@@ -239,6 +241,10 @@ impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
             (1, STATUS_SUCCESS | STATUS_SAE_HASH_TO_ELEMENT) => self.sae_peer_commit(body).await,
             (1, STATUS_ANTI_CLOGGING_TOKEN_REQUIRED) => self.sae_token(body).await,
             (2, STATUS_SUCCESS) => self.sae_peer_confirm(body).await,
+            (2, STATUS_CHALLENGE_FAILURE) => {
+                warn!("SAE: the access point refused our confirm: the password is wrong");
+                self.connect_failed(ConnectError::HandshakeFailed).await;
+            }
             (_, status) => {
                 warn!(
                     "SAE: the access point refused message {} with status {}",
