@@ -48,7 +48,7 @@ const PRIME: [u8; LEN] = [
 /// `dragonfly_min_pwe_loop_iter`).
 const HUNTING_AND_PECKING_ROUNDS: u8 = 40;
 
-fn hmac_sha256(key: &[u8], parts: &[&[u8]]) -> [u8; LEN] {
+pub(crate) fn hmac_sha256(key: &[u8], parts: &[&[u8]]) -> [u8; LEN] {
     let mut mac = match HmacSha256::new_from_slice(key) {
         Ok(mac) => mac,
         Err(_) => defmt::unreachable!(),

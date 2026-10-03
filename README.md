@@ -93,6 +93,10 @@ Working:
   throughput; kept from protection, it joined the transition access point with PSK-SHA256; with a
   wrong password, its confirm got status 15. Hunting and pecking takes 0.39 s for each station,
   during which the runner does nothing else.
+  While another station's exchange is under way, a commit needs an anti-clogging token (status
+  76), which only a station that receives at its address learns: a flood of commits from forged
+  addresses takes neither station places nor curve computations. Asked for one, the laptop sent
+  it back 0.4 s later.
   The access point's EAPOL frames go through the frames kept for sleeping stations: sent right
   away, the group key handshakes of a dozing laptop got lost.
   The chip sends group frames right away, and a dozing station misses them: 13 broadcasts out of
@@ -140,9 +144,7 @@ Not yet:
   `ConnectError::SecurityMismatch`.
 - Target wake time, and the current drawn in power save and low power mode, which is not
   measured yet.
-- In AP mode: SAE anti-clogging tokens (a station that floods the access point with commits
-  makes it work) and PMK caching (a station goes through SAE at each join), and U-APSD (not
-  announced). The nRF70 has
+- In AP mode: PMK caching (a station goes through SAE at each join), and U-APSD (not announced). The nRF70 has
   20 MHz channels only. Delivery to sleeping stations was checked with a laptop that wakes up
   when a beacon says frames wait for it; PS-Poll is not tested.
 
