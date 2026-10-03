@@ -166,7 +166,7 @@ On an nRF5340 at 64 MHz, built for size, with the `join_wpa2` example:
 
 | | CryptoCell | Software |
 | --- | --- | --- |
-| Flash, more than without `wpa2` | 11 KB | 17 KB |
+| Flash, more than without `wpa2` | 17 KB | 29 KB |
 | RAM | 2 KB | 2 KB |
 | Key from the passphrase (`wpa2_psk`) | 0.7 s | 2.2 s |
 
