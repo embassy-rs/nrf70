@@ -36,11 +36,14 @@ const RSNXE_SAE_H2E: u8 = 1 << 5;
 
 /// CCMP-128 as the RPU's key commands take a cipher suite: the selector's OUI then its type.
 pub(crate) const CIPHER_SUITE_CCMP: u32 = 0x000F_AC04;
+/// TKIP, in the same form.
+pub(crate) const CIPHER_SUITE_TKIP: u32 = 0x000F_AC02;
 /// BIP-CMAC-128, the group management cipher, in the same form.
 pub(crate) const CIPHER_SUITE_BIP_CMAC_128: u32 = 0x000F_AC06;
 
 /// Suite selectors as they appear in an RSNE and in key data: OUI 00-0F-AC, then the type.
 const SUITE_CCMP: [u8; 4] = [0x00, 0x0F, 0xAC, 4];
+const SUITE_TKIP: [u8; 4] = [0x00, 0x0F, 0xAC, 2];
 const AKM_PSK: [u8; 4] = [0x00, 0x0F, 0xAC, 2];
 const AKM_PSK_SHA256: [u8; 4] = [0x00, 0x0F, 0xAC, 6];
 const AKM_SAE: [u8; 4] = [0x00, 0x0F, 0xAC, 8];
@@ -136,12 +139,46 @@ impl Akm {
     }
 }
 
+/// The group cipher of a network. The pairwise cipher is always CCMP-128.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, defmt::Format)]
+pub(crate) enum GroupCipher {
+    Ccmp,
+    /// TKIP, which WPA/WPA2 mixed mode networks keep for their WPA stations.
+    Tkip,
+}
+
+impl GroupCipher {
+    fn selector(self) -> [u8; 4] {
+        match self {
+            GroupCipher::Ccmp => SUITE_CCMP,
+            GroupCipher::Tkip => SUITE_TKIP,
+        }
+    }
+
+    /// As the RPU's key commands take it.
+    pub(crate) fn cipher_suite(self) -> u32 {
+        match self {
+            GroupCipher::Ccmp => CIPHER_SUITE_CCMP,
+            GroupCipher::Tkip => CIPHER_SUITE_TKIP,
+        }
+    }
+
+    /// The length of its group key: TKIP's carries two Michael MIC keys after its temporal key.
+    fn key_len(self) -> usize {
+        match self {
+            GroupCipher::Ccmp => TK_LEN,
+            GroupCipher::Tkip => TK_LEN + 16,
+        }
+    }
+}
+
 /// What an association with an AP uses, as negotiated from its RSNE.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, defmt::Format)]
 pub(crate) struct Suite {
     pub(crate) akm: Akm,
     /// Management frame protection, with BIP-CMAC-128.
     pub(crate) mfp: bool,
+    pub(crate) group: GroupCipher,
 }
 
 /// The 802.11 pseudo-random function over HMAC-SHA1 (IEEE 802.11-2020, 12.7.1.2): fills `out`
@@ -233,7 +270,7 @@ impl Rsne {
     pub(crate) fn for_suite(suite: Suite) -> Self {
         let mut body = [0; 20];
         body[0..2].copy_from_slice(&1u16.to_le_bytes());
-        body[2..6].copy_from_slice(&SUITE_CCMP);
+        body[2..6].copy_from_slice(&suite.group.selector());
         body[6..8].copy_from_slice(&1u16.to_le_bytes());
         body[8..12].copy_from_slice(&SUITE_CCMP);
         body[12..14].copy_from_slice(&1u16.to_le_bytes());
@@ -272,7 +309,11 @@ impl Rsne {
         if u16_at(0)? != 1 {
             return None;
         }
-        let group = body.get(2..6)?;
+        let group = match body.get(2..6)? {
+            selector if selector == SUITE_CCMP => GroupCipher::Ccmp,
+            selector if selector == SUITE_TKIP => GroupCipher::Tkip,
+            _ => return None,
+        };
         let (pairwise, at) = list(6)?;
         let (akms, at) = list(at)?;
         // The capabilities are optional: without them, nothing is required.
@@ -285,17 +326,23 @@ impl Rsne {
                 body.get(at..at + 4)
             })
             .unwrap_or(&SUITE_BIP_CMAC_128);
-        if group != SUITE_CCMP || !pairwise.chunks(4).any(|suite| suite == SUITE_CCMP) {
+        if !pairwise.chunks(4).any(|suite| suite == SUITE_CCMP) {
             return None;
         }
 
-        let mfp = capabilities & RSN_CAP_MFPC != 0 && group_management == SUITE_BIP_CMAC_128;
+        // Management frame protection does not go with a TKIP group key, nor does SAE.
+        let mfp =
+            capabilities & RSN_CAP_MFPC != 0 && group_management == SUITE_BIP_CMAC_128 && group == GroupCipher::Ccmp;
         if capabilities & RSN_CAP_MFPR != 0 && !mfp {
             return None;
         }
         let offers = |akm: [u8; 4]| akms.chunks(4).any(|suite| suite == akm);
         if sae {
-            return (mfp && offers(AKM_SAE)).then_some(Suite { akm: Akm::Sae, mfp });
+            return (mfp && offers(AKM_SAE)).then_some(Suite {
+                akm: Akm::Sae,
+                mfp,
+                group,
+            });
         }
         let akm = if mfp && offers(AKM_PSK_SHA256) {
             Akm::PskSha256
@@ -304,7 +351,7 @@ impl Rsne {
         } else {
             return None;
         };
-        Some(Suite { akm, mfp })
+        Some(Suite { akm, mfp, group })
     }
 }
 
@@ -504,14 +551,23 @@ fn write_key_frame(
     len
 }
 
-/// A group temporal key, as the AP hands it over.
+/// A group temporal key, as the RPU takes it.
 #[derive(Clone, PartialEq, Eq)]
 pub(crate) struct Gtk {
     /// Key ID, 0 to 3.
     pub(crate) index: u8,
-    pub(crate) key: [u8; TK_LEN],
+    pub(crate) cipher: GroupCipher,
+    key: [u8; TK_LEN + 16],
     /// The packet number the AP has reached with this key, low byte first.
     pub(crate) rsc: [u8; 6],
+}
+
+impl Gtk {
+    /// The key: 16 bytes for CCMP; for TKIP, 32, the Michael MIC keys being in the station's
+    /// order (the RX one first), as wpa_supplicant swaps the AP's before installing it.
+    pub(crate) fn key(&self) -> &[u8] {
+        &self.key[..self.cipher.key_len()]
+    }
 }
 
 /// An integrity group temporal key, for BIP-CMAC-128, as the AP hands it over.
@@ -566,15 +622,26 @@ impl<'a> KeyData<'a> {
         found
     }
 
-    fn gtk(&self, rsc: [u8; 6]) -> Option<Gtk> {
+    fn gtk(&self, rsc: [u8; 6], cipher: GroupCipher) -> Option<Gtk> {
         let [flags, _reserved, key @ ..] = self.gtk? else {
             return None;
         };
-        Some(Gtk {
+        if key.len() != cipher.key_len() {
+            return None;
+        }
+        let mut gtk = Gtk {
             index: flags & 0x03,
-            key: (*key).try_into().ok()?,
+            cipher,
+            key: [0; TK_LEN + 16],
             rsc,
-        })
+        };
+        gtk.key[..TK_LEN].copy_from_slice(&key[..TK_LEN]);
+        if cipher == GroupCipher::Tkip {
+            // The AP's TX Michael key is the station's RX one, and the other way round.
+            gtk.key[TK_LEN..TK_LEN + 8].copy_from_slice(&key[TK_LEN + 8..]);
+            gtk.key[TK_LEN + 8..].copy_from_slice(&key[TK_LEN..TK_LEN + 8]);
+        }
+        Some(gtk)
     }
 
     fn igtk(&self) -> Option<Igtk> {
@@ -818,7 +885,7 @@ impl Supplicant {
             debug!("4-way handshake: the RSNXE of message 3 is not the one the AP announced");
             return Outcome::Abort;
         }
-        let Some(gtk) = data.gtk(key.rsc) else {
+        let Some(gtk) = data.gtk(key.rsc, self.suite.group) else {
             debug!("4-way handshake: message 3 has no usable GTK");
             return Outcome::Abort;
         };
@@ -861,7 +928,7 @@ impl Supplicant {
             debug!("group key handshake: message 1 ignored, its key data does not unwrap");
             return Outcome::Ignored;
         };
-        let Some(gtk) = data.gtk(key.rsc) else {
+        let Some(gtk) = data.gtk(key.rsc, self.suite.group) else {
             debug!("group key handshake: message 1 ignored, no usable GTK");
             return Outcome::Ignored;
         };
@@ -1062,26 +1129,30 @@ mod tests {
         assert_eq!(tk.unwrap().as_slice(), hex("486844c8d22bccc24053a97171b0279e"));
         let gtk = gtk.unwrap();
         assert_eq!(gtk.index, 1);
-        assert_eq!(gtk.key.as_slice(), hex("101112131415161718191a1b1c1d1e1f"));
+        assert_eq!(gtk.key(), hex("101112131415161718191a1b1c1d1e1f"));
         assert_eq!(gtk.rsc, [0x2A, 1, 0, 0, 0, 0]);
     }
 
     const PSK: Suite = Suite {
         akm: Akm::Psk,
         mfp: false,
+        group: GroupCipher::Ccmp,
     };
     const PSK_MFP: Suite = Suite {
         akm: Akm::Psk,
         mfp: true,
+        group: GroupCipher::Ccmp,
     };
     const PSK_SHA256_MFP: Suite = Suite {
         akm: Akm::PskSha256,
         mfp: true,
+        group: GroupCipher::Ccmp,
     };
 
     const SAE: Suite = Suite {
         akm: Akm::Sae,
         mfp: true,
+        group: GroupCipher::Ccmp,
     };
 
     #[test]
@@ -1235,8 +1306,23 @@ mod tests {
 
         // WPA3 only: SAE.
         assert_eq!(negotiate("30 14 0100 000fac04 0100 000fac04 0100 000fac08 c000"), None);
-        // WPA/WPA2 mixed mode: TKIP as group cipher.
-        assert_eq!(negotiate("30 14 0100 000fac02 0100 000fac04 0100 000fac02 0000"), None);
+        // WPA/WPA2 mixed mode: TKIP as group cipher, with or without an offer of protection (it
+        // does not go with TKIP), but not if protection is required.
+        let mixed = Suite {
+            group: GroupCipher::Tkip,
+            ..PSK
+        };
+        assert_eq!(
+            negotiate("30 14 0100 000fac02 0100 000fac04 0100 000fac02 0000"),
+            Some(mixed)
+        );
+        assert_eq!(
+            negotiate("30 14 0100 000fac02 0100 000fac04 0100 000fac02 8000"),
+            Some(mixed)
+        );
+        assert_eq!(negotiate("30 14 0100 000fac02 0100 000fac04 0100 000fac02 c000"), None);
+        // TKIP as pairwise cipher only.
+        assert_eq!(negotiate("30 14 0100 000fac02 0100 000fac02 0100 000fac02 0000"), None);
         // WPA2-Enterprise: 802.1X.
         assert_eq!(negotiate("30 14 0100 000fac04 0100 000fac04 0100 000fac01 0000"), None);
         // Another version, and elements cut short.
@@ -1301,7 +1387,7 @@ mod tests {
         assert_eq!(tk.unwrap().as_slice(), hex("54c0f30d8bad6e2b38b9d5df22d1c632"));
         let gtk = gtk.unwrap();
         assert_eq!(
-            (gtk.index, gtk.key.as_slice()),
+            (gtk.index, gtk.key()),
             (1, hex("101112131415161718191a1b1c1d1e1f").as_slice())
         );
         let igtk = igtk.unwrap();
@@ -1459,6 +1545,56 @@ mod tests {
         }
     }
 
+    /// A CCMP GTK with the RSC the test AP sends.
+    fn ccmp_gtk(index: u8, key: [u8; 16]) -> Gtk {
+        let mut gtk = Gtk {
+            index,
+            cipher: GroupCipher::Ccmp,
+            key: [0; 32],
+            rsc: RSC,
+        };
+        gtk.key[..16].copy_from_slice(&key);
+        gtk
+    }
+
+    #[test]
+    fn a_tkip_group_key_is_installed_with_its_michael_keys_swapped() {
+        let element = "30 14 0100 000fac02 0100 000fac04 0100 000fac02 0000";
+        let mut ap = Ap::with_rsne(element);
+        let mut sta = supplicant_for(b"correct horse", element);
+        let mut reply = [0; REPLY_MAX];
+        let Outcome::Reply(len) = sta.handle(&ap.message_1(), &mut reply) else {
+            core::panic!("no message 2");
+        };
+        let message_2 = ap.take_message_2(&reply[..len]);
+        // The station asks for TKIP as group cipher and CCMP as pairwise one.
+        assert_eq!(
+            message_2.key_data,
+            hex("30 14 0100 000fac02 0100 000fac04 0100 000fac02 0000")
+        );
+        // Temporal key 0x61, then the AP's TX Michael key 0x72, then its RX one 0x73.
+        let tkip_gtk = [[0x61; 16].as_slice(), &[0x72; 8], &[0x73; 8]].concat();
+        let rsne = ap.rsne.clone();
+        let Outcome::Keys { gtk, .. } = sta.handle(&ap.message_3_with(&rsne, &tkip_gtk), &mut reply) else {
+            core::panic!("no message 4");
+        };
+        let gtk = gtk.unwrap();
+        assert_eq!(gtk.cipher, GroupCipher::Tkip);
+        assert_eq!(gtk.key(), [[0x61; 16].as_slice(), &[0x73; 8], &[0x72; 8]].concat());
+
+        // A CCMP-sized key for a TKIP group, the AP contradicting itself: the station leaves.
+        let mut ap = Ap::with_rsne(element);
+        let mut sta = supplicant_for(b"correct horse", element);
+        let Outcome::Reply(len) = sta.handle(&ap.message_1(), &mut reply) else {
+            core::panic!("no message 2");
+        };
+        ap.take_message_2(&reply[..len]);
+        assert!(matches!(
+            sta.handle(&ap.message_3_with(&rsne, &GTK), &mut reply),
+            Outcome::Abort
+        ));
+    }
+
     fn supplicant(passphrase: &[u8]) -> Supplicant {
         supplicant_for(passphrase, AP_RSNE)
     }
@@ -1525,13 +1661,7 @@ mod tests {
         assert_eq!(message_4.nonce, [0; 32]);
         assert!(message_4.key_data.is_empty());
         assert_eq!(tk, Some(ptk.tk));
-        assert!(
-            gtk == Some(Gtk {
-                index: 1,
-                key: GTK,
-                rsc: RSC
-            })
-        );
+        assert!(gtk == Some(ccmp_gtk(1, GTK)));
         assert!(igtk.is_none());
     }
 
@@ -1778,13 +1908,7 @@ mod tests {
         assert_eq!(message_2.info, INFO_VERSION_HMAC_SHA1_AES | INFO_MIC | INFO_SECURE);
         assert_eq!(message_2.replay_counter, ap.replay_counter);
         assert!(tk.is_none());
-        assert!(
-            gtk == Some(Gtk {
-                index: 2,
-                key: new_gtk,
-                rsc: RSC
-            })
-        );
+        assert!(gtk == Some(ccmp_gtk(2, new_gtk)));
 
         // The same GTK again is acknowledged, not handed over again.
         let Outcome::Keys { gtk, .. } = sta.handle(&ap.group_message_1(&new_gtk, 2), &mut reply) else {

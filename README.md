@@ -44,6 +44,12 @@ Working:
   or not, with BIP-CMAC-128: the driver then takes PSK-SHA256 key management if the access point
   offers it (AES-128-CMAC MICs, keys derived with SHA-256), and hands the chip the management
   group key (IGTK) too. The handshakes are checked against vectors computed with OpenSSL.
+  WPA/WPA2 mixed mode networks, whose group key is TKIP's, are joined too, with CCMP for the
+  station's own traffic. The chip does not check the Michael MIC of the group frames it receives
+  (on an nRF7002-DK, broadcasts kept arriving with the Michael keys in either order) and reports
+  no MIC failure, so there are no TKIP countermeasures: broadcasts on such a network are
+  encrypted, but their integrity rests on TKIP's CRC alone. Checked on an nRF7002-DK against
+  hostapd, with group key renewals every 30 s.
 - Joining WPA3-Personal networks with `Control::join_wpa3`, with the `wpa3` cargo feature: SAE on
   the P-256 curve (group 19), then the 4-way handshake, with management frame protection, on
   WPA3 and WPA2/WPA3 transition networks. The chip sends the SAE messages as authentication
@@ -83,10 +89,10 @@ Working:
 
 Not yet:
 
-- Beyond WPA2-Personal and WPA3-Personal with CCMP (see above): access points that still use
-  TKIP for the group key (WPA/WPA2 mixed mode), SAE on other groups than 19 and SAE-EXT-KEY, SAE
-  password identifiers, and PMK caching. An access point that requires one of them is reported
-  as `ConnectError::SecurityMismatch`.
+- Beyond WPA2-Personal and WPA3-Personal with CCMP (see above): TKIP as pairwise cipher (WPA
+  networks without WPA2), SAE on other groups than 19 and SAE-EXT-KEY, SAE password identifiers,
+  and PMK caching. An access point that requires one of them is reported as
+  `ConnectError::SecurityMismatch`.
 - Target wake time, and the current drawn in power save and low power mode, which is not
   measured yet.
 - AP mode.

@@ -74,8 +74,13 @@ pub fn wpa2_psk(ssid: &[u8], passphrase: &[u8]) -> Option<[u8; 32]> {
 
 impl Control<'_> {
     /// Joins the WPA2-Personal network `ssid` with its passphrase, picking its strongest access
-    /// point that offers CCMP and does not require management frame protection. Returns once the
-    /// 4-way handshake is done, the keys are in and the link is up; see [`Control::join_open`].
+    /// point that offers CCMP as pairwise cipher (the group cipher may be TKIP, in WPA/WPA2 mixed
+    /// mode), with management frame protection where the access point offers it. Returns once
+    /// the 4-way handshake is done, the keys are in and the link is up; see
+    /// [`Control::join_open`].
+    ///
+    /// On a mixed mode network the chip does not check the Michael MIC of the group frames it
+    /// receives, and reports no MIC failure: their integrity rests on TKIP's CRC alone.
     ///
     /// The nRF70 firmware has no supplicant, so the handshake runs here, on the host, and it needs
     /// random numbers for its nonces. They come from `rng`, any cryptographically secure generator
@@ -335,7 +340,7 @@ impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
             debug!("pairwise key installed");
         }
         if let Some(gtk) = keys.gtk {
-            self.add_key(None, supplicant::CIPHER_SUITE_CCMP, gtk.index, &gtk.key, &gtk.rsc)
+            self.add_key(None, gtk.cipher.cipher_suite(), gtk.index, gtk.key(), &gtk.rsc)
                 .await;
             debug!("group key {} installed", gtk.index);
         }
@@ -358,7 +363,7 @@ impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
     /// Adds a key of `cipher_suite`: the pairwise key of `peer`, or without one a group key (NCS
     /// `nrf_wifi_wpa_supp_set_key` and `nrf_wifi_sys_fmac_add_key`). `seq` is the packet number
     /// reception starts from, low byte first.
-    async fn add_key(&mut self, peer: Option<[u8; 6]>, cipher_suite: u32, index: u8, key: &[u8; 16], seq: &[u8; 6]) {
+    async fn add_key(&mut self, peer: Option<[u8; 6]>, cipher_suite: u32, index: u8, key: &[u8], seq: &[u8; 6]) {
         let mut cmd: c::umac_cmd_key = unsafe { zeroed() };
         let info = &mut cmd.key_info;
         info.valid_fields = c::CIPHER_SUITE_VALID | c::KEY_VALID | c::SEQ_VALID | c::KEY_TYPE_VALID | c::KEY_IDX_VALID;
