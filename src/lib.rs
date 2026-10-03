@@ -1481,6 +1481,12 @@ impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
 
     async fn ap_check_timeouts(&mut self) {}
 
+    fn ap_frame_queued(&mut self, _token: usize, _to: &[u8]) {}
+
+    fn ap_frame_done(&mut self, _token: usize, _acked: bool) {}
+
+    fn ap_seen(&mut self, _frame: &[u8], _pkt_type: u32) {}
+
     fn ap_deadline(&self) -> Option<Instant> {
         None
     }
@@ -1893,10 +1899,12 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
                 // One status per frame of the token. A failed one is a frame the RPU gave up on:
                 // the AP never acknowledged it, and it is lost.
                 let statuses = statuses.get(..done.num_tx_status_code as usize).unwrap_or(&[]);
-                if statuses.iter().any(|&status| status as u32 != c::TX_STATUS_SUCCESS) {
+                let acked = statuses.iter().all(|&status| status as u32 == c::TX_STATUS_SUCCESS);
+                if !acked {
                     debug!("frame of TX token {} not acknowledged", token);
                 }
                 if token < MAX_TX_TOKENS {
+                    self.ap_frame_done(token, acked);
                     self.tx_tokens_busy &= !(1 << token);
                     self.frame_sent(token).await;
                 } else {
@@ -2467,6 +2475,7 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
             return None;
         }
         self.tx_tokens_busy |= 1 << token;
+        self.ap_frame_queued(token, &bytes[..6]);
 
         let area = c::RPU_MEM_PKT_BASE + (token * MAX_TX_AGGREGATION * TX_BUF_SIZE) as u32;
         self.write(area, None, &frame[..len.div_ceil(4)]).await;
@@ -2553,6 +2562,7 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
         self.read(rx_buf_addr(desc_id) + c::RX_BUF_HEADROOM, None, &mut frame[..words])
             .await;
         let bytes = &slice8(&frame)[..len];
+        self.ap_seen(bytes, pkt_type);
 
         // Key handshake frames are the supplicant's, not embassy-net's.
         if self.rx_eapol(bytes, pkt_type, mac_header_len).await {

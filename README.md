@@ -81,6 +81,12 @@ Working:
   30 reached a dozing laptop. While a station sleeps, the driver sends each group frame to every
   station with keys as a unicast frame instead (hostapd's `multicast_to_unicast`), and the
   laptop got 30 out of 30.
+  The access point is an 802.11n one with WMM: 20 MHz, MCS 0 to 7 with the short guard interval,
+  hostapd's default EDCA parameters. A laptop sends to it at MCS 6 or 7 and gets MCS 7 back; on
+  channel 36 its uploads went from 9.8 to 10.9 Mbit/s, the downloads stay at 12.1 (the bus).
+  A station not heard from for 5 minutes is polled with a frame it has to acknowledge (hostapd's
+  `ap_max_inactivity`, which the SDK's driver cannot poll for and gives up on stations instead),
+  through the frames kept for sleeping stations, and let go if it does not within 10 s.
 - The state of the link with `Control::link_status`: the access point, its channel, the signal
   strength and the rates in use, as the chip reports them.
 - 802.11 power save with `Control::set_power_save`, off until asked for: the chip sleeps between
@@ -116,11 +122,9 @@ Not yet:
   `ConnectError::SecurityMismatch`.
 - Target wake time, and the current drawn in power save and low power mode, which is not
   measured yet.
-- In AP mode: WPA3, management frame protection and group key renewals, 802.11n and WMM (the
-  access point announces the 802.11a/b/g rates only), and letting go of stations that vanish
-  without a word (they keep their place until they come back). Delivery to sleeping stations was
-  checked with a laptop that wakes up when a beacon says frames wait for it; PS-Poll and U-APSD
-  are not tested.
+- In AP mode: WPA3, management frame protection and group key renewals, 40 MHz channels, and
+  U-APSD (not announced). Delivery to sleeping stations was checked with a laptop that wakes up
+  when a beacon says frames wait for it; PS-Poll is not tested.
 
 ## Cargo features
 
@@ -132,7 +136,7 @@ Not yet:
   3 KB of RAM to a WPA2 application on an nRF5340, and the `p256` crate.
 - `ap` (off by default): `Control::start_ap_open` and `Control::stop_ap`, and with `wpa2`
   `Control::start_ap_wpa2`. It adds about 15 KB of flash and 9 KB of RAM on an nRF5340, 6 KB of
-  which in `State` for the frames kept for stations that sleep; with `wpa2`, 23 KB and 11 KB.
+  which in `State` for the frames kept for stations that sleep; with `wpa2`, 25 KB and 11 KB.
 
 ```toml
 nrf70 = { version = "0.2", features = ["wpa3", "ap"] }

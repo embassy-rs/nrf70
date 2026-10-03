@@ -36,6 +36,13 @@ const BEACON_INTERVAL: u16 = 100;
 const DTIM_PERIOD: u8 = 2;
 /// How long the RPU gets to start or stop the access point.
 const CARRIER_TIMEOUT: Duration = Duration::from_secs(2);
+/// A station heard from for this long is polled (hostapd's `ap_max_inactivity`).
+const INACTIVITY: Duration = Duration::from_secs(300);
+/// How long a poll waits for its acknowledgement before the station is let go. A dozing station
+/// gets it when the beacon tells it a frame waits.
+const POLL_TIMEOUT: Duration = Duration::from_secs(10);
+/// Ethertype of the poll: IEEE 802's first local experimental one, which a station's stack drops.
+const ETHERTYPE_POLL: u16 = 0x88B5;
 
 /// Management frame subtypes, as the first byte of the frame control field (type 0).
 const ASSOC_REQ: u8 = 0x00;
@@ -55,7 +62,37 @@ const SUBSCRIBED: [u8; 6] = [AUTH, ASSOC_REQ, REASSOC_REQ, DISASSOC, DEAUTH, PRO
 const IE_RATES: u8 = 1;
 const IE_DS_PARAMS: u8 = 3;
 const IE_ERP: u8 = 42;
+const IE_HT_CAPABILITIES: u8 = 45;
+const IE_HT_OPERATION: u8 = 61;
+const IE_VENDOR: u8 = 221;
 const IE_EXT_RATES: u8 = 50;
+
+/// The access point's HT Capabilities (IEEE 802.11-2020, 9.4.2.55): 20 MHz only, short guard
+/// interval, SM power save disabled; A-MPDUs up to 64 KiB (what the RPU is set up to receive) with
+/// MPDUs 4 µs apart; MCS 0 to 7, the nRF70's one spatial stream.
+const HT_CAPABILITIES: [u8; 26] = [
+    0x2C, 0x00, // HT capability information
+    0x17, // A-MPDU parameters
+    0xFF, 0, 0, 0, 0, 0, 0, 0, 0, 0, // RX MCS bitmask: MCS 0 to 7
+    0, 0, // highest supported data rate: from the MCS
+    0x01, 0, 0, 0, // TX MCS set defined, the same as the RX one
+    0, 0, // HT extended capabilities
+    0, 0, 0, 0, // transmit beamforming
+    0, // antenna selection
+];
+
+/// The WMM Parameter element's body (WMM specification, 2.2.2): hostapd's default EDCA parameters
+/// for an access point, without U-APSD.
+const WMM_PARAMETERS: [u8; 24] = [
+    0x00, 0x50, 0xF2, 0x02, 0x01, 0x01, // WMM, parameter element, version 1
+    0x00, 0x00, // QoS info: parameter set 0, no U-APSD; reserved
+    0x03, 0xA4, 0x00, 0x00, // best effort: AIFSN 3, CWmin 15, CWmax 1023
+    0x27, 0xA4, 0x00, 0x00, // background: AIFSN 7, CWmin 15, CWmax 1023
+    0x42, 0x43, 0x5E, 0x00, // video: AIFSN 2, CWmin 7, CWmax 15, TXOP 3 ms
+    0x62, 0x32, 0x2F, 0x00, // voice: AIFSN 2, CWmin 3, CWmax 7, TXOP 1.5 ms
+];
+/// What a station's WMM Information element starts with.
+const WMM_INFORMATION: [u8; 5] = [0x00, 0x50, 0xF2, 0x02, 0x00];
 
 /// Capability information bits.
 const CAPABILITY_ESS: u16 = 0x0001;
@@ -74,6 +111,7 @@ const STATUS_INVALID_ELEMENT: u16 = 40;
 
 /// IEEE 802.11 reason codes.
 const REASON_PREV_AUTH_NOT_VALID: u16 = 2;
+const REASON_INACTIVITY: u16 = 4;
 const REASON_LEAVING: u16 = 3;
 const REASON_CLASS2_FROM_UNAUTHENTICATED: u16 = 6;
 #[cfg(feature = "wpa2")]
@@ -195,6 +233,16 @@ impl Settings {
         if self.privacy() {
             w.put(Rsne::for_suite(authenticator::SUITE).as_bytes());
         }
+        w.ie(IE_HT_CAPABILITIES, &HT_CAPABILITIES);
+        self.write_ht_operation(w);
+        w.ie(IE_VENDOR, &WMM_PARAMETERS);
+    }
+
+    /// The HT Operation element (IEEE 802.11-2020, 9.4.2.56): the channel, 20 MHz, no protection.
+    fn write_ht_operation(&self, w: &mut Writer) {
+        let mut body = [0; 22];
+        body[0] = self.channel;
+        w.ie(IE_HT_OPERATION, &body);
     }
 
     /// The part of a beacon before the TIM.
@@ -225,23 +273,38 @@ impl Settings {
         find_ie(body, IE_SSID).is_some_and(|ssid| ssid.is_empty() || ssid == self.ssid.as_bytes())
     }
 
+    /// The answer to an association request: with `Ok`, the association ID and what the request
+    /// says, the HT and WMM elements going to a station that has them; with `Err`, the status code
+    /// of the refusal.
     fn association_response(
         &self,
         bssid: &[u8; 6],
         to: &[u8; 6],
         reassoc: bool,
-        status: u16,
-        aid: u16,
+        answer: Result<(u16, &AssocRequest), u16>,
         out: &mut [u8],
     ) -> usize {
+        let (status, aid) = match answer {
+            Ok((aid, _)) => (STATUS_SUCCESS, aid | 0xC000),
+            Err(status) => (status, 0),
+        };
         let mut w = Writer::new(out);
         w.header(if reassoc { REASSOC_RESP } else { ASSOC_RESP }, to, bssid)
             .le16(self.capability())
             .le16(status)
-            .le16(if status == STATUS_SUCCESS { aid | 0xC000 } else { 0 })
+            .le16(aid)
             .ie(IE_RATES, self.rates());
         if self.band_2g() {
             w.ie(IE_EXT_RATES, &EXT_RATES_2G);
+        }
+        if let Ok((_, request)) = answer {
+            if request.ht_capabilities.is_some() {
+                w.ie(IE_HT_CAPABILITIES, &HT_CAPABILITIES);
+                self.write_ht_operation(&mut w);
+            }
+            if request.wmm {
+                w.ie(IE_VENDOR, &WMM_PARAMETERS);
+            }
         }
         w.len
     }
@@ -260,6 +323,8 @@ impl Settings {
             listen_interval: u16::from_le_bytes([*l0, *l1]),
             rates: [0; MAX_RATES],
             rates_len: 0,
+            ht_capabilities: find_ie(ies, IE_HT_CAPABILITIES).and_then(|ht| ht.try_into().ok()),
+            wmm: vendor_ies(ies).any(|ie| ie.starts_with(&WMM_INFORMATION)),
             #[cfg(feature = "wpa2")]
             rsne: None,
         };
@@ -284,6 +349,20 @@ impl Settings {
         }
         Ok(request)
     }
+}
+
+/// The bodies of the vendor specific elements in `ies`.
+fn vendor_ies(mut ies: &[u8]) -> impl Iterator<Item = &[u8]> {
+    core::iter::from_fn(move || {
+        while let [id, len, rest @ ..] = ies {
+            let body = rest.get(..*len as usize)?;
+            ies = &rest[body.len()..];
+            if *id == IE_VENDOR {
+                return Some(body);
+            }
+        }
+        None
+    })
 }
 
 /// The centre frequency of a 20 MHz channel the access point can use, in MHz. 5 GHz channels that
@@ -379,6 +458,10 @@ struct AssocRequest {
     /// Its rates, in 500 kb/s units, without the basic rate bit.
     rates: [u8; MAX_RATES],
     rates_len: usize,
+    /// Its HT Capabilities, if it is an 802.11n station.
+    ht_capabilities: Option<[u8; 26]>,
+    /// It has a WMM Information element: it takes QoS data frames.
+    wmm: bool,
     /// Its RSNE, with WPA2.
     #[cfg(feature = "wpa2")]
     rsne: Option<Rsne>,
@@ -402,12 +485,20 @@ struct Station {
     listen_interval: u16,
     rates: [u8; MAX_RATES],
     rates_len: u8,
+    /// Its HT Capabilities, if it is an 802.11n station.
+    ht_capabilities: Option<[u8; 26]>,
+    /// It takes QoS data frames (WMM).
+    wmm: bool,
     /// Its port is open: it gets data frames, group ones included.
     authorized: bool,
     /// The station dozes: its frames are kept until it asks for them.
     asleep: bool,
     /// While asleep, how many frames it asked for (PS-Poll or U-APSD trigger) and still gets.
     service_period: u8,
+    /// When a frame last came from it, or one to it was acknowledged. Set when it is associated.
+    last_seen: Instant,
+    /// When a poll that went unanswered lets it go.
+    poll_deadline: Option<Instant>,
     /// With WPA2, the RSNE of its association request, which message 2 must repeat.
     #[cfg(feature = "wpa2")]
     rsne: Option<Rsne>,
@@ -426,8 +517,12 @@ impl Station {
             listen_interval: 0,
             rates: [0; MAX_RATES],
             rates_len: 0,
+            ht_capabilities: None,
+            wmm: false,
             asleep: false,
             service_period: 0,
+            last_seen: Instant::MIN,
+            poll_deadline: None,
             #[cfg(feature = "wpa2")]
             rsne: None,
             #[cfg(feature = "wpa2")]
@@ -608,6 +703,8 @@ pub(crate) struct State<'a> {
     set_interface: Option<i32>,
     /// Identifies each management frame sent, for the RPU's TX status.
     cookie: u64,
+    /// The station each TX token carries frames to, to note it seen when they are acknowledged.
+    token_stations: [Option<u8>; crate::MAX_TX_TOKENS],
 }
 
 impl<'a> State<'a> {
@@ -623,6 +720,7 @@ impl<'a> State<'a> {
             nonces: 0,
             set_interface: None,
             cookie: 0,
+            token_stations: [None; crate::MAX_TX_TOKENS],
         }
     }
 }
@@ -917,13 +1015,16 @@ impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
                     slot = self.ap.storage.stations.find_or_add(&mgmt.from).unwrap();
                 }
                 let body = mgmt.body.get(if reassoc { 6 } else { 0 }..).unwrap_or(&[]);
-                let status = match settings.association_request(body) {
+                let request = settings.association_request(body);
+                let status = match &request {
                     Ok(request) => {
                         let station = self.ap.storage.stations.get(slot).unwrap();
                         station.capability = request.capability;
                         station.listen_interval = request.listen_interval;
                         station.rates = request.rates;
                         station.rates_len = request.rates_len as u8;
+                        station.ht_capabilities = request.ht_capabilities;
+                        station.wmm = request.wmm;
                         #[cfg(feature = "wpa2")]
                         {
                             station.rsne = request.rsne;
@@ -931,10 +1032,14 @@ impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
                         station.phase = Phase::Responded;
                         STATUS_SUCCESS
                     }
-                    Err(status) => status,
+                    Err(status) => *status,
                 };
                 debug!("association request from {:02x}: status {}", mgmt.from, status);
-                let len = settings.association_response(&bssid, &mgmt.from, reassoc, status, slot as u16 + 1, &mut out);
+                let answer = request
+                    .as_ref()
+                    .map(|request| (slot as u16 + 1, request))
+                    .map_err(|status| *status);
+                let len = settings.association_response(&bssid, &mgmt.from, reassoc, answer, &mut out);
                 self.send_mgmt(&out[..len], false).await;
             }
             DISASSOC | DEAUTH => {
@@ -971,6 +1076,7 @@ impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
             return;
         }
         station.phase = Phase::Associated;
+        station.last_seen = Instant::now();
         let station = *station;
         self.add_station(slot, &station).await;
         info!("station {:02x} joined, association ID {}", station.addr, slot + 1);
@@ -998,14 +1104,21 @@ impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
         info.supp_rates.num_rates = station.rates_len as _;
         info.supp_rates.rates[..station.rates_len as usize]
             .copy_from_slice(&station.rates[..station.rates_len as usize]);
+        let mut flags = 0;
+        if station.capability & CAPABILITY_SHORT_PREAMBLE != 0 {
+            flags |= c::STA_FLAG_SHORT_PREAMBLE;
+        }
+        if station.wmm {
+            flags |= c::STA_FLAG_WME;
+        }
         info.sta_flags2 = c::sta_flag_update {
             mask: c::STA_FLAG_AUTHORIZED | c::STA_FLAG_SHORT_PREAMBLE | c::STA_FLAG_WME | c::STA_FLAG_MFP,
-            set: if station.capability & CAPABILITY_SHORT_PREAMBLE != 0 {
-                c::STA_FLAG_SHORT_PREAMBLE
-            } else {
-                0
-            },
+            set: flags,
         };
+        if let Some(ht) = station.ht_capabilities {
+            cmd.valid_fields |= c::CMD_NEW_STATION_HT_CAPABILITY_VALID;
+            info.ht_capability[..ht.len()].copy_from_slice(&ht);
+        }
         info.mac_addr = station.addr;
         self.send_cmd(cmd).await;
         self.write_pending_entry(slot, &station.addr).await;
@@ -1154,6 +1267,8 @@ impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
             addr,
             if station.asleep { "dozes" } else { "awake" }
         );
+        // The RPU saw a frame of the station's go by: it is there.
+        self.station_seen(slot);
         self.ap_deliver().await;
     }
 
@@ -1166,6 +1281,7 @@ impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
             return;
         };
         self.ap.storage.stations.get(slot).unwrap().service_period = count.max(1) as u8;
+        self.station_seen(slot);
         self.ap_deliver().await;
     }
 
@@ -1204,33 +1320,126 @@ impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
     }
 
     /// When [`Self::ap_check_timeouts`] has to run at the latest: the next handshake message to
-    /// send again.
+    /// send again, station to poll, or poll to give up on.
     pub(super) fn ap_deadline(&self) -> Option<Instant> {
-        #[cfg(feature = "wpa2")]
-        return self
-            .ap
+        if !self.ap.running {
+            return None;
+        }
+        self.ap
             .storage
             .stations
             .0
             .iter()
             .flatten()
-            .filter_map(|s| s.retry_at)
-            .min();
-        #[cfg(not(feature = "wpa2"))]
-        return None;
+            .filter(|s| s.phase == Phase::Associated)
+            .flat_map(|s| {
+                #[cfg(feature = "wpa2")]
+                let retry = s.retry_at;
+                #[cfg(not(feature = "wpa2"))]
+                let retry = None;
+                [retry, Some(s.poll_deadline.unwrap_or(s.last_seen + INACTIVITY))]
+            })
+            .flatten()
+            .min()
     }
 
     /// Sends again the handshake messages that went unanswered for too long, and lets go of the
-    /// stations that never answered.
+    /// stations that never answered; polls the stations not heard from for [`INACTIVITY`], and
+    /// lets go of those that do not acknowledge the poll (hostapd's `ap_handle_timer`).
     pub(super) async fn ap_check_timeouts(&mut self) {
-        #[cfg(feature = "wpa2")]
+        if !self.ap.running {
+            return;
+        }
+        let now = Instant::now();
         for slot in 0..MAX_STATIONS {
-            let due = self.ap.storage.stations.0[slot]
-                .and_then(|s| s.retry_at)
-                .is_some_and(|at| Instant::now() >= at);
-            if due {
+            let Some(station) = self.ap.storage.stations.0[slot].filter(|s| s.phase == Phase::Associated) else {
+                continue;
+            };
+            #[cfg(feature = "wpa2")]
+            if station.retry_at.is_some_and(|at| now >= at) {
                 self.send_handshake_message(slot).await;
+                continue;
             }
+            match station.poll_deadline {
+                Some(deadline) if now >= deadline => {
+                    info!("station {:02x} did not answer its poll, letting it go", station.addr);
+                    self.remove_station(slot, Some(REASON_INACTIVITY)).await;
+                }
+                None if station.authorized && now >= station.last_seen + INACTIVITY => {
+                    debug!(
+                        "station {:02x} not heard from for {} s, polling it",
+                        station.addr,
+                        INACTIVITY.as_secs()
+                    );
+                    self.poll_station(slot).await;
+                }
+                _ => {}
+            }
+        }
+    }
+
+    /// Sends a station a frame it has to acknowledge (hostapd's `poll_client`, which the SDK's
+    /// driver does not have): an empty frame of an experimental ethertype, which its stack drops.
+    /// It goes through the frames kept for sleeping stations, so a dozing one gets it too.
+    async fn poll_station(&mut self, slot: usize) {
+        let Some(station) = self.ap.storage.stations.get(slot) else {
+            return;
+        };
+        station.poll_deadline = Some(Instant::now() + POLL_TIMEOUT);
+        let to = station.addr;
+        let mut frame = [0u32; 4];
+        let bssid = self.ap.mac_addr;
+        let Some(len) = crate::write_ethernet(slice8_mut(&mut frame), &to, &bssid, ETHERTYPE_POLL, &[]) else {
+            return;
+        };
+        if !self.hold_for(slot, &frame, len).await && self.send_frame(&frame, len).await.is_none() {
+            debug!("poll of {:02x} not sent: no TX token free", to);
+        }
+    }
+
+    /// Notes the station a frame goes to with TX token `token`.
+    pub(super) fn ap_frame_queued(&mut self, token: usize, to: &[u8]) {
+        if !self.ap.running {
+            return;
+        }
+        let to: [u8; 6] = to.try_into().unwrap_or([0xFF; 6]);
+        if let Some(entry) = self.ap.token_stations.get_mut(token) {
+            *entry = self.ap.storage.stations.find(&to).map(|slot| slot as u8);
+        }
+    }
+
+    /// The frames of TX token `token` are done: if acknowledged, their station is there.
+    pub(super) fn ap_frame_done(&mut self, token: usize, acked: bool) {
+        let slot = self.ap.token_stations.get_mut(token).and_then(Option::take);
+        if let (Some(slot), true) = (slot, acked) {
+            self.station_seen(slot as usize);
+        }
+    }
+
+    /// A frame came in: its transmitter, if a station, is there. `frame` is as the RPU hands it
+    /// over, with the 802.11 header (whose second address is the transmitter) or as an A-MSDU
+    /// subframe (whose source is the station).
+    pub(super) fn ap_seen(&mut self, frame: &[u8], pkt_type: u32) {
+        if !self.ap.running {
+            return;
+        }
+        let from = match pkt_type {
+            c::PKT_TYPE_MPDU | c::PKT_TYPE_MSDU_WITH_MAC => frame.get(10..16),
+            c::PKT_TYPE_MSDU => frame.get(6..12),
+            _ => None,
+        };
+        let slot = from
+            .and_then(|from| from.try_into().ok())
+            .and_then(|from: [u8; 6]| self.ap.storage.stations.find(&from));
+        if let Some(slot) = slot {
+            self.station_seen(slot);
+        }
+    }
+
+    fn station_seen(&mut self, slot: usize) {
+        if let Some(station) = self.ap.storage.stations.get(slot) {
+            station.last_seen = Instant::now();
+            station.poll_deadline = None;
         }
     }
 
@@ -1429,6 +1638,21 @@ mod tests {
     const BSSID: [u8; 6] = [0xF4, 0xCE, 0x36, 0x00, 0x8B, 0x19];
     const STA: [u8; 6] = [0x98, 0x43, 0xFA, 0x23, 0x26, 0x25];
 
+    // The elements every beacon and probe response ends with.
+    const HT_CAPABILITIES_IE: &str = "2d1a 2c00 17 ff000000000000000000 0000 01000000 0000 00000000 00";
+    const WMM_IE: &str = "dd18 0050f2020101 0000 03a40000 27a40000 42435e00 62322f00";
+
+    fn ht_operation_ie(channel: u8) -> std::string::String {
+        std::format!("3d16 {channel:02x} 00 0000 0000 00000000000000000000000000000000")
+    }
+
+    fn tail_2g(channel: u8) -> Vec<u8> {
+        hex(&std::format!(
+            "2a0100 3204 3048606c {HT_CAPABILITIES_IE} {} {WMM_IE}",
+            ht_operation_ie(channel)
+        ))
+    }
+
     fn hex(s: &str) -> Vec<u8> {
         let s: std::string::String = s.split_whitespace().collect();
         (0..s.len())
@@ -1479,7 +1703,7 @@ mod tests {
         );
         let mut tail = [0; 512];
         let len = settings.beacon_tail(&mut tail);
-        assert_eq!(tail[..len], hex("2a0100 3204 3048606c")[..]);
+        assert_eq!(tail[..len], tail_2g(6)[..]);
     }
 
     #[test]
@@ -1490,8 +1714,13 @@ mod tests {
         // ESS and short preamble, no short slot bit, no DS parameter set.
         assert_eq!(head[34..36], [0x21, 0x00]);
         assert_eq!(head[46..len], hex("0108 8c129824b048606c")[..]);
+        // No ERP nor extended rates, 802.11n and WMM all the same.
         let mut tail = [0; 512];
-        assert_eq!(settings.beacon_tail(&mut tail), 0);
+        let len = settings.beacon_tail(&mut tail);
+        assert_eq!(
+            tail[..len],
+            hex(&std::format!("{HT_CAPABILITIES_IE} {} {WMM_IE}", ht_operation_ie(36)))[..]
+        );
     }
 
     #[test]
@@ -1510,7 +1739,7 @@ mod tests {
         let mut head = [0; 256];
         let head_len = settings.beacon_head(&BSSID, &mut head);
         assert_eq!(out[24..head_len], head[24..head_len]);
-        assert_eq!(out[head_len..len], hex("2a0100 3204 3048606c")[..]);
+        assert_eq!(out[head_len..len], tail_2g(6)[..]);
     }
 
     #[test]
@@ -1523,13 +1752,34 @@ mod tests {
         );
 
         let settings = Settings::new(b"nrf70-ap", 6).unwrap();
-        let len = settings.association_response(&BSSID, &STA, false, STATUS_SUCCESS, 1, &mut out);
+        // An 802.11g station without WMM.
+        let legacy = settings
+            .association_request(&hex("3104 0a00 0008 6e726637302d6170 0108 02040b160c121824"))
+            .ok()
+            .unwrap();
+        let len = settings.association_response(&BSSID, &STA, false, Ok((1, &legacy)), &mut out);
         assert_eq!(
             out[..len],
             hex("1000 0000 9843fa232625 f4ce36008b19 f4ce36008b19 0000
                  2104 0000 01c0 0108 82848b960c121824 3204 3048606c")[..]
         );
-        let len = settings.association_response(&BSSID, &STA, true, STATUS_RATES, 1, &mut out);
+        // An 802.11n station with WMM gets the HT and WMM elements.
+        let modern = settings
+            .association_request(&hex(&std::format!(
+                "3104 0a00 0008 6e726637302d6170 0108 02040b160c121824 {HT_CAPABILITIES_IE} dd07 0050f202000100"
+            )))
+            .ok()
+            .unwrap();
+        let len = settings.association_response(&BSSID, &STA, false, Ok((2, &modern)), &mut out);
+        assert_eq!(
+            out[..len],
+            hex(&std::format!(
+                "1000 0000 9843fa232625 f4ce36008b19 f4ce36008b19 0000
+                 2104 0000 02c0 0108 82848b960c121824 3204 3048606c {HT_CAPABILITIES_IE} {} {WMM_IE}",
+                ht_operation_ie(6)
+            ))[..]
+        );
+        let len = settings.association_response(&BSSID, &STA, true, Err(STATUS_RATES), &mut out);
         assert_eq!(out[0], REASSOC_RESP);
         assert_eq!(out[24..30], hex("2104 1200 0000")[..]);
         assert_eq!(len, 30 + 10 + 6);
@@ -1546,10 +1796,29 @@ mod tests {
             .unwrap();
         assert_eq!(request.capability, 0x0431);
         assert_eq!(request.listen_interval, 10);
+        assert!(request.wmm);
+        assert!(request.ht_capabilities.is_none());
         assert_eq!(
             request.rates[..request.rates_len],
             [0x02, 0x04, 0x0B, 0x16, 0x0C, 0x12, 0x18, 0x24, 0x30, 0x48, 0x6C, 0x60]
         );
+        // HT capabilities, and WMM after another vendor element (WPS).
+        let request = settings
+            .association_request(&hex(&std::format!(
+                "3104 0a00 0008 6e726637302d6170 0108 02040b160c121824 {HT_CAPABILITIES_IE} dd05 0050f20410 dd07 0050f202000100"
+            )))
+            .ok()
+            .unwrap();
+        assert_eq!(request.ht_capabilities, Some(HT_CAPABILITIES));
+        assert!(request.wmm);
+        // A WMM parameter element is not a station's information element.
+        let request = settings
+            .association_request(&hex(&std::format!(
+                "3104 0a00 0008 6e726637302d6170 0108 02040b160c121824 {WMM_IE}"
+            )))
+            .ok()
+            .unwrap();
+        assert!(!request.wmm);
         // Another network, no rates, cut short.
         assert_eq!(
             settings
