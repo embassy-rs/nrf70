@@ -118,6 +118,8 @@ const REASON_CLASS2_FROM_UNAUTHENTICATED: u16 = 6;
 const REASON_4WAY_HANDSHAKE_TIMEOUT: u16 = 15;
 #[cfg(feature = "wpa2")]
 const REASON_IE_IN_4WAY_DIFFERS: u16 = 17;
+#[cfg(feature = "wpa2")]
+const REASON_GROUP_KEY_UPDATE_TIMEOUT: u16 = 16;
 
 /// Rates in 500 kb/s units, a basic rate with its top bit set: on 2.4 GHz the 802.11b ones are
 /// basic (hostapd's `hw_mode=g`) and the 802.11g ones go on in the extended element, on 5 GHz 6,
@@ -693,9 +695,19 @@ pub(crate) struct State<'a> {
     settings: Option<Settings>,
     mac_addr: [u8; 6],
     storage: &'a mut Storage,
-    /// With WPA2, the group key.
+    /// With WPA2, the group key in use.
     #[cfg(feature = "wpa2")]
     gtk: Option<GroupKey>,
+    /// With WPA2, while the group key is renewed: the next one, which becomes the one in use once
+    /// every station has it.
+    #[cfg(feature = "wpa2")]
+    next_gtk: Option<GroupKey>,
+    /// With WPA2, when the group key is renewed next.
+    #[cfg(feature = "wpa2")]
+    rekey_at: Option<Instant>,
+    /// With WPA2, how many group keys were drawn.
+    #[cfg(feature = "wpa2")]
+    gtks: u64,
     /// With WPA2, how many ANonces were drawn.
     #[cfg(feature = "wpa2")]
     nonces: u64,
@@ -716,6 +728,12 @@ impl<'a> State<'a> {
             storage,
             #[cfg(feature = "wpa2")]
             gtk: None,
+            #[cfg(feature = "wpa2")]
+            next_gtk: None,
+            #[cfg(feature = "wpa2")]
+            rekey_at: None,
+            #[cfg(feature = "wpa2")]
+            gtks: 0,
             #[cfg(feature = "wpa2")]
             nonces: 0,
             set_interface: None,
@@ -845,6 +863,9 @@ impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
                 .await;
             self.set_default_key(gtk.index, true).await;
             self.ap.gtk = Some(gtk);
+            self.ap.next_gtk = None;
+            self.ap.gtks = 0;
+            self.ap.rekey_at = Some(Instant::now() + GROUP_REKEY);
         }
 
         self.ap.settings = Some(settings);
@@ -890,6 +911,11 @@ impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
             self.carrier_on = false;
         }
         self.ap.running = false;
+        #[cfg(feature = "wpa2")]
+        {
+            self.ap.next_gtk = None;
+            self.ap.rekey_at = None;
+        }
         self.set_interface_type(c::iftype::IFTYPE_STATION).await;
         info!("access point down");
     }
@@ -901,6 +927,11 @@ impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
         }
         self.ap.running = false;
         self.ap.storage.clear();
+        #[cfg(feature = "wpa2")]
+        {
+            self.ap.next_gtk = None;
+            self.ap.rekey_at = None;
+        }
     }
 
     /// Takes the interface down, changes its type and brings it up again (the SDK's
@@ -1162,6 +1193,9 @@ impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
             self.send_cmd(cmd).await;
             self.write_pending_entry(slot, &[0; 6]).await;
         }
+        // It may have been the last one a group key renewal waited for.
+        #[cfg(feature = "wpa2")]
+        self.finish_rekey().await;
     }
 
     /// The RPU removed a station on its own (`UMAC_EVENT_DEL_STATION`).
@@ -1177,6 +1211,8 @@ impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
                     self.ap.storage.handshakes[slot] = None;
                 }
                 self.write_pending_entry(slot, &[0; 6]).await;
+                #[cfg(feature = "wpa2")]
+                self.finish_rekey().await;
             }
         }
     }
@@ -1325,13 +1361,19 @@ impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
         if !self.ap.running {
             return None;
         }
-        self.ap
+        #[cfg(feature = "wpa2")]
+        let rekey = self.ap.rekey_at.filter(|_| self.ap.next_gtk.is_none());
+        #[cfg(not(feature = "wpa2"))]
+        let rekey = None;
+        let stations = self
+            .ap
             .storage
             .stations
             .0
             .iter()
             .flatten()
-            .filter(|s| s.phase == Phase::Associated)
+            .filter(|s| s.phase == Phase::Associated);
+        stations
             .flat_map(|s| {
                 #[cfg(feature = "wpa2")]
                 let retry = s.retry_at;
@@ -1339,6 +1381,7 @@ impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
                 let retry = None;
                 [retry, Some(s.poll_deadline.unwrap_or(s.last_seen + INACTIVITY))]
             })
+            .chain([rekey])
             .flatten()
             .min()
     }
@@ -1351,6 +1394,10 @@ impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
             return;
         }
         let now = Instant::now();
+        #[cfg(feature = "wpa2")]
+        if self.ap.next_gtk.is_none() && self.ap.rekey_at.is_some_and(|at| now >= at) {
+            self.start_rekey().await;
+        }
         for slot in 0..MAX_STATIONS {
             let Some(station) = self.ap.storage.stations.0[slot].filter(|s| s.phase == Phase::Associated) else {
                 continue;
@@ -1462,6 +1509,10 @@ impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
 #[cfg(feature = "wpa2")]
 const HANDSHAKE_RETRY: Duration = Duration::from_secs(1);
 
+/// How often the group key is renewed (hostapd's `wpa_group_rekey` for CCMP).
+#[cfg(feature = "wpa2")]
+const GROUP_REKEY: Duration = Duration::from_secs(24 * 3600);
+
 #[cfg(feature = "wpa2")]
 impl Control<'_> {
     /// Starts a WPA2-Personal access point named `ssid` on `channel`, with the passphrase its
@@ -1516,18 +1567,25 @@ impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
     }
 
     /// Sends the handshake message the station of `slot` is due, the first time or again, or
-    /// lets the station go after [`authenticator::TRIES`] unanswered ones (reason 15).
+    /// lets the station go after [`authenticator::TRIES`] unanswered ones (reason 15, or 16 for a
+    /// group key handshake).
     async fn send_handshake_message(&mut self, slot: usize) {
         let (Some(gtk), Some(station)) = (self.ap.gtk, self.ap.storage.stations.0[slot]) else {
             return;
         };
+        let Some(handshake) = self.ap.storage.handshakes[slot].as_mut() else {
+            return;
+        };
+        let group = handshake.in_group_handshake();
         let mut out = [0; authenticator::MESSAGE_MAX];
-        let Some(len) = self.ap.storage.handshakes[slot]
-            .as_mut()
-            .and_then(|handshake| handshake.next_message(&gtk, &mut out))
-        else {
-            info!("station {:02x} did not complete the 4-way handshake", station.addr);
-            self.remove_station(slot, Some(REASON_4WAY_HANDSHAKE_TIMEOUT)).await;
+        let Some(len) = handshake.next_message(&gtk, &mut out) else {
+            if group {
+                info!("station {:02x} did not take the new group key", station.addr);
+                self.remove_station(slot, Some(REASON_GROUP_KEY_UPDATE_TIMEOUT)).await;
+            } else {
+                info!("station {:02x} did not complete the 4-way handshake", station.addr);
+                self.remove_station(slot, Some(REASON_4WAY_HANDSHAKE_TIMEOUT)).await;
+            }
             return;
         };
         if let Some(station) = self.ap.storage.stations.get(slot) {
@@ -1563,13 +1621,24 @@ impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
                 if let Some(station) = self.ap.storage.stations.get(slot) {
                     station.retry_at = None;
                 }
-                self.ap.storage.handshakes[slot] = None;
                 // The pairwise key, then the port (hostapd's PTKINITDONE).
                 self.add_key(Some(from), supplicant::CIPHER_SUITE_CCMP, 0, &tk, &[0; 6])
                     .await;
                 self.set_default_key(0, false).await;
                 self.authorize_station(&from).await;
                 info!("station {:02x} has its keys", from);
+                // The authenticator stays, for the group key handshakes. One that joined while the
+                // group key is renewed got the one in use, and gets the next one now.
+                if let Some(next) = self.ap.next_gtk {
+                    self.start_group_handshake(slot, next).await;
+                }
+            }
+            authenticator::Outcome::GroupDone => {
+                if let Some(station) = self.ap.storage.stations.get(slot) {
+                    station.retry_at = None;
+                }
+                debug!("station {:02x} has the new group key", from);
+                self.finish_rekey().await;
             }
             authenticator::Outcome::Refused => {
                 warn!(
@@ -1579,6 +1648,59 @@ impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
                 self.remove_station(slot, Some(REASON_IE_IN_4WAY_DIFFERS)).await;
             }
         }
+    }
+
+    /// Starts renewing the group key (hostapd's `wpa_group_setkeys`): the next one goes to the RPU,
+    /// for reception until it is in use, and to each station with its keys in a group key
+    /// handshake.
+    async fn start_rekey(&mut self) {
+        let (Some(Security::Wpa2 { seed, .. }), Some(gtk)) = (self.ap.settings.map(|s| s.security), self.ap.gtk) else {
+            return;
+        };
+        self.ap.gtks += 1;
+        let next = GroupKey::derive(&seed, &self.ap.mac_addr, self.ap.gtks, 3 - gtk.index);
+        self.add_key(None, supplicant::CIPHER_SUITE_CCMP, next.index, &next.key, &[0; 6])
+            .await;
+        self.ap.next_gtk = Some(next);
+        debug!("renewing the group key: key {}", next.index);
+        for slot in 0..MAX_STATIONS {
+            if self.ap.storage.stations.0[slot].is_some_and(|s| s.authorized) {
+                self.start_group_handshake(slot, next).await;
+            }
+        }
+        self.finish_rekey().await;
+    }
+
+    async fn start_group_handshake(&mut self, slot: usize, next: GroupKey) {
+        let started = self.ap.storage.handshakes[slot]
+            .as_mut()
+            .is_some_and(|handshake| handshake.start_group(next));
+        if started {
+            self.send_handshake_message(slot).await;
+        }
+    }
+
+    /// Puts the next group key in use once no station is still being given it (hostapd's
+    /// `wpa_group_setkeysdone`): broadcasts go out with it from then on.
+    async fn finish_rekey(&mut self) {
+        let Some(next) = self.ap.next_gtk else {
+            return;
+        };
+        let pending = self
+            .ap
+            .storage
+            .handshakes
+            .iter()
+            .flatten()
+            .any(Authenticator::in_group_handshake);
+        if pending {
+            return;
+        }
+        self.set_default_key(next.index, true).await;
+        self.ap.gtk = Some(next);
+        self.ap.next_gtk = None;
+        self.ap.rekey_at = Some(Instant::now() + GROUP_REKEY);
+        info!("group key {} in use", next.index);
     }
 
     /// Sends an EAPOL frame to a station, from the access point. A frame that finds no TX token

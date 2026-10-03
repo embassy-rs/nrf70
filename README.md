@@ -77,6 +77,9 @@ Working:
   each station's pairwise key. A laptop joins it 0.1 s after its association, at the same
   throughput as on the open one; with a wrong passphrase it is let go after 4 s. The handshake is
   checked against the driver's own supplicant.
+  The group key is renewed once a day (hostapd's `wpa_group_rekey`): each station gets the next
+  one in a group key handshake, and broadcasts go out with it once they all have it. Renewed every
+  30 s for a test, the laptop took each new key within 32 ms and missed none of the broadcasts.
   The chip sends group frames right away, and a dozing station misses them: 13 broadcasts out of
   30 reached a dozing laptop. While a station sleeps, the driver sends each group frame to every
   station with keys as a unicast frame instead (hostapd's `multicast_to_unicast`), and the
@@ -122,8 +125,8 @@ Not yet:
   `ConnectError::SecurityMismatch`.
 - Target wake time, and the current drawn in power save and low power mode, which is not
   measured yet.
-- In AP mode: WPA3, management frame protection and group key renewals, 40 MHz channels, and
-  U-APSD (not announced). Delivery to sleeping stations was checked with a laptop that wakes up
+- In AP mode: WPA3, management frame protection, and U-APSD (not announced). The nRF70 has
+  20 MHz channels only. Delivery to sleeping stations was checked with a laptop that wakes up
   when a beacon says frames wait for it; PS-Poll is not tested.
 
 ## Cargo features

@@ -51,6 +51,17 @@ impl GroupKey {
     }
 }
 
+/// The GTK KDE of `gtk` (IEEE 802.11-2020, 12.7.2): its key ID with the Tx bit clear (the key is
+/// for reception), a reserved byte, then the key.
+fn gtk_kde(gtk: &GroupKey) -> [u8; 24] {
+    let mut kde = [0; 24];
+    kde[..2].copy_from_slice(&[0xDD, 22]);
+    kde[2..6].copy_from_slice(&KDE_GTK);
+    kde[6..8].copy_from_slice(&[gtk.index, 0]);
+    kde[8..].copy_from_slice(&gtk.key);
+    kde
+}
+
 /// An ANonce from the access point's seed: PRF-256(seed, "Init Counter", AA || SPA || counter),
 /// after IEEE 802.11-2020, 12.7.5.
 pub(crate) fn anonce(seed: &[u8; 32], aa: &[u8; 6], spa: &[u8; 6], counter: u64) -> [u8; 32] {
@@ -69,6 +80,8 @@ enum Stage {
     Message1,
     /// Message 3 went out: waiting for message 4.
     Message3,
+    /// Message 1 of a group key handshake went out: waiting for its message 2.
+    GroupMessage1,
     /// The station has the keys.
     Done,
 }
@@ -82,6 +95,8 @@ pub(crate) enum Outcome {
     Send(usize),
     /// The handshake is done: install the pairwise temporal key and open the station's port.
     Done { tk: [u8; TK_LEN] },
+    /// The group key handshake is done: the station has the new group key.
+    GroupDone,
     /// Message 2 does not repeat the RSNE of the association request: deauthenticate the station
     /// (reason 17).
     Refused,
@@ -103,6 +118,8 @@ pub(crate) struct Authenticator {
     replay_counter: u64,
     ptk: Option<Ptk>,
     stage: Stage,
+    /// The group key a group key handshake hands over.
+    group: Option<GroupKey>,
     /// Messages sent of the current stage.
     sent: u8,
 }
@@ -126,8 +143,26 @@ impl Authenticator {
             replay_counter: 0,
             ptk: None,
             stage: Stage::Message1,
+            group: None,
             sent: 0,
         }
+    }
+
+    /// Starts a group key handshake to hand over `gtk`, once the 4-way handshake is done. The
+    /// messages come from [`Self::next_message`]. Returns whether it started.
+    pub(crate) fn start_group(&mut self, gtk: GroupKey) -> bool {
+        if self.stage != Stage::Done {
+            return false;
+        }
+        self.stage = Stage::GroupMessage1;
+        self.group = Some(gtk);
+        self.sent = 0;
+        true
+    }
+
+    /// Whether the handshake under way is a group key one.
+    pub(crate) fn in_group_handshake(&self) -> bool {
+        self.stage == Stage::GroupMessage1
     }
 
     #[cfg(test)]
@@ -157,16 +192,11 @@ impl Authenticator {
                 Some(header.write(out, &[], None))
             }
             (Stage::Message3, Some(ptk)) => {
-                // The access point's RSNE, then the GTK KDE: key ID, the Tx bit clear (the key is
-                // for reception), a reserved byte, the key.
+                // The access point's RSNE, then the GTK.
                 let mut data = [0; RSNE_MAX + 24];
                 let rsne = self.ap_rsne.as_bytes();
                 data[..rsne.len()].copy_from_slice(rsne);
-                let kde = &mut data[rsne.len()..rsne.len() + 24];
-                kde[..2].copy_from_slice(&[0xDD, 22]);
-                kde[2..6].copy_from_slice(&KDE_GTK);
-                kde[6..8].copy_from_slice(&[gtk.index, 0]);
-                kde[8..].copy_from_slice(&gtk.key);
+                data[rsne.len()..rsne.len() + 24].copy_from_slice(&gtk_kde(gtk));
                 let mut wrapped = [0; KEY_DATA_MAX];
                 let wrapped_len = wrap_key_data(&ptk.kek, &data[..rsne.len() + 24], &mut wrapped)?;
                 let header = KeyHeader {
@@ -185,6 +215,20 @@ impl Authenticator {
                 };
                 Some(header.write(out, &wrapped[..wrapped_len], Some(&ptk.kck)))
             }
+            (Stage::GroupMessage1, Some(ptk)) => {
+                let gtk = self.group.as_ref()?;
+                let mut wrapped = [0; KEY_DATA_MAX];
+                let wrapped_len = wrap_key_data(&ptk.kek, &gtk_kde(gtk), &mut wrapped)?;
+                // Key length, nonce and RSC zero, as hostapd sends it with RSN.
+                let header = KeyHeader {
+                    info: version | INFO_ACK | INFO_MIC | INFO_SECURE | INFO_ENCRYPTED_KEY_DATA,
+                    key_len: 0,
+                    replay_counter: self.replay_counter,
+                    nonce: [0; 32],
+                    rsc: [0; 6],
+                };
+                Some(header.write(out, &wrapped[..wrapped_len], Some(&ptk.kck)))
+            }
             _ => None,
         }
     }
@@ -195,9 +239,9 @@ impl Authenticator {
         let Some(key) = KeyFrame::parse(frame) else {
             return Outcome::Ignored;
         };
-        // Messages 2 and 4 have a MIC and answer the last message sent, with its replay counter.
+        // Every answer has a MIC and the replay counter of the last message sent.
         if key.info & INFO_VERSION_MASK != SUITE.akm.key_version()
-            || key.info & (INFO_PAIRWISE | INFO_MIC) != INFO_PAIRWISE | INFO_MIC
+            || key.info & INFO_MIC == 0
             || key.info & (INFO_ACK | INFO_REQUEST | INFO_ERROR) != 0
             || key.replay_counter != self.replay_counter
         {
@@ -207,8 +251,10 @@ impl Authenticator {
             );
             return Outcome::Ignored;
         }
+        let pairwise = key.info & INFO_PAIRWISE != 0;
+        let secure = key.info & INFO_SECURE != 0;
         match self.stage {
-            Stage::Message1 if key.info & INFO_SECURE == 0 => {
+            Stage::Message1 if pairwise && !secure => {
                 let ptk = Ptk::derive(SUITE.akm, &self.pmk, &self.aa, &self.spa, &self.anonce, &key.nonce);
                 if !key.mic_is_valid(&ptk.kck) {
                     debug!("4-way handshake: message 2 ignored, invalid MIC");
@@ -226,7 +272,7 @@ impl Authenticator {
                     None => Outcome::Ignored,
                 }
             }
-            Stage::Message3 if key.info & INFO_SECURE != 0 => {
+            Stage::Message3 if pairwise && secure => {
                 let Some(ptk) = &self.ptk else {
                     return Outcome::Ignored;
                 };
@@ -236,6 +282,18 @@ impl Authenticator {
                 }
                 self.stage = Stage::Done;
                 Outcome::Done { tk: ptk.tk }
+            }
+            Stage::GroupMessage1 if !pairwise && secure => {
+                let Some(ptk) = &self.ptk else {
+                    return Outcome::Ignored;
+                };
+                if !key.mic_is_valid(&ptk.kck) {
+                    debug!("group key handshake: message 2 ignored, invalid MIC");
+                    return Outcome::Ignored;
+                }
+                self.stage = Stage::Done;
+                self.group = None;
+                Outcome::GroupDone
             }
             _ => Outcome::Ignored,
         }
@@ -303,6 +361,66 @@ mod tests {
             ap.handle(&reply[..reply_len], &gtk, &mut out),
             Outcome::Ignored
         ));
+    }
+
+    /// Runs the 4-way handshake to its end.
+    fn handshake(ap: &mut Authenticator, station: &mut Supplicant, gtk: &GroupKey) {
+        let mut out = [0; MESSAGE_MAX];
+        let mut reply = [0; REPLY_MAX];
+        let len = ap.next_message(gtk, &mut out).unwrap();
+        let StationOutcome::Reply(reply_len) = station.handle(&out[..len], &mut reply) else {
+            panic!("no message 2");
+        };
+        let Outcome::Send(len) = ap.handle(&reply[..reply_len], gtk, &mut out) else {
+            panic!("no message 3");
+        };
+        let StationOutcome::Keys { reply: reply_len, .. } = station.handle(&out[..len], &mut reply) else {
+            panic!("no message 4");
+        };
+        assert!(matches!(
+            ap.handle(&reply[..reply_len], gtk, &mut out),
+            Outcome::Done { .. }
+        ));
+    }
+
+    #[test]
+    fn the_group_key_is_renewed_with_a_group_key_handshake() {
+        let (mut ap, mut station, gtk) = pair(b"correct horse");
+        let mut out = [0; MESSAGE_MAX];
+        let mut reply = [0; REPLY_MAX];
+        let next = GroupKey::derive(&[3; 32], &AA, 1, 2);
+        // Not before the 4-way handshake is done.
+        assert!(!ap.start_group(next));
+        handshake(&mut ap, &mut station, &gtk);
+
+        assert!(ap.start_group(next));
+        assert!(ap.in_group_handshake());
+        let len = ap.next_message(&gtk, &mut out).unwrap();
+        let StationOutcome::Keys {
+            reply: reply_len,
+            tk: None,
+            gtk: Some(station_gtk),
+            igtk: None,
+        } = station.handle(&out[..len], &mut reply)
+        else {
+            panic!("no new group key from group message 1");
+        };
+        assert_eq!(station_gtk.index, 2);
+        assert_eq!(station_gtk.key(), &next.key);
+        assert!(matches!(
+            ap.handle(&reply[..reply_len], &gtk, &mut out),
+            Outcome::GroupDone
+        ));
+        assert!(!ap.in_group_handshake());
+        assert!(ap.next_message(&gtk, &mut out).is_none());
+
+        // A station that does not answer gets the message four times, then the handshake fails.
+        assert!(ap.start_group(GroupKey::derive(&[3; 32], &AA, 2, 1)));
+        for _ in 0..TRIES {
+            assert!(ap.next_message(&gtk, &mut out).is_some());
+        }
+        assert!(ap.next_message(&gtk, &mut out).is_none());
+        assert!(ap.in_group_handshake());
     }
 
     #[test]
