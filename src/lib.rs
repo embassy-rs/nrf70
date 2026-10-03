@@ -31,6 +31,8 @@ mod c {
 
 #[cfg(feature = "ap")]
 mod ap;
+#[cfg(all(feature = "ap", feature = "wpa2"))]
+mod authenticator;
 #[cfg(feature = "wpa3")]
 mod sae;
 #[cfg(feature = "wpa2")]
@@ -188,7 +190,7 @@ pub struct State {
     shared: Shared,
     ch: ch::State<MTU, 4, 4>,
     #[cfg(feature = "ap")]
-    ap_held: ap::HeldFrames,
+    ap_storage: ap::Storage,
 }
 
 impl State {
@@ -196,7 +198,7 @@ impl State {
         Self {
             ch: ch::State::new(),
             #[cfg(feature = "ap")]
-            ap_held: ap::HeldFrames::new(),
+            ap_storage: ap::Storage::new(),
             shared: Shared {
                 requests: Channel::new(),
                 scan_results: Channel::new(),
@@ -304,7 +306,7 @@ where
         tx_tokens_busy: 0,
         link_status_requested: false,
         #[cfg(feature = "ap")]
-        ap: ap::State::new(&mut state.ap_held),
+        ap: ap::State::new(&mut state.ap_storage),
     };
     runner.init().await;
 
@@ -1471,11 +1473,17 @@ impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
 
     fn forget_ap(&mut self) {}
 
-    async fn ap_hold(&mut self, _frame: &[u32], _len: usize) -> bool {
+    async fn ap_hold(&mut self, _frame: &mut [u32], _len: usize) -> bool {
         false
     }
 
     async fn ap_deliver(&mut self) {}
+
+    async fn ap_check_timeouts(&mut self) {}
+
+    fn ap_deadline(&self) -> Option<Instant> {
+        None
+    }
 }
 
 impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT> {
@@ -1644,6 +1652,7 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
             self.check_conn_timeout().await;
             self.check_pending_keys().await;
             self.ap_deliver().await;
+            self.ap_check_timeouts().await;
             self.rpu_ps_sleep().await;
 
             let shared = self.shared;
@@ -1656,6 +1665,7 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
                 (self.low_power && self.rpu_awake).then_some(self.rpu_idle_at),
                 self.conn_deadline,
                 self.pending_keys_deadline(),
+                self.ap_deadline(),
             ]
             .into_iter()
             .flatten()
@@ -1692,7 +1702,7 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
                     let len = frame.len();
                     slice8_mut(&mut tx_frame)[..len].copy_from_slice(frame);
                     self.ch.tx_done();
-                    if !self.ap_hold(&tx_frame, len).await {
+                    if !self.ap_hold(&mut tx_frame, len).await {
                         self.send_frame(&tx_frame, len).await;
                     }
                 }

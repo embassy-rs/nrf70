@@ -4,14 +4,21 @@
 //! when one of them dozes, but the rest of an access point is the host's, as hostapd is in the
 //! nRF Connect SDK: this module answers probe requests, authenticates and associates stations and
 //! adds them to the RPU, and keeps the frames for a station that sleeps until it asks for them.
+//! With WPA2, it runs the 4-way handshake with each station (the authenticator of
+//! `authenticator.rs`) and gives the RPU the keys.
 
 use core::mem::zeroed;
 
 use defmt::{debug, info, warn};
-use embassy_time::Duration;
+use embassy_time::{Duration, Instant};
 use embedded_hal::digital::{InputPin, OutputPin};
 use embedded_hal_async::digital::Wait;
 
+#[cfg(feature = "wpa2")]
+use crate::{
+    authenticator::{self, Authenticator, GroupKey},
+    supplicant::{self, Rsne},
+};
 use crate::{
     c, find_ie, slice8, slice8_mut, tx_priority, unsliceit, Bus, ConnState, Control, Request, Runner, Ssid,
     CAPABILITY_PRIVACY, EVENT_TIMEOUT, IE_SSID, MTU,
@@ -62,11 +69,17 @@ const STATUS_AUTH_ALGORITHM: u16 = 13;
 const STATUS_AUTH_SEQUENCE: u16 = 14;
 const STATUS_TOO_MANY_STATIONS: u16 = 17;
 const STATUS_RATES: u16 = 18;
+#[cfg(feature = "wpa2")]
+const STATUS_INVALID_ELEMENT: u16 = 40;
 
 /// IEEE 802.11 reason codes.
 const REASON_PREV_AUTH_NOT_VALID: u16 = 2;
 const REASON_LEAVING: u16 = 3;
 const REASON_CLASS2_FROM_UNAUTHENTICATED: u16 = 6;
+#[cfg(feature = "wpa2")]
+const REASON_4WAY_HANDSHAKE_TIMEOUT: u16 = 15;
+#[cfg(feature = "wpa2")]
+const REASON_IE_IN_4WAY_DIFFERS: u16 = 17;
 
 /// Rates in 500 kb/s units, a basic rate with its top bit set: on 2.4 GHz the 802.11b ones are
 /// basic (hostapd's `hw_mode=g`) and the 802.11g ones go on in the extended element, on 5 GHz 6,
@@ -86,6 +99,8 @@ pub enum ApError {
     /// Not a channel the access point can use: 1 to 13 on 2.4 GHz, 36 to 48 or 149 to 177 on
     /// 5 GHz.
     InvalidChannel,
+    /// The passphrase of a WPA2-Personal access point is not 8 to 63 bytes long.
+    InvalidPassphrase,
     /// A scan or a join is in progress.
     Busy,
     /// The chip is off: see [`Control::power_off`].
@@ -100,6 +115,20 @@ pub(crate) struct Settings {
     ssid: Ssid,
     channel: u8,
     frequency: u32,
+    security: Security,
+}
+
+/// How stations join the access point.
+#[derive(Clone, Copy)]
+enum Security {
+    Open,
+    /// WPA2-Personal: the pre-shared key, and the seed that the ANonces and the group key are
+    /// drawn from.
+    #[cfg(feature = "wpa2")]
+    Wpa2 {
+        psk: [u8; 32],
+        seed: [u8; 32],
+    },
 }
 
 impl Settings {
@@ -111,6 +140,7 @@ impl Settings {
             ssid: Ssid::new(ssid).ok_or(ApError::InvalidSsid)?,
             channel,
             frequency: channel_frequency(channel).ok_or(ApError::InvalidChannel)?,
+            security: Security::Open,
         })
     }
 
@@ -131,7 +161,7 @@ impl Settings {
 
     /// Whether data frames are encrypted.
     fn privacy(&self) -> bool {
-        false
+        !matches!(self.security, Security::Open)
     }
 
     fn rates(&self) -> &'static [u8] {
@@ -160,6 +190,10 @@ impl Settings {
         if self.band_2g() {
             // No 802.11b station in the BSS: no protection, long preambles allowed.
             w.ie(IE_ERP, &[0]).ie(IE_EXT_RATES, &EXT_RATES_2G);
+        }
+        #[cfg(feature = "wpa2")]
+        if self.privacy() {
+            w.put(Rsne::for_suite(authenticator::SUITE).as_bytes());
         }
     }
 
@@ -226,6 +260,8 @@ impl Settings {
             listen_interval: u16::from_le_bytes([*l0, *l1]),
             rates: [0; MAX_RATES],
             rates_len: 0,
+            #[cfg(feature = "wpa2")]
+            rsne: None,
         };
         let rates = find_ie(ies, IE_RATES).unwrap_or(&[]).iter();
         for rate in rates.chain(find_ie(ies, IE_EXT_RATES).unwrap_or(&[])) {
@@ -236,6 +272,15 @@ impl Settings {
         }
         if request.rates_len == 0 {
             return Err(STATUS_RATES);
+        }
+        // A WPA2 station names what it chooses of what the access point offers.
+        #[cfg(feature = "wpa2")]
+        if self.privacy() {
+            let rsne = find_ie(ies, supplicant::IE_RSN)
+                .and_then(Rsne::from_body)
+                .ok_or(STATUS_INVALID_ELEMENT)?;
+            rsne.check_station()?;
+            request.rsne = Some(rsne);
         }
         Ok(request)
     }
@@ -334,6 +379,9 @@ struct AssocRequest {
     /// Its rates, in 500 kb/s units, without the basic rate bit.
     rates: [u8; MAX_RATES],
     rates_len: usize,
+    /// Its RSNE, with WPA2.
+    #[cfg(feature = "wpa2")]
+    rsne: Option<Rsne>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, defmt::Format)]
@@ -354,10 +402,18 @@ struct Station {
     listen_interval: u16,
     rates: [u8; MAX_RATES],
     rates_len: u8,
+    /// Its port is open: it gets data frames, group ones included.
+    authorized: bool,
     /// The station dozes: its frames are kept until it asks for them.
     asleep: bool,
     /// While asleep, how many frames it asked for (PS-Poll or U-APSD trigger) and still gets.
     service_period: u8,
+    /// With WPA2, the RSNE of its association request, which message 2 must repeat.
+    #[cfg(feature = "wpa2")]
+    rsne: Option<Rsne>,
+    /// With WPA2, when the last handshake message goes out again if unanswered.
+    #[cfg(feature = "wpa2")]
+    retry_at: Option<Instant>,
 }
 
 impl Station {
@@ -365,12 +421,17 @@ impl Station {
         Self {
             addr,
             phase: Phase::Authenticated,
+            authorized: false,
             capability: 0,
             listen_interval: 0,
             rates: [0; MAX_RATES],
             rates_len: 0,
             asleep: false,
             service_period: 0,
+            #[cfg(feature = "wpa2")]
+            rsne: None,
+            #[cfg(feature = "wpa2")]
+            retry_at: None,
         }
     }
 }
@@ -413,9 +474,8 @@ struct Held {
     frame: [u32; MTU.div_ceil(4)],
 }
 
-/// The frames kept for stations that sleep. They live in the application's [`crate::State`], which
-/// exists once, rather than in the runner, which is moved around.
-pub(crate) struct HeldFrames {
+/// The frames kept for stations that sleep.
+struct HeldFrames {
     frames: [Held; HELD_FRAMES],
     next_seq: u32,
 }
@@ -428,7 +488,7 @@ impl HeldFrames {
         frame: [0; MTU.div_ceil(4)],
     };
 
-    pub(crate) const fn new() -> Self {
+    const fn new() -> Self {
         Self {
             frames: [Self::FREE; HELD_FRAMES],
             next_seq: 0,
@@ -499,14 +559,51 @@ fn access_category(priority: u32) -> u32 {
     }
 }
 
+/// What the access point keeps for its stations. It lives in the application's [`crate::State`],
+/// which exists once, rather than in the runner, which is moved around.
+pub(crate) struct Storage {
+    stations: Stations,
+    held: HeldFrames,
+    /// The 4-way handshake of each station, with WPA2.
+    #[cfg(feature = "wpa2")]
+    handshakes: [Option<Authenticator>; MAX_STATIONS],
+}
+
+impl Storage {
+    #[cfg(feature = "wpa2")]
+    const NO_HANDSHAKE: Option<Authenticator> = None;
+
+    pub(crate) const fn new() -> Self {
+        Self {
+            stations: Stations::new(),
+            held: HeldFrames::new(),
+            #[cfg(feature = "wpa2")]
+            handshakes: [Self::NO_HANDSHAKE; MAX_STATIONS],
+        }
+    }
+
+    /// Forgets every station.
+    fn clear(&mut self) {
+        self.stations = Stations::new();
+        self.held.clear();
+        #[cfg(feature = "wpa2")]
+        self.handshakes.iter_mut().for_each(|handshake| *handshake = None);
+    }
+}
+
 /// What the runner keeps for the access point.
 pub(crate) struct State<'a> {
     /// The access point is up.
     pub(crate) running: bool,
     settings: Option<Settings>,
     mac_addr: [u8; 6],
-    stations: Stations,
-    held: &'a mut HeldFrames,
+    storage: &'a mut Storage,
+    /// With WPA2, the group key.
+    #[cfg(feature = "wpa2")]
+    gtk: Option<GroupKey>,
+    /// With WPA2, how many ANonces were drawn.
+    #[cfg(feature = "wpa2")]
+    nonces: u64,
     /// The RPU's answer to the last interface type change.
     set_interface: Option<i32>,
     /// Identifies each management frame sent, for the RPU's TX status.
@@ -514,13 +611,16 @@ pub(crate) struct State<'a> {
 }
 
 impl<'a> State<'a> {
-    pub(crate) fn new(held: &'a mut HeldFrames) -> Self {
+    pub(crate) fn new(storage: &'a mut Storage) -> Self {
         Self {
             running: false,
             settings: None,
             mac_addr: [0; 6],
-            stations: Stations::new(),
-            held,
+            storage,
+            #[cfg(feature = "wpa2")]
+            gtk: None,
+            #[cfg(feature = "wpa2")]
+            nonces: 0,
             set_interface: None,
             cookie: 0,
         }
@@ -560,7 +660,7 @@ impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
     /// Whether the runner may take a frame from embassy-net: not while the frames kept for
     /// sleeping stations fill every place.
     pub(super) fn ap_has_room(&self) -> bool {
-        !self.ap.running || self.ap.held.has_room()
+        !self.ap.running || self.ap.storage.held.has_room()
     }
 
     pub(super) fn set_ap_address(&mut self, mac_addr: [u8; 6]) {
@@ -611,6 +711,16 @@ impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
         beacon.tail_len = settings.beacon_tail(&mut beacon.tail) as u32;
         info.ssid = settings.ssid.to_c();
         info.connect_common_info.valid_fields = c::CONNECT_COMMON_INFO_WPA_VERSIONS_VALID;
+        #[cfg(feature = "wpa2")]
+        if settings.privacy() {
+            let common = &mut info.connect_common_info;
+            common.valid_fields |= c::CONNECT_COMMON_INFO_CIPHER_SUITES_PAIRWISE_VALID;
+            common.num_cipher_suites_pairwise = 1;
+            // A packed field: copied out, set, and copied back.
+            let mut suites = common.cipher_suites_pairwise;
+            suites[0] = supplicant::CIPHER_SUITE_CCMP;
+            common.cipher_suites_pairwise = suites;
+        }
         info.freq_params = freq_params;
         self.carrier_on = false;
         self.send_cmd(cmd).await;
@@ -629,10 +739,18 @@ impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
         cmd.bss_info.preamble = 1;
         cmd.bss_info.slot = settings.band_2g() as u8;
         self.send_cmd(cmd).await;
+        // With WPA2, the group key the access point sends broadcasts with.
+        #[cfg(feature = "wpa2")]
+        if let Security::Wpa2 { seed, .. } = settings.security {
+            let gtk = GroupKey::derive(&seed, &self.ap.mac_addr, 0, 1);
+            self.add_key(None, supplicant::CIPHER_SUITE_CCMP, gtk.index, &gtk.key, &[0; 6])
+                .await;
+            self.set_default_key(gtk.index, true).await;
+            self.ap.gtk = Some(gtk);
+        }
 
         self.ap.settings = Some(settings);
-        self.ap.stations = Stations::new();
-        self.ap.held.clear();
+        self.ap.storage.clear();
         for slot in 0..MAX_STATIONS {
             self.write_pending_entry(slot, &[0; 6]).await;
         }
@@ -659,7 +777,7 @@ impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
             return;
         }
         for slot in 0..MAX_STATIONS {
-            if self.ap.stations.0[slot].is_some() {
+            if self.ap.storage.stations.0[slot].is_some() {
                 self.remove_station(slot, Some(REASON_LEAVING)).await;
             }
         }
@@ -684,8 +802,7 @@ impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
             self.set_link(false);
         }
         self.ap.running = false;
-        self.ap.stations = Stations::new();
-        self.ap.held.clear();
+        self.ap.storage.clear();
     }
 
     /// Takes the interface down, changes its type and brings it up again (the SDK's
@@ -774,10 +891,10 @@ impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
                     STATUS_AUTH_SEQUENCE
                 } else {
                     // A station that authenticates again starts over.
-                    if let Some(slot) = self.ap.stations.find(&mgmt.from) {
+                    if let Some(slot) = self.ap.storage.stations.find(&mgmt.from) {
                         self.remove_station(slot, None).await;
                     }
-                    match self.ap.stations.find_or_add(&mgmt.from) {
+                    match self.ap.storage.stations.find_or_add(&mgmt.from) {
                         Some(_) => STATUS_SUCCESS,
                         None => STATUS_TOO_MANY_STATIONS,
                     }
@@ -788,25 +905,29 @@ impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
             }
             ASSOC_REQ | REASSOC_REQ => {
                 let reassoc = mgmt.subtype == REASSOC_REQ;
-                let Some(mut slot) = self.ap.stations.find(&mgmt.from) else {
+                let Some(mut slot) = self.ap.storage.stations.find(&mgmt.from) else {
                     debug!("association request from {:02x}, not authenticated", mgmt.from);
                     let len = deauthentication(&bssid, &mgmt.from, REASON_CLASS2_FROM_UNAUTHENTICATED, &mut out);
                     self.send_mgmt(&out[..len], false).await;
                     return;
                 };
-                if self.ap.stations.0[slot].is_some_and(|s| s.phase == Phase::Associated) {
+                if self.ap.storage.stations.0[slot].is_some_and(|s| s.phase == Phase::Associated) {
                     // Associating again: the RPU's entry goes, the new one comes with the answer.
                     self.remove_station(slot, None).await;
-                    slot = self.ap.stations.find_or_add(&mgmt.from).unwrap();
+                    slot = self.ap.storage.stations.find_or_add(&mgmt.from).unwrap();
                 }
                 let body = mgmt.body.get(if reassoc { 6 } else { 0 }..).unwrap_or(&[]);
                 let status = match settings.association_request(body) {
                     Ok(request) => {
-                        let station = self.ap.stations.get(slot).unwrap();
+                        let station = self.ap.storage.stations.get(slot).unwrap();
                         station.capability = request.capability;
                         station.listen_interval = request.listen_interval;
                         station.rates = request.rates;
                         station.rates_len = request.rates_len as u8;
+                        #[cfg(feature = "wpa2")]
+                        {
+                            station.rsne = request.rsne;
+                        }
                         station.phase = Phase::Responded;
                         STATUS_SUCCESS
                     }
@@ -817,7 +938,7 @@ impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
                 self.send_mgmt(&out[..len], false).await;
             }
             DISASSOC | DEAUTH => {
-                if let Some(slot) = self.ap.stations.find(&mgmt.from) {
+                if let Some(slot) = self.ap.storage.stations.find(&mgmt.from) {
                     info!("station {:02x} left, reason {}", mgmt.from, mgmt.le16(0));
                     self.remove_station(slot, None).await;
                 }
@@ -837,10 +958,10 @@ impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
         if !matches!(mgmt.subtype, ASSOC_RESP | REASSOC_RESP) || mgmt.le16(2) != Some(STATUS_SUCCESS) {
             return;
         }
-        let Some(slot) = self.ap.stations.find(&mgmt.to) else {
+        let Some(slot) = self.ap.storage.stations.find(&mgmt.to) else {
             return;
         };
-        let station = self.ap.stations.get(slot).unwrap();
+        let station = self.ap.storage.stations.get(slot).unwrap();
         if station.phase != Phase::Responded {
             return;
         }
@@ -853,10 +974,16 @@ impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
         let station = *station;
         self.add_station(slot, &station).await;
         info!("station {:02x} joined, association ID {}", station.addr, slot + 1);
+        if self.ap.settings.is_some_and(|settings| settings.privacy()) {
+            // WPA2: the port opens once the 4-way handshake is done.
+            #[cfg(feature = "wpa2")]
+            self.start_handshake(slot).await;
+        } else {
+            self.authorize_station(&station.addr).await;
+        }
     }
 
-    /// Adds a station to the RPU and opens its port (the SDK's `nrf_wifi_wpa_supp_sta_add` and
-    /// `nrf_wifi_wpa_supp_sta_set_flags`).
+    /// Adds a station to the RPU, its port closed (the SDK's `nrf_wifi_wpa_supp_sta_add`).
     async fn add_station(&mut self, slot: usize, station: &Station) {
         let mut cmd: c::umac_cmd_add_sta = unsafe { zeroed() };
         cmd.valid_fields = c::CMD_NEW_STATION_AID_VALID
@@ -882,24 +1009,34 @@ impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
         info.mac_addr = station.addr;
         self.send_cmd(cmd).await;
         self.write_pending_entry(slot, &station.addr).await;
+    }
 
+    /// Opens a station's port (the SDK's `nrf_wifi_wpa_supp_sta_set_flags`).
+    async fn authorize_station(&mut self, addr: &[u8; 6]) {
         let mut cmd: c::umac_cmd_chg_sta = unsafe { zeroed() };
         cmd.valid_fields = c::CMD_SET_STATION_STA_FLAGS2_VALID;
-        cmd.info.mac_addr = station.addr;
+        cmd.info.mac_addr = *addr;
         cmd.info.sta_flags2 = c::sta_flag_update {
             mask: c::STA_FLAG_AUTHORIZED,
             set: c::STA_FLAG_AUTHORIZED,
         };
         self.send_cmd(cmd).await;
+        if let Some(slot) = self.ap.storage.stations.find(addr) {
+            self.ap.storage.stations.0[slot].as_mut().unwrap().authorized = true;
+        }
     }
 
     /// Forgets the station of `slot` and removes it from the RPU, after telling it why if there
     /// is a `reason` (hostapd's `ap_sta_deauthenticate` and `ap_free_sta`).
     async fn remove_station(&mut self, slot: usize, reason: Option<u16>) {
-        let Some(station) = self.ap.stations.0[slot].take() else {
+        let Some(station) = self.ap.storage.stations.0[slot].take() else {
             return;
         };
-        self.ap.held.drop_station(slot);
+        self.ap.storage.held.drop_station(slot);
+        #[cfg(feature = "wpa2")]
+        {
+            self.ap.storage.handshakes[slot] = None;
+        }
         if let Some(reason) = reason {
             let mut frame = [0; 26];
             let len = deauthentication(&self.ap.mac_addr, &station.addr, reason, &mut frame);
@@ -917,11 +1054,15 @@ impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
     /// The RPU removed a station on its own (`UMAC_EVENT_DEL_STATION`).
     pub(super) async fn ap_station_removed(&mut self, body: &[u8]) {
         let addr = unsliceit::<c::umac_event_new_station>(body).mac_addr;
-        if let Some(slot) = self.ap.stations.find(&addr) {
-            if self.ap.stations.0[slot].is_some_and(|s| s.phase == Phase::Associated) {
+        if let Some(slot) = self.ap.storage.stations.find(&addr) {
+            if self.ap.storage.stations.0[slot].is_some_and(|s| s.phase == Phase::Associated) {
                 info!("station {:02x} removed by the RPU", addr);
-                self.ap.stations.0[slot] = None;
-                self.ap.held.drop_station(slot);
+                self.ap.storage.stations.0[slot] = None;
+                self.ap.storage.held.drop_station(slot);
+                #[cfg(feature = "wpa2")]
+                {
+                    self.ap.storage.handshakes[slot] = None;
+                }
                 self.write_pending_entry(slot, &[0; 6]).await;
             }
         }
@@ -938,27 +1079,61 @@ impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
 
     /// Updates the pending frame bits of station `slot` (the SDK's `update_pend_q_bmp`).
     async fn write_pending_bits(&mut self, slot: usize) {
-        let bits = self.ap.held.categories(slot);
+        let bits = self.ap.storage.held.categories(slot);
         self.write32(pending_entry_addr(slot) + 8, None, bits).await;
     }
 
     /// Takes a frame to send if it is for a station that sleeps, and says whether it did (the
     /// SDK's `tx_enqueue` while the station is in `NRF_WIFI_CLIENT_PS_MODE`).
-    pub(super) async fn ap_hold(&mut self, frame: &[u32], len: usize) -> bool {
+    ///
+    /// The RPU sends group frames right away, and a sleeping station misses them (13 broadcasts
+    /// out of 30 reached a dozing laptop). So while a station sleeps, a group frame goes to each
+    /// station with keys as a unicast frame instead, its destination replaced by the station's
+    /// address (hostapd's `multicast_to_unicast`): a sleeping one gets it when it wakes up.
+    pub(super) async fn ap_hold(&mut self, frame: &mut [u32], len: usize) -> bool {
         if !self.ap.running {
             return false;
         }
         let to: [u8; 6] = slice8(frame)[..6].try_into().unwrap();
-        let Some(slot) = self.ap.stations.find(&to) else {
+        if to[0] & 1 != 0 {
+            return self.ap_group_frame(frame, len).await;
+        }
+        let Some(slot) = self.ap.storage.stations.find(&to) else {
             return false;
         };
-        let station = self.ap.stations.0[slot].unwrap();
-        // Frames go out directly to a station that is awake, or within what it asked for.
-        if (!station.asleep || station.service_period > 0) && self.ap.held.count(slot) == 0 {
+        self.hold_for(slot, frame, len).await
+    }
+
+    /// Sends a group frame as unicast frames, if a station with keys sleeps. Says whether it did.
+    async fn ap_group_frame(&mut self, frame: &mut [u32], len: usize) -> bool {
+        let stations = self.ap.storage.stations.0;
+        if !stations.iter().flatten().any(|s| s.authorized && s.asleep) {
             return false;
         }
-        if !self.ap.held.hold(slot, frame, len) {
-            debug!("frame for sleeping station {:02x} dropped", to);
+        for (slot, station) in stations.iter().enumerate() {
+            let Some(station) = station.filter(|s| s.authorized) else {
+                continue;
+            };
+            slice8_mut(frame)[..6].copy_from_slice(&station.addr);
+            if !self.hold_for(slot, frame, len).await && self.send_frame(frame, len).await.is_none() {
+                debug!("group frame for {:02x} dropped: no TX token free", station.addr);
+            }
+        }
+        true
+    }
+
+    /// Keeps a frame for the station of `slot` if it sleeps, or if frames wait for it already.
+    /// Says whether it did.
+    async fn hold_for(&mut self, slot: usize, frame: &[u32], len: usize) -> bool {
+        let Some(station) = self.ap.storage.stations.0[slot] else {
+            return false;
+        };
+        // Frames go out directly to a station that is awake, or within what it asked for.
+        if (!station.asleep || station.service_period > 0) && self.ap.storage.held.count(slot) == 0 {
+            return false;
+        }
+        if !self.ap.storage.held.hold(slot, frame, len) {
+            debug!("frame for sleeping station {:02x} dropped", station.addr);
         }
         self.write_pending_bits(slot).await;
         true
@@ -968,10 +1143,10 @@ impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
     pub(super) async fn ap_power_save(&mut self, body: &[u8]) {
         let event: &c::sap_client_pwrsave = unsliceit(body);
         let (addr, state) = (event.mac_addr, event.sta_ps_state);
-        let Some(slot) = self.ap.stations.find(&addr) else {
+        let Some(slot) = self.ap.storage.stations.find(&addr) else {
             return;
         };
-        let station = self.ap.stations.get(slot).unwrap();
+        let station = self.ap.storage.stations.get(slot).unwrap();
         station.asleep = state as u32 == c::CLIENT_PS_MODE;
         station.service_period = 0;
         debug!(
@@ -987,10 +1162,10 @@ impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
     pub(super) async fn ap_get_frames(&mut self, body: &[u8]) {
         let event: &c::sap_ps_get_frames = unsliceit(body);
         let (addr, count) = (event.mac_addr, event.num_frames);
-        let Some(slot) = self.ap.stations.find(&addr) else {
+        let Some(slot) = self.ap.storage.stations.find(&addr) else {
             return;
         };
-        self.ap.stations.get(slot).unwrap().service_period = count.max(1) as u8;
+        self.ap.storage.stations.get(slot).unwrap().service_period = count.max(1) as u8;
         self.ap_deliver().await;
     }
 
@@ -1001,29 +1176,60 @@ impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
             return;
         }
         for slot in 0..MAX_STATIONS {
-            while let Some(station) = self.ap.stations.0[slot] {
+            while let Some(station) = self.ap.storage.stations.0[slot] {
                 if station.asleep && station.service_period == 0 {
                     break;
                 }
-                let Some(i) = self.ap.held.oldest(slot) else {
-                    if let Some(station) = self.ap.stations.get(slot) {
+                let Some(i) = self.ap.storage.held.oldest(slot) else {
+                    if let Some(station) = self.ap.storage.stations.get(slot) {
                         station.service_period = 0;
                     }
                     break;
                 };
-                let more = self.ap.held.count(slot) > 1;
+                let more = self.ap.storage.held.count(slot) > 1;
                 let last = !station.asleep || station.service_period == 1 || !more;
-                let len = self.ap.held.frames[i].len as usize;
+                let len = self.ap.storage.held.frames[i].len as usize;
                 let mut frame = [0u32; MTU.div_ceil(4)];
-                frame[..len.div_ceil(4)].copy_from_slice(&self.ap.held.frames[i].frame[..len.div_ceil(4)]);
+                frame[..len.div_ceil(4)].copy_from_slice(&self.ap.storage.held.frames[i].frame[..len.div_ceil(4)]);
                 if self.send_frame_flags(&frame, len, more, last).await.is_none() {
                     return;
                 }
-                self.ap.held.frames[i].slot = None;
-                if let Some(station) = self.ap.stations.get(slot) {
+                self.ap.storage.held.frames[i].slot = None;
+                if let Some(station) = self.ap.storage.stations.get(slot) {
                     station.service_period = station.service_period.saturating_sub(1);
                 }
                 self.write_pending_bits(slot).await;
+            }
+        }
+    }
+
+    /// When [`Self::ap_check_timeouts`] has to run at the latest: the next handshake message to
+    /// send again.
+    pub(super) fn ap_deadline(&self) -> Option<Instant> {
+        #[cfg(feature = "wpa2")]
+        return self
+            .ap
+            .storage
+            .stations
+            .0
+            .iter()
+            .flatten()
+            .filter_map(|s| s.retry_at)
+            .min();
+        #[cfg(not(feature = "wpa2"))]
+        return None;
+    }
+
+    /// Sends again the handshake messages that went unanswered for too long, and lets go of the
+    /// stations that never answered.
+    pub(super) async fn ap_check_timeouts(&mut self) {
+        #[cfg(feature = "wpa2")]
+        for slot in 0..MAX_STATIONS {
+            let due = self.ap.storage.stations.0[slot]
+                .and_then(|s| s.retry_at)
+                .is_some_and(|at| Instant::now() >= at);
+            if due {
+                self.send_handshake_message(slot).await;
             }
         }
     }
@@ -1039,6 +1245,145 @@ impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
         })
         .await
         .is_ok()
+    }
+}
+
+/// How long a handshake message waits for its answer before it goes out again (hostapd's
+/// `eapol_key_timeout_subseq`).
+#[cfg(feature = "wpa2")]
+const HANDSHAKE_RETRY: Duration = Duration::from_secs(1);
+
+#[cfg(feature = "wpa2")]
+impl Control<'_> {
+    /// Starts a WPA2-Personal access point named `ssid` on `channel`, with the passphrase its
+    /// stations join with: PSK key management, CCMP as group and pairwise cipher. Otherwise as
+    /// [`Control::start_ap_open`].
+    ///
+    /// The 4-way handshake with each station runs in the driver, which needs random numbers for
+    /// its ANonces and the group key. They come from `rng`, as for [`Control::join_wpa2`]: 32
+    /// bytes, before starting. Deriving the key from the passphrase takes as long as for a join.
+    pub async fn start_ap_wpa2(
+        &mut self,
+        ssid: &[u8],
+        channel: u8,
+        passphrase: &[u8],
+        rng: &mut (impl rand_core::CryptoRng + ?Sized),
+    ) -> Result<(), ApError> {
+        let settings = Settings::new(ssid, channel)?;
+        let psk = crate::wpa2_psk(ssid, passphrase).ok_or(ApError::InvalidPassphrase)?;
+        let mut seed = [0; 32];
+        rng.fill_bytes(&mut seed);
+        let settings = Settings {
+            security: Security::Wpa2 { psk, seed },
+            ..settings
+        };
+        self.shared.ap_result.clear();
+        self.shared.requests.send(Request::StartAp(settings)).await;
+        self.shared.ap_result.receive().await
+    }
+}
+
+/// The runner's side of a WPA2 access point: the 4-way handshake with each station.
+#[cfg(feature = "wpa2")]
+impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
+    /// Starts the 4-way handshake with the station of `slot`, just added to the RPU (hostapd's
+    /// `wpa_auth_sm_event(WPA_ASSOC)`).
+    async fn start_handshake(&mut self, slot: usize) {
+        let (Some(Security::Wpa2 { psk, seed }), Some(station)) = (
+            self.ap.settings.map(|settings| settings.security),
+            self.ap.storage.stations.0[slot],
+        ) else {
+            return;
+        };
+        let Some(sta_rsne) = station.rsne else {
+            return;
+        };
+        self.ap.nonces += 1;
+        let aa = self.ap.mac_addr;
+        let anonce = authenticator::anonce(&seed, &aa, &station.addr, self.ap.nonces);
+        let ap_rsne = Rsne::for_suite(authenticator::SUITE);
+        self.ap.storage.handshakes[slot] = Some(Authenticator::new(psk, aa, station.addr, ap_rsne, sta_rsne, anonce));
+        self.send_handshake_message(slot).await;
+    }
+
+    /// Sends the handshake message the station of `slot` is due, the first time or again, or
+    /// lets the station go after [`authenticator::TRIES`] unanswered ones (reason 15).
+    async fn send_handshake_message(&mut self, slot: usize) {
+        let (Some(gtk), Some(station)) = (self.ap.gtk, self.ap.storage.stations.0[slot]) else {
+            return;
+        };
+        let mut out = [0; authenticator::MESSAGE_MAX];
+        let Some(len) = self.ap.storage.handshakes[slot]
+            .as_mut()
+            .and_then(|handshake| handshake.next_message(&gtk, &mut out))
+        else {
+            info!("station {:02x} did not complete the 4-way handshake", station.addr);
+            self.remove_station(slot, Some(REASON_4WAY_HANDSHAKE_TIMEOUT)).await;
+            return;
+        };
+        if let Some(station) = self.ap.storage.stations.get(slot) {
+            station.retry_at = Some(Instant::now() + HANDSHAKE_RETRY);
+        }
+        self.send_eapol_to(&station.addr, &out[..len]).await;
+    }
+
+    /// Takes an EAPOL frame from a station, as an Ethernet frame (hostapd's `wpa_receive`).
+    pub(super) async fn ap_eapol(&mut self, frame: &[u8]) {
+        let from: [u8; 6] = frame[6..12].try_into().unwrap();
+        let (Some(slot), Some(gtk)) = (self.ap.storage.stations.find(&from), self.ap.gtk) else {
+            debug!(
+                "EAPOL frame from {:02x} ignored: not a station of the access point",
+                from
+            );
+            return;
+        };
+        let mut out = [0; authenticator::MESSAGE_MAX];
+        let Some(handshake) = self.ap.storage.handshakes[slot].as_mut() else {
+            return;
+        };
+        match handshake.handle(&frame[14..], &gtk, &mut out) {
+            authenticator::Outcome::Ignored => {}
+            authenticator::Outcome::Send(len) => {
+                debug!("4-way handshake with {:02x}: message 2, sending message 3", from);
+                if let Some(station) = self.ap.storage.stations.get(slot) {
+                    station.retry_at = Some(Instant::now() + HANDSHAKE_RETRY);
+                }
+                self.send_eapol_to(&from, &out[..len]).await;
+            }
+            authenticator::Outcome::Done { tk } => {
+                if let Some(station) = self.ap.storage.stations.get(slot) {
+                    station.retry_at = None;
+                }
+                self.ap.storage.handshakes[slot] = None;
+                // The pairwise key, then the port (hostapd's PTKINITDONE).
+                self.add_key(Some(from), supplicant::CIPHER_SUITE_CCMP, 0, &tk, &[0; 6])
+                    .await;
+                self.set_default_key(0, false).await;
+                self.authorize_station(&from).await;
+                info!("station {:02x} has its keys", from);
+            }
+            authenticator::Outcome::Refused => {
+                warn!(
+                    "station {:02x} contradicts its association request, letting it go",
+                    from
+                );
+                self.remove_station(slot, Some(REASON_IE_IN_4WAY_DIFFERS)).await;
+            }
+        }
+    }
+
+    /// Sends an EAPOL frame to a station, from the access point. A frame that finds no TX token
+    /// free is lost, and goes out again on the handshake's timeout.
+    async fn send_eapol_to(&mut self, to: &[u8; 6], eapol: &[u8]) {
+        let mut frame = [0u32; (14 + authenticator::MESSAGE_MAX).div_ceil(4)];
+        let bssid = self.ap.mac_addr;
+        let Some(len) = crate::write_ethernet(slice8_mut(&mut frame), to, &bssid, supplicant::ETHERTYPE_EAPOL, eapol)
+        else {
+            return;
+        };
+        if self.send_frame(&frame, len).await.is_none() {
+            warn!("EAPOL frame for {:02x} not sent: no TX token free", to);
+        }
     }
 }
 

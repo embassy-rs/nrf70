@@ -42,14 +42,14 @@ pub(crate) const CIPHER_SUITE_TKIP: u32 = 0x000F_AC02;
 pub(crate) const CIPHER_SUITE_BIP_CMAC_128: u32 = 0x000F_AC06;
 
 /// Suite selectors as they appear in an RSNE and in key data: OUI 00-0F-AC, then the type.
-const SUITE_CCMP: [u8; 4] = [0x00, 0x0F, 0xAC, 4];
+pub(crate) const SUITE_CCMP: [u8; 4] = [0x00, 0x0F, 0xAC, 4];
 const SUITE_TKIP: [u8; 4] = [0x00, 0x0F, 0xAC, 2];
-const AKM_PSK: [u8; 4] = [0x00, 0x0F, 0xAC, 2];
+pub(crate) const AKM_PSK: [u8; 4] = [0x00, 0x0F, 0xAC, 2];
 const AKM_PSK_SHA256: [u8; 4] = [0x00, 0x0F, 0xAC, 6];
 const AKM_SAE: [u8; 4] = [0x00, 0x0F, 0xAC, 8];
 const SUITE_BIP_CMAC_128: [u8; 4] = [0x00, 0x0F, 0xAC, 6];
 /// The GTK key data encapsulation (KDE): OUI 00-0F-AC, data type 1.
-const KDE_GTK: [u8; 4] = [0x00, 0x0F, 0xAC, 1];
+pub(crate) const KDE_GTK: [u8; 4] = [0x00, 0x0F, 0xAC, 1];
 /// The IGTK KDE: data type 9.
 const KDE_IGTK: [u8; 4] = [0x00, 0x0F, 0xAC, 9];
 
@@ -59,7 +59,7 @@ const RSN_CAP_MFPR: u16 = 1 << 6;
 const RSN_CAP_MFPC: u16 = 1 << 7;
 
 /// Length of a CCMP-128 temporal key.
-const TK_LEN: usize = 16;
+pub(crate) const TK_LEN: usize = 16;
 
 /// Longest passphrase and shortest one (IEEE 802.11-2020, J.4.1).
 const PASSPHRASE_LEN: core::ops::RangeInclusive<usize> = 8..=63;
@@ -130,7 +130,7 @@ impl Akm {
     }
 
     /// The key descriptor version of its EAPOL-Key frames, which says how their MIC is made.
-    fn key_version(self) -> u16 {
+    pub(crate) fn key_version(self) -> u16 {
         match self {
             Akm::Psk => INFO_VERSION_HMAC_SHA1_AES,
             Akm::PskSha256 => INFO_VERSION_AES_CMAC,
@@ -183,7 +183,7 @@ pub(crate) struct Suite {
 
 /// The 802.11 pseudo-random function over HMAC-SHA1 (IEEE 802.11-2020, 12.7.1.2): fills `out`
 /// with HMAC-SHA1(`key`, `label` || 0 || `data` || i) for i = 0, 1, and so on.
-fn prf(key: &[u8], label: &[u8], data: &[u8], out: &mut [u8]) {
+pub(crate) fn prf(key: &[u8], label: &[u8], data: &[u8], out: &mut [u8]) {
     for (i, chunk) in out.chunks_mut(20).enumerate() {
         let mut mac = hmac_sha1(key);
         mac.update(label);
@@ -197,10 +197,10 @@ fn prf(key: &[u8], label: &[u8], data: &[u8], out: &mut [u8]) {
 /// The pairwise transient key for CCMP: the EAPOL-Key confirmation and encryption keys, and the
 /// temporal key.
 #[derive(Clone)]
-struct Ptk {
-    kck: [u8; 16],
-    kek: [u8; 16],
-    tk: [u8; TK_LEN],
+pub(crate) struct Ptk {
+    pub(crate) kck: [u8; 16],
+    pub(crate) kek: [u8; 16],
+    pub(crate) tk: [u8; TK_LEN],
 }
 
 impl Ptk {
@@ -208,7 +208,14 @@ impl Ptk {
     /// || Max(ANonce, SNonce)) (IEEE 802.11-2020, 12.7.1.3), with the KDF over HMAC-SHA256 in
     /// place of the PRF for PSK-SHA256 and SAE. `aa` is the authenticator's address (the BSSID) and `spa`
     /// the supplicant's.
-    fn derive(akm: Akm, pmk: &[u8; 32], aa: &[u8; 6], spa: &[u8; 6], anonce: &[u8; 32], snonce: &[u8; 32]) -> Self {
+    pub(crate) fn derive(
+        akm: Akm,
+        pmk: &[u8; 32],
+        aa: &[u8; 6],
+        spa: &[u8; 6],
+        anonce: &[u8; 32],
+        snonce: &[u8; 32],
+    ) -> Self {
         let mut data = [0; 76];
         let (min, max) = if aa < spa { (aa, spa) } else { (spa, aa) };
         data[0..6].copy_from_slice(min);
@@ -240,7 +247,7 @@ impl Ptk {
 
 /// Longest RSN element the driver keeps, with its two-byte header. An AP offering several
 /// pairwise ciphers and key management suites stays well under this.
-const RSNE_MAX: usize = 64;
+pub(crate) const RSNE_MAX: usize = 64;
 
 /// An RSN element, with its ID and length.
 #[derive(Clone, Copy)]
@@ -297,7 +304,9 @@ impl Rsne {
     /// the AP is capable of it with BIP-CMAC-128, and PSK-SHA256 then if the AP offers it; SAE
     /// requires it. An AP that requires management frame protection with another cipher cannot be
     /// joined.
-    pub(crate) fn negotiate(&self, sae: bool) -> Option<Suite> {
+    /// The fields of the element, if it is an RSN version 1 one with a group cipher and lists of
+    /// pairwise ciphers and key management suites.
+    fn fields(&self) -> Option<RsneFields<'_>> {
         let body = &self.as_bytes()[2..];
         let u16_at = |at: usize| Some(u16::from_le_bytes(body.get(at..at + 2)?.try_into().ok()?));
         // A list of suite selectors: its count, then its entries.
@@ -309,11 +318,7 @@ impl Rsne {
         if u16_at(0)? != 1 {
             return None;
         }
-        let group = match body.get(2..6)? {
-            selector if selector == SUITE_CCMP => GroupCipher::Ccmp,
-            selector if selector == SUITE_TKIP => GroupCipher::Tkip,
-            _ => return None,
-        };
+        let group = body.get(2..6)?;
         let (pairwise, at) = list(6)?;
         let (akms, at) = list(at)?;
         // The capabilities are optional: without them, nothing is required.
@@ -326,6 +331,28 @@ impl Rsne {
                 body.get(at..at + 4)
             })
             .unwrap_or(&SUITE_BIP_CMAC_128);
+        Some(RsneFields {
+            group,
+            pairwise,
+            akms,
+            capabilities,
+            group_management,
+        })
+    }
+
+    pub(crate) fn negotiate(&self, sae: bool) -> Option<Suite> {
+        let RsneFields {
+            group,
+            pairwise,
+            akms,
+            capabilities,
+            group_management,
+        } = self.fields()?;
+        let group = match group {
+            selector if selector == SUITE_CCMP => GroupCipher::Ccmp,
+            selector if selector == SUITE_TKIP => GroupCipher::Tkip,
+            _ => return None,
+        };
         if !pairwise.chunks(4).any(|suite| suite == SUITE_CCMP) {
             return None;
         }
@@ -353,6 +380,42 @@ impl Rsne {
         };
         Some(Suite { akm, mfp, group })
     }
+
+    /// Checks the RSNE of a station's association request against what a WPA2 access point of
+    /// the driver offers: CCMP-128 as group and pairwise cipher, PSK key management, no
+    /// management frame protection. Returns the IEEE 802.11 status code to refuse the station
+    /// with otherwise, as hostapd's `wpa_validate_wpa_ie` chooses it.
+    #[cfg(feature = "ap")]
+    pub(crate) fn check_station(&self) -> Result<(), u16> {
+        const INVALID_ELEMENT: u16 = 40;
+        const INVALID_GROUP_CIPHER: u16 = 41;
+        const INVALID_PAIRWISE_CIPHER: u16 = 42;
+        const INVALID_AKMP: u16 = 43;
+        const ROBUST_MANAGEMENT_POLICY_VIOLATION: u16 = 31;
+        let fields = self.fields().ok_or(INVALID_ELEMENT)?;
+        if fields.group != SUITE_CCMP {
+            Err(INVALID_GROUP_CIPHER)
+        } else if !fields.pairwise.chunks(4).any(|suite| suite == SUITE_CCMP) {
+            Err(INVALID_PAIRWISE_CIPHER)
+        } else if !fields.akms.chunks(4).any(|suite| suite == AKM_PSK) {
+            Err(INVALID_AKMP)
+        } else if fields.capabilities & RSN_CAP_MFPR != 0 {
+            Err(ROBUST_MANAGEMENT_POLICY_VIOLATION)
+        } else {
+            Ok(())
+        }
+    }
+}
+
+/// The fields of an RSN element (IEEE 802.11-2020, 9.4.2.24), from the group cipher on.
+struct RsneFields<'a> {
+    group: &'a [u8],
+    /// The pairwise cipher suite selectors, 4 bytes each.
+    pairwise: &'a [u8],
+    /// The key management suite selectors, 4 bytes each.
+    akms: &'a [u8],
+    capabilities: u16,
+    group_management: &'a [u8],
 }
 
 /// Longest RSNXE the driver keeps, with its header: its capabilities fit in a few bytes.
@@ -415,7 +478,7 @@ const OFFSET_RSC: usize = 65;
 const OFFSET_MIC: usize = 81;
 const OFFSET_KEY_DATA_LEN: usize = 97;
 /// Length of an EAPOL-Key frame without key data.
-const KEY_FRAME_LEN: usize = 99;
+pub(crate) const KEY_FRAME_LEN: usize = 99;
 const MIC_LEN: usize = 16;
 
 /// Key descriptor version 2: HMAC-SHA1-128 as MIC, AES key wrap for the key data. It is the one
@@ -426,39 +489,39 @@ const INFO_VERSION_AES_CMAC: u16 = 3;
 /// Key descriptor version 0: the AKM says. With SAE (AKM 8): AES-128-CMAC as MIC, AES key wrap
 /// for the key data, as with version 3 (HMAC-SHA256 is SAE-EXT-KEY's, AKM 24).
 const INFO_VERSION_AKM_DEFINED: u16 = 0;
-const INFO_VERSION_MASK: u16 = 0x0007;
-const INFO_PAIRWISE: u16 = 1 << 3;
-const INFO_INSTALL: u16 = 1 << 6;
-const INFO_ACK: u16 = 1 << 7;
-const INFO_MIC: u16 = 1 << 8;
-const INFO_SECURE: u16 = 1 << 9;
-const INFO_ERROR: u16 = 1 << 10;
-const INFO_REQUEST: u16 = 1 << 11;
-const INFO_ENCRYPTED_KEY_DATA: u16 = 1 << 12;
+pub(crate) const INFO_VERSION_MASK: u16 = 0x0007;
+pub(crate) const INFO_PAIRWISE: u16 = 1 << 3;
+pub(crate) const INFO_INSTALL: u16 = 1 << 6;
+pub(crate) const INFO_ACK: u16 = 1 << 7;
+pub(crate) const INFO_MIC: u16 = 1 << 8;
+pub(crate) const INFO_SECURE: u16 = 1 << 9;
+pub(crate) const INFO_ERROR: u16 = 1 << 10;
+pub(crate) const INFO_REQUEST: u16 = 1 << 11;
+pub(crate) const INFO_ENCRYPTED_KEY_DATA: u16 = 1 << 12;
 
 /// Longest reply: message 2, which carries the RSNE and the RSNXE.
 pub(crate) const REPLY_MAX: usize = KEY_FRAME_LEN + RSNE_MAX + RSNXE_MAX;
 
 /// Longest key data the driver unwraps. Message 3 carries the RSNE and the GTK, and sometimes a
 /// second RSNE or keys the driver ignores.
-const KEY_DATA_MAX: usize = 256;
+pub(crate) const KEY_DATA_MAX: usize = 256;
 
 /// A received EAPOL-Key frame.
-struct KeyFrame<'a> {
+pub(crate) struct KeyFrame<'a> {
     /// The frame from the 802.1X header to the end of the key data: what the MIC covers.
-    pdu: &'a [u8],
-    info: u16,
-    replay_counter: u64,
-    nonce: [u8; 32],
+    pub(crate) pdu: &'a [u8],
+    pub(crate) info: u16,
+    pub(crate) replay_counter: u64,
+    pub(crate) nonce: [u8; 32],
     /// The receive sequence counter of the GTK in the key data, low byte first.
-    rsc: [u8; 6],
-    key_data: &'a [u8],
+    pub(crate) rsc: [u8; 6],
+    pub(crate) key_data: &'a [u8],
 }
 
 impl<'a> KeyFrame<'a> {
     /// Parses an RSN EAPOL-Key frame. `frame` starts at the 802.1X header and may be followed by
     /// padding.
-    fn parse(frame: &'a [u8]) -> Option<Self> {
+    pub(crate) fn parse(frame: &'a [u8]) -> Option<Self> {
         let be16 = |at: usize| Some(u16::from_be_bytes(frame.get(at..at + 2)?.try_into().ok()?));
         if frame.get(1) != Some(&EAPOL_TYPE_KEY) {
             return None;
@@ -480,7 +543,7 @@ impl<'a> KeyFrame<'a> {
 
     /// Whether the frame's MIC is the one `kck` gives over the frame with its MIC field zeroed,
     /// for the key descriptor version of the frame.
-    fn mic_is_valid(&self, kck: &[u8; 16]) -> bool {
+    pub(crate) fn mic_is_valid(&self, kck: &[u8; 16]) -> bool {
         let expected = mic(
             self.info,
             kck,
@@ -533,22 +596,70 @@ fn write_key_frame(
     key_data: &[u8],
     kck: &[u8; 16],
 ) -> usize {
-    let len = KEY_FRAME_LEN + key_data.len();
-    let frame = &mut out[..len];
-    frame.fill(0);
-    frame[0] = EAPOL_VERSION;
-    frame[1] = EAPOL_TYPE_KEY;
-    frame[2..4].copy_from_slice(&((len - 4) as u16).to_be_bytes());
-    frame[4] = DESCRIPTOR_RSN;
-    frame[OFFSET_KEY_INFO..OFFSET_KEY_INFO + 2].copy_from_slice(&info.to_be_bytes());
-    frame[OFFSET_REPLAY_COUNTER..OFFSET_NONCE].copy_from_slice(&replay_counter.to_be_bytes());
-    frame[OFFSET_NONCE..OFFSET_NONCE + 32].copy_from_slice(nonce);
-    frame[OFFSET_KEY_DATA_LEN..KEY_FRAME_LEN].copy_from_slice(&(key_data.len() as u16).to_be_bytes());
-    frame[KEY_FRAME_LEN..].copy_from_slice(key_data);
+    let header = KeyHeader {
+        info,
+        key_len: 0,
+        replay_counter,
+        nonce: *nonce,
+        rsc: [0; 6],
+    };
+    header.write(out, key_data, Some(kck))
+}
 
-    let mic = mic(info, kck, &[frame]);
-    frame[OFFSET_MIC..OFFSET_MIC + MIC_LEN].copy_from_slice(&mic);
-    len
+/// The fields of an EAPOL-Key frame that change from one to the next.
+pub(crate) struct KeyHeader {
+    pub(crate) info: u16,
+    /// The length of the pairwise key, which the authenticator gives and the supplicant leaves at
+    /// zero.
+    pub(crate) key_len: u16,
+    pub(crate) replay_counter: u64,
+    pub(crate) nonce: [u8; 32],
+    /// The packet number of the group key in the key data, low byte first.
+    pub(crate) rsc: [u8; 6],
+}
+
+impl KeyHeader {
+    /// Writes the frame with `key_data` into `out`, and its MIC if there is a `kck`, and returns
+    /// its length. The IV and reserved fields are zero.
+    pub(crate) fn write(&self, out: &mut [u8], key_data: &[u8], kck: Option<&[u8; 16]>) -> usize {
+        let len = KEY_FRAME_LEN + key_data.len();
+        let frame = &mut out[..len];
+        frame.fill(0);
+        frame[0] = EAPOL_VERSION;
+        frame[1] = EAPOL_TYPE_KEY;
+        frame[2..4].copy_from_slice(&((len - 4) as u16).to_be_bytes());
+        frame[4] = DESCRIPTOR_RSN;
+        frame[OFFSET_KEY_INFO..OFFSET_KEY_INFO + 2].copy_from_slice(&self.info.to_be_bytes());
+        frame[OFFSET_KEY_INFO + 2..OFFSET_REPLAY_COUNTER].copy_from_slice(&self.key_len.to_be_bytes());
+        frame[OFFSET_REPLAY_COUNTER..OFFSET_NONCE].copy_from_slice(&self.replay_counter.to_be_bytes());
+        frame[OFFSET_NONCE..OFFSET_NONCE + 32].copy_from_slice(&self.nonce);
+        frame[OFFSET_RSC..OFFSET_RSC + 6].copy_from_slice(&self.rsc);
+        frame[OFFSET_KEY_DATA_LEN..KEY_FRAME_LEN].copy_from_slice(&(key_data.len() as u16).to_be_bytes());
+        frame[KEY_FRAME_LEN..].copy_from_slice(key_data);
+
+        if let Some(kck) = kck {
+            let mic = mic(self.info, kck, &[frame]);
+            frame[OFFSET_MIC..OFFSET_MIC + MIC_LEN].copy_from_slice(&mic);
+        }
+        len
+    }
+}
+
+/// Pads `data` as IEEE 802.11-2020, 12.7.2 asks (0xDD, then zeros, up to a multiple of 8 bytes
+/// and at least 16) and wraps it with the key encryption key into `out`. Returns the wrapped
+/// length, 8 bytes more than the padded data, or `None` if `out` is too short.
+#[cfg(feature = "ap")]
+pub(crate) fn wrap_key_data(kek: &[u8; 16], data: &[u8], out: &mut [u8]) -> Option<usize> {
+    let mut padded = [0; KEY_DATA_MAX];
+    let mut len = data.len();
+    padded.get_mut(..len)?.copy_from_slice(data);
+    if !len.is_multiple_of(8) || len < 16 {
+        *padded.get_mut(len)? = 0xDD;
+        len = (len + 1).next_multiple_of(8).max(16);
+    }
+    let kw = KwAes128::new_from_slice(kek).ok()?;
+    kw.wrap_key(padded.get(..len)?, out.get_mut(..len + 8)?).ok()?;
+    Some(len + 8)
 }
 
 /// A group temporal key, as the RPU takes it.
@@ -581,9 +692,9 @@ pub(crate) struct Igtk {
 }
 
 /// What the key data of message 3 or of a group key message holds, as far as the driver uses it.
-struct KeyData<'a> {
+pub(crate) struct KeyData<'a> {
     /// The first RSNE, with its header.
-    rsne: Option<&'a [u8]>,
+    pub(crate) rsne: Option<&'a [u8]>,
     /// The first RSNXE, with its header.
     rsnxe: Option<&'a [u8]>,
     /// The GTK KDE's body: key ID and flags, a reserved byte, then the key.
@@ -594,7 +705,7 @@ struct KeyData<'a> {
 
 impl<'a> KeyData<'a> {
     /// Walks the elements and KDEs of unwrapped key data (IEEE 802.11-2020, 12.7.2).
-    fn parse(mut data: &'a [u8]) -> Self {
+    pub(crate) fn parse(mut data: &'a [u8]) -> Self {
         const KDE: u8 = 0xDD;
         let mut found = Self {
             rsne: None,

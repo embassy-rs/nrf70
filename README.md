@@ -71,6 +71,16 @@ Working:
   as in station mode, with the laptop's power save on or off. On 2.4 GHz that laptop announced
   itself away 80 ms out of every 100 even with its power save off (its Bluetooth coexistence,
   most likely), and got 3 Mbit/s.
+  With the `wpa2` feature too, `Control::start_ap_wpa2` starts a WPA2-Personal access point (PSK,
+  CCMP): the driver runs the access point's side of the 4-way handshake with each station,
+  sending its messages again every second up to four times, and gives the chip the group key and
+  each station's pairwise key. A laptop joins it 0.1 s after its association, at the same
+  throughput as on the open one; with a wrong passphrase it is let go after 4 s. The handshake is
+  checked against the driver's own supplicant.
+  The chip sends group frames right away, and a dozing station misses them: 13 broadcasts out of
+  30 reached a dozing laptop. While a station sleeps, the driver sends each group frame to every
+  station with keys as a unicast frame instead (hostapd's `multicast_to_unicast`), and the
+  laptop got 30 out of 30.
 - The state of the link with `Control::link_status`: the access point, its channel, the signal
   strength and the rates in use, as the chip reports them.
 - 802.11 power save with `Control::set_power_save`, off until asked for: the chip sleeps between
@@ -106,11 +116,11 @@ Not yet:
   `ConnectError::SecurityMismatch`.
 - Target wake time, and the current drawn in power save and low power mode, which is not
   measured yet.
-- In AP mode: WPA2 and WPA3, 802.11n and WMM (the access point announces the 802.11a/b/g rates
-  only), and letting go of stations that vanish without a word (they keep their place until they
-  come back). Delivery to sleeping stations was checked with a laptop that wakes up when a beacon
-  says frames wait for it; PS-Poll, U-APSD and group frames while a station sleeps are not
-  tested.
+- In AP mode: WPA3, management frame protection and group key renewals, 802.11n and WMM (the
+  access point announces the 802.11a/b/g rates only), and letting go of stations that vanish
+  without a word (they keep their place until they come back). Delivery to sleeping stations was
+  checked with a laptop that wakes up when a beacon says frames wait for it; PS-Poll and U-APSD
+  are not tested.
 
 ## Cargo features
 
@@ -120,9 +130,9 @@ Not yet:
   only, and depends on none of them.
 - `wpa3` (off by default, implies `wpa2`): `Control::join_wpa3`. It adds about 27 KB of flash and
   3 KB of RAM to a WPA2 application on an nRF5340, and the `p256` crate.
-- `ap` (off by default): `Control::start_ap_open` and `Control::stop_ap`. It adds about 15 KB of
-  flash and 9 KB of RAM on an nRF5340, 6 KB of which in `State`: the frames kept for stations
-  that sleep.
+- `ap` (off by default): `Control::start_ap_open` and `Control::stop_ap`, and with `wpa2`
+  `Control::start_ap_wpa2`. It adds about 15 KB of flash and 9 KB of RAM on an nRF5340, 6 KB of
+  which in `State` for the frames kept for stations that sleep; with `wpa2`, 23 KB and 11 KB.
 
 ```toml
 nrf70 = { version = "0.2", features = ["wpa3", "ap"] }

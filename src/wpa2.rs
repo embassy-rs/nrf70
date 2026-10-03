@@ -216,6 +216,9 @@ impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
         }
         let mut eapol = [0; EAPOL_RX_MAX];
         match rx_to_ethernet(frame, pkt_type, mac_header_len, &mut eapol) {
+            // From a station of the access point: its authenticator's.
+            #[cfg(feature = "ap")]
+            Some(n) if self.ap_running() => self.ap_eapol(&eapol[..n]).await,
             Some(n) => self.handle_eapol(&eapol[..n]).await,
             None => warn!("EAPOL frame of {} bytes dropped", frame.len()),
         }
@@ -336,7 +339,7 @@ impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
             // A new pairwise key starts counting packets from zero.
             self.add_key(Some(bss.bssid), supplicant::CIPHER_SUITE_CCMP, 0, &tk, &[0; 6])
                 .await;
-            self.set_default_key(0).await;
+            self.set_default_key(0, false).await;
             debug!("pairwise key installed");
         }
         if let Some(gtk) = keys.gtk {
@@ -363,7 +366,14 @@ impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
     /// Adds a key of `cipher_suite`: the pairwise key of `peer`, or without one a group key (NCS
     /// `nrf_wifi_wpa_supp_set_key` and `nrf_wifi_sys_fmac_add_key`). `seq` is the packet number
     /// reception starts from, low byte first.
-    async fn add_key(&mut self, peer: Option<[u8; 6]>, cipher_suite: u32, index: u8, key: &[u8], seq: &[u8; 6]) {
+    pub(super) async fn add_key(
+        &mut self,
+        peer: Option<[u8; 6]>,
+        cipher_suite: u32,
+        index: u8,
+        key: &[u8],
+        seq: &[u8; 6],
+    ) {
         let mut cmd: c::umac_cmd_key = unsafe { zeroed() };
         let info = &mut cmd.key_info;
         info.valid_fields = c::CIPHER_SUITE_VALID | c::KEY_VALID | c::SEQ_VALID | c::KEY_TYPE_VALID | c::KEY_IDX_VALID;
@@ -387,13 +397,18 @@ impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
         self.send_cmd(cmd).await;
     }
 
-    /// Makes pairwise key `index` the one unicast frames are sent with (NCS
-    /// `nrf_wifi_sys_fmac_set_key`).
-    async fn set_default_key(&mut self, index: u8) {
+    /// Makes key `index` the one unicast frames are sent with, or with `multicast` the one group
+    /// frames are (NCS `nrf_wifi_sys_fmac_set_key`).
+    pub(super) async fn set_default_key(&mut self, index: u8, multicast: bool) {
         let mut cmd: c::umac_cmd_set_key = unsafe { zeroed() };
         cmd.key_info.valid_fields = c::KEY_IDX_VALID;
         cmd.key_info.key_idx = index;
-        cmd.key_info.flags = (c::KEY_DEFAULT | c::KEY_DEFAULT_TYPE_UNICAST) as _;
+        let kind = if multicast {
+            c::KEY_DEFAULT_TYPE_MULTICAST
+        } else {
+            c::KEY_DEFAULT_TYPE_UNICAST
+        };
+        cmd.key_info.flags = (c::KEY_DEFAULT | kind) as _;
         self.send_cmd(cmd).await;
     }
 }
