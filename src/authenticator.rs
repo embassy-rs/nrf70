@@ -7,9 +7,9 @@
 use defmt::debug;
 
 use crate::supplicant::{
-    prf, wrap_key_data, KeyData, KeyFrame, KeyHeader, Ptk, Rsne, Suite, INFO_ACK, INFO_ENCRYPTED_KEY_DATA, INFO_ERROR,
-    INFO_INSTALL, INFO_MIC, INFO_PAIRWISE, INFO_REQUEST, INFO_SECURE, INFO_VERSION_MASK, KDE_GTK, KDE_IGTK,
-    KEY_FRAME_LEN, RSNE_MAX, TK_LEN,
+    prf, wrap_key_data, KeyData, KeyFrame, KeyHeader, Ptk, Rsne, Rsnxe, Suite, INFO_ACK, INFO_ENCRYPTED_KEY_DATA,
+    INFO_ERROR, INFO_INSTALL, INFO_MIC, INFO_PAIRWISE, INFO_REQUEST, INFO_SECURE, INFO_VERSION_MASK, KDE_GTK, KDE_IGTK,
+    KEY_FRAME_LEN, RSNE_MAX, RSNXE_MAX, TK_LEN,
 };
 
 /// How many times message 1, then message 3, goes out before the handshake fails (hostapd's
@@ -19,9 +19,9 @@ pub(crate) const TRIES: u8 = 4;
 /// Length of a GTK KDE, and of an IGTK KDE.
 const GTK_KDE_LEN: usize = 2 + 4 + 2 + TK_LEN;
 const IGTK_KDE_LEN: usize = 2 + 4 + 2 + 6 + 16;
-/// Key data of message 3 at most: the RSNE, the GTK and IGTK KDEs, padding, and the 8 bytes of
+/// Key data of message 3 at most: the RSNE, the RSNXE, the GTK and IGTK KDEs, padding, and the 8 bytes of
 /// the key wrap.
-const KEY_DATA_MAX: usize = RSNE_MAX + GTK_KDE_LEN + IGTK_KDE_LEN + 8 + 8;
+const KEY_DATA_MAX: usize = RSNE_MAX + RSNXE_MAX + GTK_KDE_LEN + IGTK_KDE_LEN + 8 + 8;
 /// Longest frame the authenticator sends: message 3.
 pub(crate) const MESSAGE_MAX: usize = KEY_FRAME_LEN + KEY_DATA_MAX;
 
@@ -123,8 +123,8 @@ pub(crate) enum Outcome {
     Done { tk: [u8; TK_LEN] },
     /// The group key handshake is done: the station has the new group key.
     GroupDone,
-    /// Message 2 does not repeat the RSNE of the association request: deauthenticate the station
-    /// (reason 17).
+    /// Message 2 does not repeat the RSNE or the RSNXE of the association request: deauthenticate the
+    /// station (reason 17).
     Refused,
 }
 
@@ -141,6 +141,10 @@ pub(crate) struct Authenticator {
     sta_rsne: Rsne,
     /// What the station chose.
     suite: Suite,
+    /// The access point's RSNXE, if it announces one, which message 3 carries after the RSNE.
+    ap_rsnxe: Option<Rsnxe>,
+    /// The station's RSNXE, if its association request had one, which message 2 must repeat.
+    sta_rsnxe: Option<Rsnxe>,
     anonce: [u8; 32],
     /// The replay counter of the last message sent.
     replay_counter: u64,
@@ -171,6 +175,8 @@ impl Authenticator {
             ap_rsne,
             sta_rsne,
             suite,
+            ap_rsnxe: None,
+            sta_rsnxe: None,
             anonce,
             replay_counter: 0,
             ptk: None,
@@ -178,6 +184,14 @@ impl Authenticator {
             group: None,
             sent: 0,
         }
+    }
+
+    /// The RSNXEs of the association: the access point's, which message 3 carries, and the
+    /// station's, which message 2 must repeat.
+    pub(crate) fn with_rsnxe(mut self, ap_rsnxe: Option<Rsnxe>, sta_rsnxe: Option<Rsnxe>) -> Self {
+        self.ap_rsnxe = ap_rsnxe;
+        self.sta_rsnxe = sta_rsnxe;
+        self
     }
 
     /// Starts a group key handshake to hand over `keys`, once the 4-way handshake is done. The
@@ -235,11 +249,14 @@ impl Authenticator {
                 Some(header.write(out, &[], None))
             }
             (Stage::Message3, Some(ptk)) => {
-                // The access point's RSNE, then the group keys.
+                // The access point's RSNE and RSNXE, then the group keys.
                 let mut data = [0; KEY_DATA_MAX];
                 let rsne = self.ap_rsne.as_bytes();
+                let rsnxe = self.ap_rsnxe.as_ref().map_or(&[][..], Rsnxe::as_bytes);
                 data[..rsne.len()].copy_from_slice(rsne);
-                let len = rsne.len() + self.write_group_keys(keys, &mut data[rsne.len()..]);
+                data[rsne.len()..rsne.len() + rsnxe.len()].copy_from_slice(rsnxe);
+                let at = rsne.len() + rsnxe.len();
+                let len = at + self.write_group_keys(keys, &mut data[at..]);
                 let mut wrapped = [0; KEY_DATA_MAX];
                 let wrapped_len = wrap_key_data(&ptk.kek, &data[..len], &mut wrapped)?;
                 let header = KeyHeader {
@@ -304,8 +321,13 @@ impl Authenticator {
                     debug!("4-way handshake: message 2 ignored, invalid MIC");
                     return Outcome::Ignored;
                 }
-                if KeyData::parse(key.key_data).rsne != Some(self.sta_rsne.as_bytes()) {
+                let data = KeyData::parse(key.key_data);
+                if data.rsne != Some(self.sta_rsne.as_bytes()) {
                     debug!("4-way handshake: the RSNE of message 2 is not the association request's");
+                    return Outcome::Refused;
+                }
+                if data.rsnxe != self.sta_rsnxe.as_ref().map(Rsnxe::as_bytes) {
+                    debug!("4-way handshake: the RSNXE of message 2 is not the association request's");
                     return Outcome::Refused;
                 }
                 self.ptk = Some(ptk);
@@ -352,12 +374,17 @@ mod tests {
 
     use super::*;
     use crate::supplicant::{psk_from_passphrase, Outcome as StationOutcome, Supplicant, REPLY_MAX};
+    use crate::supplicant::{Offer, Rsnxe};
+
+    const WPA2: Offer = Offer { psk: true, sae: false };
+    const WPA3: Offer = Offer { psk: false, sae: true };
+    const TRANSITION: Offer = Offer { psk: true, sae: true };
 
     const AA: [u8; 6] = [0xF4, 0xCE, 0x36, 0x00, 0x8B, 0x19];
     const SPA: [u8; 6] = [0x98, 0x43, 0xFA, 0x23, 0x26, 0x25];
 
     fn ap_rsne() -> Rsne {
-        Rsne::access_point()
+        Rsne::access_point(WPA2)
     }
 
     fn pair(passphrase: &[u8]) -> (Authenticator, Supplicant, GroupKeys) {
@@ -366,7 +393,7 @@ mod tests {
         let station = Supplicant::new(station_pmk, AA, SPA, ap_rsne(), [7; 32], false).unwrap();
         let sta_rsne = *station.rsne();
         let anonce = anonce(&[3; 32], &AA, &SPA, 0);
-        let suite = sta_rsne.check_station().unwrap();
+        let suite = sta_rsne.check_station(WPA2).unwrap();
         let authenticator = Authenticator::new(pmk, AA, SPA, ap_rsne(), sta_rsne, suite, anonce);
         (authenticator, station, GroupKeys::derive(&[3; 32], &AA, 0))
     }
@@ -476,6 +503,42 @@ mod tests {
     }
 
     #[test]
+    fn a_wpa3_station_gets_the_keys_with_the_sae_pmk_and_the_rsnxe() {
+        // The PMK of an SAE exchange, here any.
+        let pmk = [0x5A; 32];
+        let ap_rsne = Rsne::access_point(WPA3);
+        let rsnxe = Some(Rsnxe::sae_h2e());
+        let mut station = Supplicant::new(pmk, AA, SPA, ap_rsne, [7; 32], true)
+            .unwrap()
+            .with_rsnxe(rsnxe, rsnxe);
+        let sta_rsne = *station.rsne();
+        let suite = sta_rsne.check_station(WPA3).unwrap();
+        assert_eq!((suite.akm, suite.mfp), (crate::supplicant::Akm::Sae, true));
+        let mut ap = Authenticator::new(pmk, AA, SPA, ap_rsne, sta_rsne, suite, anonce(&[3; 32], &AA, &SPA, 0))
+            .with_rsnxe(rsnxe, rsnxe);
+        let keys = GroupKeys::derive(&[3; 32], &AA, 0);
+        handshake(&mut ap, &mut station, &keys);
+        assert!(ap.done());
+
+        // A station whose message 2 leaves out the RSNXE of its association request is refused.
+        let mut station = Supplicant::new(pmk, AA, SPA, ap_rsne, [7; 32], true)
+            .unwrap()
+            .with_rsnxe(None, rsnxe);
+        let mut ap = Authenticator::new(pmk, AA, SPA, ap_rsne, sta_rsne, suite, anonce(&[3; 32], &AA, &SPA, 1))
+            .with_rsnxe(rsnxe, rsnxe);
+        let mut out = [0; MESSAGE_MAX];
+        let mut reply = [0; REPLY_MAX];
+        let len = ap.next_message(&keys, &mut out).unwrap();
+        let StationOutcome::Reply(reply_len) = station.handle(&out[..len], &mut reply) else {
+            panic!("no message 2");
+        };
+        assert!(matches!(
+            ap.handle(&reply[..reply_len], &keys, &mut out),
+            Outcome::Refused
+        ));
+    }
+
+    #[test]
     fn a_wrong_passphrase_gets_no_message_3_and_the_handshake_gives_up() {
         let (mut ap, mut station, gtk) = pair(b"wrong horse");
         let mut out = [0; MESSAGE_MAX];
@@ -562,25 +625,77 @@ mod tests {
         };
         use crate::supplicant::Akm::{Psk, PskSha256};
         let psk_sha256 = [0x00, 0x0F, 0xAC, 6];
-        assert_eq!(rsne(&body(ccmp, ccmp, psk, 0)).check_station(), suite(Psk, false));
+        assert_eq!(rsne(&body(ccmp, ccmp, psk, 0)).check_station(WPA2), suite(Psk, false));
         // Management frame protection when the station is capable of it, or requires it.
-        assert_eq!(rsne(&body(ccmp, ccmp, psk, 0x0080)).check_station(), suite(Psk, true));
-        assert_eq!(rsne(&body(ccmp, ccmp, psk, 0x00C0)).check_station(), suite(Psk, true));
         assert_eq!(
-            rsne(&body(ccmp, ccmp, psk_sha256, 0x0080)).check_station(),
+            rsne(&body(ccmp, ccmp, psk, 0x0080)).check_station(WPA2),
+            suite(Psk, true)
+        );
+        assert_eq!(
+            rsne(&body(ccmp, ccmp, psk, 0x00C0)).check_station(WPA2),
+            suite(Psk, true)
+        );
+        assert_eq!(
+            rsne(&body(ccmp, ccmp, psk_sha256, 0x0080)).check_station(WPA2),
             suite(PskSha256, true)
         );
         assert_eq!(
-            rsne(&body(ccmp, ccmp, psk_sha256, 0)).check_station(),
+            rsne(&body(ccmp, ccmp, psk_sha256, 0)).check_station(WPA2),
             suite(PskSha256, false)
         );
         // Protection with BIP-GMAC-128 (no PMKIDs, then the group management cipher).
         let mut gmac = body(ccmp, ccmp, psk, 0x0080);
         gmac.extend_from_slice(&[0, 0, 0x00, 0x0F, 0xAC, 11]);
-        assert_eq!(rsne(&gmac).check_station(), Err(46));
-        assert_eq!(rsne(&body(tkip, ccmp, psk, 0)).check_station(), Err(41));
-        assert_eq!(rsne(&body(ccmp, tkip, psk, 0)).check_station(), Err(42));
-        assert_eq!(rsne(&body(ccmp, ccmp, sae, 0)).check_station(), Err(43));
-        assert_eq!(rsne(&[2, 0]).check_station(), Err(40));
+        assert_eq!(rsne(&gmac).check_station(WPA2), Err(46));
+        assert_eq!(rsne(&body(tkip, ccmp, psk, 0)).check_station(WPA2), Err(41));
+        assert_eq!(rsne(&body(ccmp, tkip, psk, 0)).check_station(WPA2), Err(42));
+        assert_eq!(rsne(&body(ccmp, ccmp, sae, 0)).check_station(WPA2), Err(43));
+        assert_eq!(rsne(&[2, 0]).check_station(WPA2), Err(40));
+
+        // WPA3: SAE only, and protection required.
+        use crate::supplicant::Akm::Sae;
+        assert_eq!(
+            rsne(&body(ccmp, ccmp, sae, 0x0080)).check_station(WPA3),
+            suite(Sae, true)
+        );
+        assert_eq!(rsne(&body(ccmp, ccmp, sae, 0)).check_station(WPA3), Err(31));
+        assert_eq!(rsne(&body(ccmp, ccmp, psk, 0x0080)).check_station(WPA3), Err(43));
+        // Transition: both, protection for SAE only.
+        assert_eq!(
+            rsne(&body(ccmp, ccmp, psk, 0)).check_station(TRANSITION),
+            suite(Psk, false)
+        );
+        assert_eq!(
+            rsne(&body(ccmp, ccmp, sae, 0x0080)).check_station(TRANSITION),
+            suite(Sae, true)
+        );
+        assert_eq!(rsne(&body(ccmp, ccmp, sae, 0)).check_station(TRANSITION), Err(31));
+    }
+
+    #[test]
+    fn the_access_point_rsne_follows_the_offer() {
+        let bytes = |rsne: Rsne| rsne.as_bytes().to_vec();
+        let hex = |s: &str| {
+            let s: std::string::String = s.split_whitespace().collect();
+            (0..s.len())
+                .step_by(2)
+                .map(|i| u8::from_str_radix(&s[i..i + 2], 16).unwrap())
+                .collect::<std::vec::Vec<u8>>()
+        };
+        // CCMP; PSK and PSK-SHA256; MFPC.
+        assert_eq!(
+            bytes(Rsne::access_point(WPA2)),
+            hex("30 18 0100 000fac04 0100 000fac04 0200 000fac02 000fac06 8000")
+        );
+        // SAE; MFPC and MFPR.
+        assert_eq!(
+            bytes(Rsne::access_point(WPA3)),
+            hex("30 14 0100 000fac04 0100 000fac04 0100 000fac08 c000")
+        );
+        // All three; MFPC.
+        assert_eq!(
+            bytes(Rsne::access_point(TRANSITION)),
+            hex("30 1c 0100 000fac04 0100 000fac04 0300 000fac02 000fac06 000fac08 8000")
+        );
     }
 }

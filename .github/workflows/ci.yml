@@ -31,19 +31,21 @@ jobs:
           cargo fmt --check
           cargo fmt --check --manifest-path example/Cargo.toml
 
-      # The driver without its optional features, with `wpa2`, with `wpa3`, with `ap`, and with `ap`
-      # and `wpa3`, for the target and for the host tests.
+      # The driver without its optional features, with `wpa2`, with `wpa3`, and with `ap` alone, with
+      # `wpa2` and with `wpa3`, for the target and for the host tests.
       - name: Clippy
         run: |
           cargo clippy --target thumbv8m.main-none-eabihf -- -D warnings
           cargo clippy --target thumbv8m.main-none-eabihf --features wpa2 -- -D warnings
           cargo clippy --target thumbv8m.main-none-eabihf --features wpa3 -- -D warnings
           cargo clippy --target thumbv8m.main-none-eabihf --features ap -- -D warnings
+          cargo clippy --target thumbv8m.main-none-eabihf --features ap,wpa2 -- -D warnings
           cargo clippy --target thumbv8m.main-none-eabihf --features ap,wpa3 -- -D warnings
           cargo clippy --all-targets -- -D warnings
           cargo clippy --all-targets --features wpa2 -- -D warnings
           cargo clippy --all-targets --features wpa3 -- -D warnings
           cargo clippy --all-targets --features ap -- -D warnings
+          cargo clippy --all-targets --features ap,wpa2 -- -D warnings
           cargo clippy --all-targets --features ap,wpa3 -- -D warnings
           cd example
           cargo clippy --release -- -D warnings
@@ -55,6 +57,7 @@ jobs:
           cargo test --features wpa2
           cargo test --features wpa3
           cargo test --features ap
+          cargo test --features ap,wpa2
           cargo test --features ap,wpa3
 
       - name: Build example

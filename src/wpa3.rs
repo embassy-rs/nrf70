@@ -48,13 +48,30 @@ pub(crate) struct Wpa3 {
     password: [u8; PASSWORD_MAX],
     password_len: u8,
     /// The base of the PWE for hash to element, derived at the join.
-    pt: Pt,
+    pub(crate) pt: Pt,
     /// What the SAE scalars and the supplicant's nonces are drawn from.
     pub(crate) seed: [u8; 32],
 }
 
 impl Wpa3 {
-    fn password(&self) -> &[u8] {
+    /// What `password` gives on the network `ssid`, with `seed` to draw the SAE scalars and the
+    /// nonces from. `None` if the password is empty or longer than the driver keeps. Deriving the
+    /// PT for hash to element takes a moment (22 ms on an nRF5340 at 128 MHz).
+    pub(crate) fn new(ssid: &[u8], password: &[u8], seed: [u8; 32]) -> Option<Self> {
+        if password.is_empty() || password.len() > PASSWORD_MAX {
+            return None;
+        }
+        let mut wpa3 = Self {
+            password: [0; PASSWORD_MAX],
+            password_len: password.len() as u8,
+            pt: Pt::derive(ssid, password, None),
+            seed,
+        };
+        wpa3.password[..password.len()].copy_from_slice(password);
+        Some(wpa3)
+    }
+
+    pub(crate) fn password(&self) -> &[u8] {
         &self.password[..self.password_len as usize]
     }
 }
@@ -104,26 +121,18 @@ impl Control<'_> {
         password: &[u8],
         rng: &mut (impl CryptoRng + ?Sized),
     ) -> Result<(), ConnectError> {
-        if password.is_empty() || password.len() > PASSWORD_MAX {
-            return Err(ConnectError::InvalidPassphrase);
-        }
+        let mut seed = [0; 32];
+        rng.fill_bytes(&mut seed);
         let start = Instant::now();
-        let mut wpa3 = Wpa3 {
-            password: [0; PASSWORD_MAX],
-            password_len: password.len() as u8,
-            pt: Pt::derive(ssid, password, None),
-            seed: [0; 32],
-        };
+        let wpa3 = Wpa3::new(ssid, password, seed).ok_or(ConnectError::InvalidPassphrase)?;
         debug!("SAE: PT derived in {} ms", start.elapsed().as_millis());
-        wpa3.password[..password.len()].copy_from_slice(password);
-        rng.fill_bytes(&mut wpa3.seed);
         self.join(ssid, Credentials::Wpa3(wpa3)).await
     }
 }
 
 /// Two scalars for the SAE exchange `attempt` of a join, drawn from the join's seed:
 /// HMAC-SHA256(seed, "nrf70 SAE scalars" || attempt || counter), 48 bytes each, reduced modulo r.
-fn scalars(seed: &[u8; 32], attempt: u32) -> (p256::Scalar, p256::Scalar) {
+pub(crate) fn scalars(seed: &[u8; 32], attempt: u32) -> (p256::Scalar, p256::Scalar) {
     let mut counter = 0u32;
     let mut next = || loop {
         let mut wide = [0; 48];

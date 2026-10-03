@@ -381,37 +381,51 @@ impl Rsne {
         Some(Suite { akm, mfp, group })
     }
 
-    /// The RSNE of a WPA2 access point of the driver: CCMP-128 as group and pairwise cipher, PSK and
-    /// PSK-SHA256 key management, management frame protection capable with BIP-CMAC-128 (the
-    /// default group management cipher, which goes without saying).
+    /// The RSNE of an access point of the driver: CCMP-128 as group and pairwise cipher, PSK and
+    /// PSK-SHA256 key management if `offer` has PSK, SAE if it has SAE, and management frame
+    /// protection with BIP-CMAC-128 (the default group management cipher, which goes without
+    /// saying): capable, and required with SAE alone (WPA3-Personal).
     #[cfg(feature = "ap")]
-    pub(crate) fn access_point() -> Self {
-        let mut body = [0; 24];
+    pub(crate) fn access_point(offer: Offer) -> Self {
+        let mut body = [0; 28];
         body[0..2].copy_from_slice(&1u16.to_le_bytes());
         body[2..6].copy_from_slice(&SUITE_CCMP);
         body[6..8].copy_from_slice(&1u16.to_le_bytes());
         body[8..12].copy_from_slice(&SUITE_CCMP);
-        body[12..14].copy_from_slice(&2u16.to_le_bytes());
-        body[14..18].copy_from_slice(&AKM_PSK);
-        body[18..22].copy_from_slice(&AKM_PSK_SHA256);
-        body[22..24].copy_from_slice(&RSN_CAP_MFPC.to_le_bytes());
-        match Self::from_body(&body) {
+        let mut akms = 0;
+        for (offered, akm) in [(offer.psk, AKM_PSK), (offer.psk, AKM_PSK_SHA256), (offer.sae, AKM_SAE)] {
+            if offered {
+                body[14 + 4 * akms..18 + 4 * akms].copy_from_slice(&akm);
+                akms += 1;
+            }
+        }
+        body[12..14].copy_from_slice(&(akms as u16).to_le_bytes());
+        let at = 14 + 4 * akms;
+        let capabilities = if offer.sae && !offer.psk {
+            RSN_CAP_MFPC | RSN_CAP_MFPR
+        } else {
+            RSN_CAP_MFPC
+        };
+        body[at..at + 2].copy_from_slice(&capabilities.to_le_bytes());
+        match Self::from_body(&body[..at + 2]) {
             Some(rsne) => rsne,
             None => defmt::unreachable!(),
         }
     }
 
-    /// Checks the RSNE of a station's association request against [`Self::access_point`], and
-    /// returns what the station chose: PSK-SHA256 if it names it, else PSK, and management frame
-    /// protection if it is capable of it. Returns the IEEE 802.11 status code to refuse it with
-    /// otherwise, as hostapd's `wpa_validate_wpa_ie` chooses it.
+    /// Checks the RSNE of a station's association request against what [`Self::access_point`]
+    /// offers, and returns what the station chose: SAE if it names it, else PSK-SHA256, else PSK,
+    /// and management frame protection if it is capable of it, which SAE requires. Returns the
+    /// IEEE 802.11 status code to refuse it with otherwise, as hostapd's `wpa_validate_wpa_ie`
+    /// chooses it.
     #[cfg(feature = "ap")]
-    pub(crate) fn check_station(&self) -> Result<Suite, u16> {
+    pub(crate) fn check_station(&self, offer: Offer) -> Result<Suite, u16> {
         const INVALID_ELEMENT: u16 = 40;
         const INVALID_GROUP_CIPHER: u16 = 41;
         const INVALID_PAIRWISE_CIPHER: u16 = 42;
         const INVALID_AKMP: u16 = 43;
         const CIPHER_REJECTED_PER_POLICY: u16 = 46;
+        const ROBUST_MANAGEMENT_POLICY_VIOLATION: u16 = 31;
         let fields = self.fields().ok_or(INVALID_ELEMENT)?;
         let names = |list: &[u8], suite: [u8; 4]| list.chunks(4).any(|s| s == suite);
         if fields.group != SUITE_CCMP {
@@ -420,14 +434,19 @@ impl Rsne {
         if !names(fields.pairwise, SUITE_CCMP) {
             return Err(INVALID_PAIRWISE_CIPHER);
         }
-        let akm = if names(fields.akms, AKM_PSK_SHA256) {
+        let akm = if offer.sae && names(fields.akms, AKM_SAE) {
+            Akm::Sae
+        } else if offer.psk && names(fields.akms, AKM_PSK_SHA256) {
             Akm::PskSha256
-        } else if names(fields.akms, AKM_PSK) {
+        } else if offer.psk && names(fields.akms, AKM_PSK) {
             Akm::Psk
         } else {
             return Err(INVALID_AKMP);
         };
         let mfp = fields.capabilities & RSN_CAP_MFPC != 0;
+        if !mfp && (akm == Akm::Sae || !offer.psk) {
+            return Err(ROBUST_MANAGEMENT_POLICY_VIOLATION);
+        }
         if mfp && fields.group_management != SUITE_BIP_CMAC_128 {
             return Err(CIPHER_REJECTED_PER_POLICY);
         }
@@ -437,6 +456,16 @@ impl Rsne {
             group: GroupCipher::Ccmp,
         })
     }
+}
+
+/// The key management an access point of the driver offers.
+#[cfg(feature = "ap")]
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Offer {
+    /// PSK and PSK-SHA256: WPA2-Personal.
+    pub(crate) psk: bool,
+    /// SAE: WPA3-Personal.
+    pub(crate) sae: bool,
 }
 
 /// The fields of an RSN element (IEEE 802.11-2020, 9.4.2.24), from the group cipher on.
@@ -451,7 +480,7 @@ struct RsneFields<'a> {
 }
 
 /// Longest RSNXE the driver keeps, with its header: its capabilities fit in a few bytes.
-const RSNXE_MAX: usize = 18;
+pub(crate) const RSNXE_MAX: usize = 18;
 
 /// An RSN Extension element, with its ID and length.
 #[derive(Clone, Copy)]
@@ -728,7 +757,7 @@ pub(crate) struct KeyData<'a> {
     /// The first RSNE, with its header.
     pub(crate) rsne: Option<&'a [u8]>,
     /// The first RSNXE, with its header.
-    rsnxe: Option<&'a [u8]>,
+    pub(crate) rsnxe: Option<&'a [u8]>,
     /// The GTK KDE's body: key ID and flags, a reserved byte, then the key.
     gtk: Option<&'a [u8]>,
     /// The IGTK KDE's body: key ID, IPN, then the key.

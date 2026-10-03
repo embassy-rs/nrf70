@@ -7,6 +7,9 @@
 //! With WPA2, it runs the 4-way handshake with each station (the authenticator of
 //! `authenticator.rs`) and gives the RPU the keys.
 
+#[cfg(feature = "wpa3")]
+mod wpa3;
+
 use core::mem::zeroed;
 
 use defmt::{debug, info, warn};
@@ -17,7 +20,7 @@ use embedded_hal_async::digital::Wait;
 #[cfg(feature = "wpa2")]
 use crate::{
     authenticator::{self, Authenticator, GroupKeys},
-    supplicant::{self, Rsne, Suite},
+    supplicant::{self, Offer, Rsne, Rsnxe, Suite},
     wpa2::DefaultKey,
 };
 use crate::{
@@ -138,6 +141,8 @@ const STATUS_TOO_MANY_STATIONS: u16 = 17;
 const STATUS_RATES: u16 = 18;
 #[cfg(feature = "wpa2")]
 const STATUS_TRY_LATER: u16 = 30;
+#[cfg(feature = "wpa3")]
+const STATUS_INVALID_PMKID: u16 = 53;
 #[cfg(feature = "wpa2")]
 const STATUS_INVALID_ELEMENT: u16 = 40;
 
@@ -192,6 +197,9 @@ pub(crate) struct Settings {
 
 /// How stations join the access point.
 #[derive(Clone, Copy)]
+// The WPA3 variant carries the password and the PT of hash to element; settings are made once
+// for each start of the access point.
+#[allow(clippy::large_enum_variant)]
 enum Security {
     Open,
     /// WPA2-Personal: the pre-shared key, and the seed that the ANonces and the group key are
@@ -201,6 +209,58 @@ enum Security {
         psk: [u8; 32],
         seed: [u8; 32],
     },
+    /// WPA3-Personal (SAE), and with a pre-shared key WPA2/WPA3 transition, which takes WPA2
+    /// stations too. The seed is the password's.
+    #[cfg(feature = "wpa3")]
+    Wpa3 {
+        wpa3: crate::wpa3::Wpa3,
+        psk: Option<[u8; 32]>,
+    },
+}
+
+#[cfg(feature = "wpa2")]
+impl Security {
+    /// What the ANonces and the group keys are drawn from.
+    fn seed(&self) -> Option<[u8; 32]> {
+        match self {
+            Security::Open => None,
+            Security::Wpa2 { seed, .. } => Some(*seed),
+            #[cfg(feature = "wpa3")]
+            Security::Wpa3 { wpa3, .. } => Some(wpa3.seed),
+        }
+    }
+
+    /// The pre-shared key of the WPA2 stations.
+    fn psk(&self) -> Option<[u8; 32]> {
+        match self {
+            Security::Open => None,
+            Security::Wpa2 { psk, .. } => Some(*psk),
+            #[cfg(feature = "wpa3")]
+            Security::Wpa3 { psk, .. } => *psk,
+        }
+    }
+
+    /// The key management the RSNE offers.
+    fn offer(&self) -> Option<Offer> {
+        match self {
+            Security::Open => None,
+            Security::Wpa2 { .. } => Some(Offer { psk: true, sae: false }),
+            #[cfg(feature = "wpa3")]
+            Security::Wpa3 { psk, .. } => Some(Offer {
+                psk: psk.is_some(),
+                sae: true,
+            }),
+        }
+    }
+
+    /// The RSNXE the access point announces: with SAE, that it does hash to element.
+    fn rsnxe(&self) -> Option<Rsnxe> {
+        #[cfg(feature = "wpa3")]
+        if let Security::Wpa3 { .. } = self {
+            return Some(Rsnxe::sae_h2e());
+        }
+        None
+    }
 }
 
 impl Settings {
@@ -264,8 +324,12 @@ impl Settings {
             w.ie(IE_ERP, &[0]).ie(IE_EXT_RATES, &EXT_RATES_2G);
         }
         #[cfg(feature = "wpa2")]
-        if self.privacy() {
-            w.put(Rsne::access_point().as_bytes());
+        if let Some(offer) = self.security.offer() {
+            w.put(Rsne::access_point(offer).as_bytes());
+        }
+        #[cfg(feature = "wpa2")]
+        if let Some(rsnxe) = self.security.rsnxe() {
+            w.put(rsnxe.as_bytes());
         }
         w.ie(IE_HT_CAPABILITIES, &HT_CAPABILITIES);
         self.write_ht_operation(w);
@@ -368,6 +432,8 @@ impl Settings {
             wmm: vendor_ies(ies).any(|ie| ie.starts_with(&WMM_INFORMATION)),
             #[cfg(feature = "wpa2")]
             rsne: None,
+            #[cfg(feature = "wpa2")]
+            rsnxe: find_ie(ies, supplicant::IE_RSNXE).and_then(Rsnxe::from_body),
         };
         let rates = find_ie(ies, IE_RATES).unwrap_or(&[]).iter();
         for rate in rates.chain(find_ie(ies, IE_EXT_RATES).unwrap_or(&[])) {
@@ -385,7 +451,7 @@ impl Settings {
             let rsne = find_ie(ies, supplicant::IE_RSN)
                 .and_then(Rsne::from_body)
                 .ok_or(STATUS_INVALID_ELEMENT)?;
-            let suite = rsne.check_station()?;
+            let suite = rsne.check_station(self.security.offer().unwrap_or(Offer { psk: true, sae: false }))?;
             request.rsne = Some((rsne, suite));
         }
         Ok(request)
@@ -526,6 +592,9 @@ struct AssocRequest {
     /// Its RSNE, with WPA2.
     #[cfg(feature = "wpa2")]
     rsne: Option<(Rsne, Suite)>,
+    /// Its RSNXE, if it has one, with WPA2.
+    #[cfg(feature = "wpa2")]
+    rsnxe: Option<Rsnxe>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, defmt::Format)]
@@ -563,6 +632,12 @@ struct Station {
     /// With WPA2, the RSNE of its association request, which message 2 must repeat.
     #[cfg(feature = "wpa2")]
     rsne: Option<(Rsne, Suite)>,
+    /// With WPA2, the RSNXE of its association request, if any, which message 2 must repeat.
+    #[cfg(feature = "wpa2")]
+    rsnxe: Option<Rsnxe>,
+    /// With WPA3, the PMK of the SAE exchange that authenticated it.
+    #[cfg(feature = "wpa3")]
+    pmk: Option<[u8; 32]>,
     /// With WPA2, when the last handshake message goes out again if unanswered.
     #[cfg(feature = "wpa2")]
     retry_at: Option<Instant>,
@@ -593,6 +668,10 @@ impl Station {
             poll_deadline: None,
             #[cfg(feature = "wpa2")]
             rsne: None,
+            #[cfg(feature = "wpa2")]
+            rsnxe: None,
+            #[cfg(feature = "wpa3")]
+            pmk: None,
             #[cfg(feature = "wpa2")]
             retry_at: None,
             #[cfg(feature = "wpa2")]
@@ -734,11 +813,16 @@ pub(crate) struct Storage {
     /// The 4-way handshake of each station, with WPA2.
     #[cfg(feature = "wpa2")]
     handshakes: [Option<Authenticator>; MAX_STATIONS],
+    /// The SAE exchange of each station, with WPA3.
+    #[cfg(feature = "wpa3")]
+    exchanges: [Option<wpa3::Exchange>; MAX_STATIONS],
 }
 
 impl Storage {
     #[cfg(feature = "wpa2")]
     const NO_HANDSHAKE: Option<Authenticator> = None;
+    #[cfg(feature = "wpa3")]
+    const NO_EXCHANGE: Option<wpa3::Exchange> = None;
 
     pub(crate) const fn new() -> Self {
         Self {
@@ -746,6 +830,8 @@ impl Storage {
             held: HeldFrames::new(),
             #[cfg(feature = "wpa2")]
             handshakes: [Self::NO_HANDSHAKE; MAX_STATIONS],
+            #[cfg(feature = "wpa3")]
+            exchanges: [Self::NO_EXCHANGE; MAX_STATIONS],
         }
     }
 
@@ -755,6 +841,8 @@ impl Storage {
         self.held.clear();
         #[cfg(feature = "wpa2")]
         self.handshakes.iter_mut().for_each(|handshake| *handshake = None);
+        #[cfg(feature = "wpa3")]
+        self.exchanges.iter_mut().for_each(|exchange| *exchange = None);
     }
 }
 
@@ -781,6 +869,9 @@ pub(crate) struct State<'a> {
     /// With WPA2, how many ANonces were drawn.
     #[cfg(feature = "wpa2")]
     nonces: u64,
+    /// With WPA3, how many SAE exchanges drew their scalars.
+    #[cfg(feature = "wpa3")]
+    sae_attempts: u32,
     /// The RPU's answer to the last interface type change.
     set_interface: Option<i32>,
     /// Identifies each management frame sent, for the RPU's TX status.
@@ -806,6 +897,8 @@ impl<'a> State<'a> {
             gtks: 0,
             #[cfg(feature = "wpa2")]
             nonces: 0,
+            #[cfg(feature = "wpa3")]
+            sae_attempts: 0,
             set_interface: None,
             cookie: 0,
             token_stations: [None; crate::MAX_TX_TOKENS],
@@ -822,6 +915,11 @@ impl Control<'_> {
     /// Scans and joins are refused while the access point runs.
     pub async fn start_ap_open(&mut self, ssid: &[u8], channel: u8) -> Result<(), ApError> {
         let settings = Settings::new(ssid, channel)?;
+        self.request_ap(settings).await
+    }
+
+    /// Hands the access point to the runner, and returns its answer.
+    async fn request_ap(&mut self, settings: Settings) -> Result<(), ApError> {
         self.shared.ap_result.clear();
         self.shared.requests.send(Request::StartAp(settings)).await;
         self.shared.ap_result.receive().await
@@ -930,7 +1028,7 @@ impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
         // With WPA2, the group keys the access point sends broadcasts with: the GTK, and the IGTK
         // that protects its broadcast management frames.
         #[cfg(feature = "wpa2")]
-        if let Security::Wpa2 { seed, .. } = settings.security {
+        if let Some(seed) = settings.security.seed() {
             let keys = GroupKeys::derive(&seed, &self.ap.mac_addr, 0);
             self.install_group_keys(&keys).await;
             self.set_default_key(keys.gtk.index, DefaultKey::Multicast).await;
@@ -1087,6 +1185,11 @@ impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
                 let (Some(algorithm), Some(sequence)) = (mgmt.le16(0), mgmt.le16(2)) else {
                     return;
                 };
+                // WPA3: SAE, in place of open system authentication.
+                #[cfg(feature = "wpa3")]
+                if algorithm == wpa3::AUTH_ALGORITHM_SAE && matches!(settings.security, Security::Wpa3 { .. }) {
+                    return self.ap_sae_frame(&mgmt).await;
+                }
                 let status = if algorithm != c::auth_type::AUTHTYPE_OPEN_SYSTEM as u16 {
                     STATUS_AUTH_ALGORITHM
                 } else if sequence != 1 {
@@ -1139,11 +1242,29 @@ impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
                 }
                 if self.ap.storage.stations.0[slot].is_some_and(|s| s.phase == Phase::Associated) {
                     // Associating again: the RPU's entry goes, the new one comes with the answer.
+                    // The PMK of the SAE exchange just before stays.
+                    #[cfg(feature = "wpa3")]
+                    let pmk = self.ap.storage.stations.0[slot].and_then(|s| s.pmk);
                     self.remove_station(slot, None).await;
                     slot = self.ap.storage.stations.find_or_add(&mgmt.from).unwrap();
+                    #[cfg(feature = "wpa3")]
+                    if let Some(station) = self.ap.storage.stations.get(slot) {
+                        station.pmk = pmk;
+                    }
                 }
                 let body = mgmt.body.get(if reassoc { 6 } else { 0 }..).unwrap_or(&[]);
                 let request = settings.association_request(body);
+                // SAE needs the PMK of an SAE exchange (hostapd: no PMKSA for the station).
+                #[cfg(feature = "wpa3")]
+                let request = request.and_then(|request| {
+                    let sae = request.rsne.is_some_and(|(_, suite)| suite.akm == supplicant::Akm::Sae);
+                    let pmk = self.ap.storage.stations.0[slot].is_some_and(|s| s.pmk.is_some());
+                    if sae && !pmk {
+                        Err(STATUS_INVALID_PMKID)
+                    } else {
+                        Ok(request)
+                    }
+                });
                 let status = match &request {
                     Ok(request) => {
                         let station = self.ap.storage.stations.get(slot).unwrap();
@@ -1156,6 +1277,7 @@ impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
                         #[cfg(feature = "wpa2")]
                         {
                             station.rsne = request.rsne;
+                            station.rsnxe = request.rsnxe;
                         }
                         station.phase = Phase::Responded;
                         STATUS_SUCCESS
@@ -1309,6 +1431,10 @@ impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
         #[cfg(feature = "wpa2")]
         {
             self.ap.storage.handshakes[slot] = None;
+            #[cfg(feature = "wpa3")]
+            {
+                self.ap.storage.exchanges[slot] = None;
+            }
         }
         if let Some(reason) = reason {
             let mut frame = [0; 26];
@@ -1338,6 +1464,10 @@ impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
                 #[cfg(feature = "wpa2")]
                 {
                     self.ap.storage.handshakes[slot] = None;
+                    #[cfg(feature = "wpa3")]
+                    {
+                        self.ap.storage.exchanges[slot] = None;
+                    }
                 }
                 self.write_pending_entry(slot, &[0; 6]).await;
                 #[cfg(feature = "wpa2")]
@@ -1672,9 +1802,63 @@ impl Control<'_> {
             security: Security::Wpa2 { psk, seed },
             ..settings
         };
-        self.shared.ap_result.clear();
-        self.shared.requests.send(Request::StartAp(settings)).await;
-        self.shared.ap_result.receive().await
+        self.request_ap(settings).await
+    }
+}
+
+#[cfg(feature = "wpa3")]
+impl Control<'_> {
+    /// Starts a WPA3-Personal access point named `ssid` on `channel`, with the password its
+    /// stations join with: SAE on the P-256 curve, by hash to element or hunting and pecking as each
+    /// station chooses, then the 4-way handshake, management frame protection required. Otherwise
+    /// as [`Control::start_ap_wpa2`], whose random numbers this takes from `rng` too.
+    ///
+    /// Hunting and pecking takes 0.39 s for each station on an nRF5340 at 128 MHz, during which
+    /// the runner does nothing else; hash to element takes a few milliseconds.
+    pub async fn start_ap_wpa3(
+        &mut self,
+        ssid: &[u8],
+        channel: u8,
+        password: &[u8],
+        rng: &mut (impl rand_core::CryptoRng + ?Sized),
+    ) -> Result<(), ApError> {
+        self.start_ap_sae(ssid, channel, password, false, rng).await
+    }
+
+    /// Starts a WPA2/WPA3 transition access point: WPA3 stations join with SAE, as with
+    /// [`Control::start_ap_wpa3`], and WPA2 ones with the same passphrase (PSK or PSK-SHA256),
+    /// management frame protection for those that are capable of it.
+    pub async fn start_ap_wpa2_wpa3(
+        &mut self,
+        ssid: &[u8],
+        channel: u8,
+        passphrase: &[u8],
+        rng: &mut (impl rand_core::CryptoRng + ?Sized),
+    ) -> Result<(), ApError> {
+        self.start_ap_sae(ssid, channel, passphrase, true, rng).await
+    }
+
+    async fn start_ap_sae(
+        &mut self,
+        ssid: &[u8],
+        channel: u8,
+        password: &[u8],
+        transition: bool,
+        rng: &mut (impl rand_core::CryptoRng + ?Sized),
+    ) -> Result<(), ApError> {
+        let settings = Settings::new(ssid, channel)?;
+        let psk = match transition {
+            true => Some(crate::wpa2_psk(ssid, password).ok_or(ApError::InvalidPassphrase)?),
+            false => None,
+        };
+        let mut seed = [0; 32];
+        rng.fill_bytes(&mut seed);
+        let wpa3 = crate::wpa3::Wpa3::new(ssid, password, seed).ok_or(ApError::InvalidPassphrase)?;
+        let settings = Settings {
+            security: Security::Wpa3 { wpa3, psk },
+            ..settings
+        };
+        self.request_ap(settings).await
     }
 }
 
@@ -1684,21 +1868,35 @@ impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
     /// Starts the 4-way handshake with the station of `slot`, just added to the RPU (hostapd's
     /// `wpa_auth_sm_event(WPA_ASSOC)`).
     async fn start_handshake(&mut self, slot: usize) {
-        let (Some(Security::Wpa2 { psk, seed }), Some(station)) = (
+        let (Some(security), Some(station)) = (
             self.ap.settings.map(|settings| settings.security),
             self.ap.storage.stations.0[slot],
         ) else {
             return;
         };
-        let Some((sta_rsne, suite)) = station.rsne else {
+        let (Some(seed), Some(offer), Some((sta_rsne, suite))) = (security.seed(), security.offer(), station.rsne)
+        else {
+            return;
+        };
+        // The PMK: the SAE exchange's with SAE, else the pre-shared key.
+        #[cfg(feature = "wpa3")]
+        let pmk = if suite.akm == supplicant::Akm::Sae {
+            station.pmk
+        } else {
+            security.psk()
+        };
+        #[cfg(not(feature = "wpa3"))]
+        let pmk = security.psk();
+        let Some(pmk) = pmk else {
             return;
         };
         self.ap.nonces += 1;
         let aa = self.ap.mac_addr;
         let anonce = authenticator::anonce(&seed, &aa, &station.addr, self.ap.nonces);
-        let ap_rsne = Rsne::access_point();
+        let ap_rsne = Rsne::access_point(offer);
         debug!("4-way handshake with {:02x}: {}", station.addr, suite);
-        let handshake = Authenticator::new(psk, aa, station.addr, ap_rsne, sta_rsne, suite, anonce);
+        let handshake = Authenticator::new(pmk, aa, station.addr, ap_rsne, sta_rsne, suite, anonce)
+            .with_rsnxe(security.rsnxe(), station.rsnxe);
         self.ap.storage.handshakes[slot] = Some(handshake);
         self.send_handshake_message(slot).await;
     }
@@ -1791,7 +1989,7 @@ impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
     /// for reception until it is in use, and to each station with its keys in a group key
     /// handshake.
     async fn start_rekey(&mut self) {
-        let (Some(Security::Wpa2 { seed, .. }), Some(_)) = (self.ap.settings.map(|s| s.security), self.ap.gtk) else {
+        let (Some(seed), Some(_)) = (self.ap.settings.and_then(|s| s.security.seed()), self.ap.gtk) else {
             return;
         };
         self.ap.gtks += 1;

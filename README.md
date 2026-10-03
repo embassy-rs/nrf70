@@ -85,6 +85,14 @@ Working:
   renewed with the GTK; its unprotected deauthentications are ignored, a new association request
   of it is refused for 1 s while an SA Query checks the association in place, and its SA Queries
   are answered. A laptop chose PSK-SHA256 with protection, and answered the SA Query.
+  With the `wpa3` feature too, `Control::start_ap_wpa3` starts a WPA3-Personal access point: SAE
+  on the P-256 curve, by hash to element or hunting and pecking as the station chooses, then the
+  4-way handshake, management frame protection required; `Control::start_ap_wpa2_wpa3` a
+  transition one, which takes WPA2 stations with the same passphrase. A laptop went through SAE
+  with hash to element in 3 ms and had its keys 0.1 s after its association, at the same
+  throughput; kept from protection, it joined the transition access point with PSK-SHA256; with a
+  wrong password, its confirm got status 15. Hunting and pecking takes 0.39 s for each station,
+  during which the runner does nothing else.
   The access point's EAPOL frames go through the frames kept for sleeping stations: sent right
   away, the group key handshakes of a dozing laptop got lost.
   The chip sends group frames right away, and a dozing station misses them: 13 broadcasts out of
@@ -132,7 +140,9 @@ Not yet:
   `ConnectError::SecurityMismatch`.
 - Target wake time, and the current drawn in power save and low power mode, which is not
   measured yet.
-- In AP mode: WPA3, and U-APSD (not announced). The nRF70 has
+- In AP mode: SAE anti-clogging tokens (a station that floods the access point with commits
+  makes it work) and PMK caching (a station goes through SAE at each join), and U-APSD (not
+  announced). The nRF70 has
   20 MHz channels only. Delivery to sleeping stations was checked with a laptop that wakes up
   when a beacon says frames wait for it; PS-Poll is not tested.
 
@@ -146,7 +156,8 @@ Not yet:
   3 KB of RAM to a WPA2 application on an nRF5340, and the `p256` crate.
 - `ap` (off by default): `Control::start_ap_open` and `Control::stop_ap`, and with `wpa2`
   `Control::start_ap_wpa2`. It adds about 15 KB of flash and 9 KB of RAM on an nRF5340, 6 KB of
-  which in `State` for the frames kept for stations that sleep; with `wpa2`, 32 KB and 12 KB.
+  which in `State` for the frames kept for stations that sleep; with `wpa2`, 32 KB and 12 KB; with
+  `wpa3`, 38 KB and 15 KB, and `Control::start_ap_wpa3` and `Control::start_ap_wpa2_wpa3`.
 
 ```toml
 nrf70 = { version = "0.2", features = ["wpa3", "ap"] }
