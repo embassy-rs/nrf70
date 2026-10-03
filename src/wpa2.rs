@@ -13,7 +13,7 @@ use embedded_hal::digital::{InputPin, OutputPin};
 use embedded_hal_async::digital::Wait;
 use rand_core::CryptoRng;
 
-use crate::supplicant::{self, Gtk, Igtk, Outcome, Rsne, Supplicant};
+use crate::supplicant::{self, Gtk, Igtk, Outcome, Rsne, Rsnxe, Supplicant};
 use crate::{
     c, find_ie, llc_ethertype, rx_to_ethernet, slice8_mut, write_ethernet, Bss, Bus, ConnState, ConnectError, Control,
     Credentials, Runner, MAX_TX_TOKENS,
@@ -119,6 +119,14 @@ pub(crate) fn ap_rsne(ies: &[u8], beacon_ies: &[u8]) -> Option<Rsne> {
         .and_then(Rsne::from_body)
 }
 
+/// The RSN Extension element an access point announces, if any: in its probe response, or else
+/// its beacon. Message 3 of the 4-way handshake has to repeat it.
+pub(crate) fn ap_rsnxe(ies: &[u8], beacon_ies: &[u8]) -> Option<Rsnxe> {
+    find_ie(ies, supplicant::IE_RSNXE)
+        .or_else(|| find_ie(beacon_ies, supplicant::IE_RSNXE))
+        .and_then(Rsnxe::from_body)
+}
+
 /// The ethertype of a received frame, as [`rx_to_ethernet`] would write it, without converting
 /// the frame.
 fn rx_ethertype(frame: &[u8], pkt_type: u32, mac_header_len: usize) -> Option<u16> {
@@ -146,10 +154,17 @@ impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
     pub(super) fn secure_association(&mut self, bss: &Bss, info: &mut c::connect_common_info) {
         self.wpa2.supplicant = match (self.conn_credentials, bss.rsne) {
             (Credentials::Wpa2(wpa2), Some(ap_rsne)) => {
-                Supplicant::new(wpa2.psk, bss.bssid, self.wpa2.mac_addr, ap_rsne, wpa2.nonce_seed)
+                Supplicant::new(wpa2.psk, bss.bssid, self.wpa2.mac_addr, ap_rsne, wpa2.nonce_seed, false)
             }
+            // WPA3: the PMK of the SAE exchange that just went through.
+            #[cfg(feature = "wpa3")]
+            (Credentials::Wpa3(wpa3), Some(ap_rsne)) => self
+                .wpa3
+                .pmk
+                .and_then(|pmk| Supplicant::new(pmk, bss.bssid, self.wpa2.mac_addr, ap_rsne, wpa3.seed, true)),
             _ => None,
-        };
+        }
+        .map(|supplicant| supplicant.with_rsnxe(self.association_rsnxe(), bss.rsnxe));
         if let Some(supplicant) = &self.wpa2.supplicant {
             let suite = supplicant.suite();
             debug!("WPA2 association: {}", suite);
@@ -157,13 +172,30 @@ impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
                 info.use_mfp = c::mfp::MFP_REQUIRED as _;
             }
             let rsne = supplicant.rsne().as_bytes();
+            let rsnxe = self.association_rsnxe();
+            let more = rsnxe.as_ref().map_or(&[][..], Rsnxe::as_bytes);
             info.valid_fields |= c::CONNECT_COMMON_INFO_WPA_IE_VALID;
             info.flags |= c::CONNECT_COMMON_INFO_SECURITY;
-            info.wpa_ie.ie_len = rsne.len() as u16;
-            for (to, from) in info.wpa_ie.ie.iter_mut().zip(rsne) {
+            info.wpa_ie.ie_len = (rsne.len() + more.len()) as u16;
+            for (to, from) in info.wpa_ie.ie.iter_mut().zip(rsne.iter().chain(more)) {
                 *to = *from as _;
             }
         }
+    }
+
+    /// The RSNXE the association request carries beside the RSNE: with WPA3 and hash to
+    /// element.
+    fn association_rsnxe(&self) -> Option<Rsnxe> {
+        #[cfg(feature = "wpa3")]
+        return self.sae_rsnxe();
+        #[cfg(not(feature = "wpa3"))]
+        return None;
+    }
+
+    /// The station's address.
+    #[cfg(feature = "wpa3")]
+    pub(super) fn wpa2_mac_addr(&self) -> [u8; 6] {
+        self.wpa2.mac_addr
     }
 
     /// Whether the association is followed by a 4-way handshake, which the AP starts.

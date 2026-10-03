@@ -44,6 +44,14 @@ Working:
   or not, with BIP-CMAC-128: the driver then takes PSK-SHA256 key management if the access point
   offers it (AES-128-CMAC MICs, keys derived with SHA-256), and hands the chip the management
   group key (IGTK) too. The handshakes are checked against vectors computed with OpenSSL.
+- Joining WPA3-Personal networks with `Control::join_wpa3`, with the `wpa3` cargo feature: SAE on
+  the P-256 curve (group 19), then the 4-way handshake, with management frame protection, on
+  WPA3 and WPA2/WPA3 transition networks. The chip sends the SAE messages as authentication
+  frames; the driver computes them. It uses hash to element where the access point announces it
+  in its RSNXE (22 ms on an nRF5340 at 128 MHz, once per join), and hunting and pecking
+  elsewhere. SAE is checked against the test vectors of IEEE 802.11-2020, J.10, and the
+  handshake after it against vectors computed with OpenSSL. Both were checked on an nRF7002-DK
+  against hostapd, with group key renewals every 30 s.
 - The state of the link with `Control::link_status`: the access point, its channel, the signal
   strength and the rates in use, as the chip reports them.
 - 802.11 power save with `Control::set_power_save`, off until asked for: the chip sleeps between
@@ -73,10 +81,10 @@ Working:
 
 Not yet:
 
-- Beyond WPA2-Personal with CCMP, which works with or without management frame protection (see
-  above): WPA3 (SAE), and access points that still use TKIP for the group key (WPA/WPA2 mixed
-  mode). An access point that requires one of them is reported as
-  `ConnectError::SecurityMismatch`.
+- Beyond WPA2-Personal and WPA3-Personal with CCMP (see above): access points that still use
+  TKIP for the group key (WPA/WPA2 mixed mode), SAE on other groups than 19 and SAE-EXT-KEY, SAE
+  password identifiers, and PMK caching. An access point that requires one of them is reported
+  as `ConnectError::SecurityMismatch`.
 - Target wake time, and the current drawn in power save and low power mode, which is not
   measured yet.
 - AP mode.
@@ -85,11 +93,13 @@ Not yet:
 
 - `wpa2` (off by default): `Control::join_wpa2`, `Control::join_wpa2_psk` and `wpa2_psk`. It adds
   about 30 KB of flash and 2 KB of RAM on an nRF5340, and the `aes`, `aes-kw`, `cmac`, `hmac`,
-  `pbkdf2`, `sha1`, `sha2` and `rand_core` crates. Without it the driver joins open networks only, and depends on none of
-  them.
+  `pbkdf2`, `sha1`, `sha2` and `rand_core` crates. Without it the driver joins open networks
+  only, and depends on none of them.
+- `wpa3` (off by default, implies `wpa2`): `Control::join_wpa3`. It adds about 27 KB of flash and
+  3 KB of RAM to a WPA2 application on an nRF5340, and the `p256` crate.
 
 ```toml
-nrf70 = { version = "0.2", features = ["wpa2"] }
+nrf70 = { version = "0.2", features = ["wpa3"] }
 ```
 
 ## Running the example

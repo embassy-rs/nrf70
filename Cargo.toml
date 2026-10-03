@@ -31,7 +31,7 @@ include = [
 
 # docs.rs shows the whole API.
 [package.metadata.docs.rs]
-features = ["wpa2"]
+features = ["wpa3"]
 
 [features]
 default = []
@@ -47,6 +47,9 @@ wpa2 = [
     "dep:sha1",
     "dep:sha2",
 ]
+# `Control::join_wpa3`: WPA3-Personal networks, whose SAE key exchange runs in the driver too, on
+# the P-256 curve of the `p256` crate.
+wpa3 = ["wpa2", "dep:p256"]
 
 [dependencies]
 aes = { version = "0.9.0", default-features = false, optional = true }
@@ -62,6 +65,7 @@ embedded-hal = "1.0.0"
 embedded-hal-async = "1.0.0"
 hmac = { version = "0.13.0", default-features = false, optional = true }
 num_enum = { version = "0.7.4", default-features = false }
+p256 = { version = "0.14", default-features = false, features = ["arithmetic", "hash2curve"], optional = true }
 pbkdf2 = { version = "0.13.0", default-features = false, features = ["hmac"], optional = true }
 rand_core = { version = "0.10.1", optional = true }
 sha1 = { version = "0.11.0", default-features = false, optional = true }

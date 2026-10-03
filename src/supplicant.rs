@@ -28,6 +28,11 @@ pub(crate) const ETHERTYPE_EAPOL: u16 = 0x888E;
 
 /// Element ID of the RSN element (RSNE).
 pub(crate) const IE_RSN: u8 = 48;
+/// Element ID of the RSN Extension element (RSNXE).
+pub(crate) const IE_RSNXE: u8 = 244;
+/// RSNXE capability: SAE hash to element (IEEE 802.11-2020, 9.4.2.241).
+#[cfg(any(feature = "wpa3", test))]
+const RSNXE_SAE_H2E: u8 = 1 << 5;
 
 /// CCMP-128 as the RPU's key commands take a cipher suite: the selector's OUI then its type.
 pub(crate) const CIPHER_SUITE_CCMP: u32 = 0x000F_AC04;
@@ -38,6 +43,7 @@ pub(crate) const CIPHER_SUITE_BIP_CMAC_128: u32 = 0x000F_AC06;
 const SUITE_CCMP: [u8; 4] = [0x00, 0x0F, 0xAC, 4];
 const AKM_PSK: [u8; 4] = [0x00, 0x0F, 0xAC, 2];
 const AKM_PSK_SHA256: [u8; 4] = [0x00, 0x0F, 0xAC, 6];
+const AKM_SAE: [u8; 4] = [0x00, 0x0F, 0xAC, 8];
 const SUITE_BIP_CMAC_128: [u8; 4] = [0x00, 0x0F, 0xAC, 6];
 /// The GTK key data encapsulation (KDE): OUI 00-0F-AC, data type 1.
 const KDE_GTK: [u8; 4] = [0x00, 0x0F, 0xAC, 1];
@@ -87,7 +93,7 @@ fn hmac_sha256(key: &[u8]) -> HmacSha256 {
 /// The 802.11 key derivation function over HMAC-SHA256 (IEEE 802.11-2020, 12.7.1.6.2): fills
 /// `out` with HMAC-SHA256(`key`, i || `label` || `context` || length) for i = 1, 2, and so on, i
 /// and the length of `out` in bits as 16-bit little-endian numbers.
-fn kdf_sha256(key: &[u8], label: &[u8], context: &[u8], out: &mut [u8]) {
+pub(crate) fn kdf_sha256(key: &[u8], label: &[u8], context: &[u8], out: &mut [u8]) {
     let bits = (out.len() * 8) as u16;
     for (i, chunk) in out.chunks_mut(32).enumerate() {
         let mut mac = hmac_sha256(key);
@@ -106,6 +112,9 @@ pub(crate) enum Akm {
     Psk,
     /// PSK-SHA256 (00-0F-AC:6): keys from the KDF over HMAC-SHA256, AES-128-CMAC MICs.
     PskSha256,
+    /// SAE (00-0F-AC:8), WPA3-Personal: the PMK comes from the SAE exchange, keys from the KDF
+    /// over HMAC-SHA256, AES-128-CMAC MICs.
+    Sae,
 }
 
 impl Akm {
@@ -113,6 +122,7 @@ impl Akm {
         match self {
             Akm::Psk => AKM_PSK,
             Akm::PskSha256 => AKM_PSK_SHA256,
+            Akm::Sae => AKM_SAE,
         }
     }
 
@@ -121,6 +131,7 @@ impl Akm {
         match self {
             Akm::Psk => INFO_VERSION_HMAC_SHA1_AES,
             Akm::PskSha256 => INFO_VERSION_AES_CMAC,
+            Akm::Sae => INFO_VERSION_AKM_DEFINED,
         }
     }
 }
@@ -158,7 +169,7 @@ struct Ptk {
 impl Ptk {
     /// PRF-384(PMK, "Pairwise key expansion", Min(AA, SPA) || Max(AA, SPA) || Min(ANonce, SNonce)
     /// || Max(ANonce, SNonce)) (IEEE 802.11-2020, 12.7.1.3), with the KDF over HMAC-SHA256 in
-    /// place of the PRF for PSK-SHA256. `aa` is the authenticator's address (the BSSID) and `spa`
+    /// place of the PRF for PSK-SHA256 and SAE. `aa` is the authenticator's address (the BSSID) and `spa`
     /// the supplicant's.
     fn derive(akm: Akm, pmk: &[u8; 32], aa: &[u8; 6], spa: &[u8; 6], anonce: &[u8; 32], snonce: &[u8; 32]) -> Self {
         let mut data = [0; 76];
@@ -176,7 +187,7 @@ impl Ptk {
         let mut out = [0; 48];
         match akm {
             Akm::Psk => prf(pmk, b"Pairwise key expansion", &data, &mut out),
-            Akm::PskSha256 => kdf_sha256(pmk, b"Pairwise key expansion", &data, &mut out),
+            Akm::PskSha256 | Akm::Sae => kdf_sha256(pmk, b"Pairwise key expansion", &data, &mut out),
         }
         let mut ptk = Ptk {
             kck: [0; 16],
@@ -217,8 +228,8 @@ impl Rsne {
 
     /// What the driver asks for in its association request and repeats in message 2: RSN version
     /// 1, CCMP-128 as group and pairwise cipher, the suite's key management, and management frame
-    /// protection capable if the suite has it. BIP-CMAC-128, the default group management cipher,
-    /// goes without saying.
+    /// protection capable if the suite has it, and required with SAE. BIP-CMAC-128, the default
+    /// group management cipher, goes without saying.
     pub(crate) fn for_suite(suite: Suite) -> Self {
         let mut body = [0; 20];
         body[0..2].copy_from_slice(&1u16.to_le_bytes());
@@ -227,7 +238,11 @@ impl Rsne {
         body[8..12].copy_from_slice(&SUITE_CCMP);
         body[12..14].copy_from_slice(&1u16.to_le_bytes());
         body[14..18].copy_from_slice(&suite.akm.selector());
-        let capabilities = if suite.mfp { RSN_CAP_MFPC } else { 0 };
+        let capabilities = match (suite.akm, suite.mfp) {
+            (Akm::Sae, _) => RSN_CAP_MFPC | RSN_CAP_MFPR,
+            (_, true) => RSN_CAP_MFPC,
+            (_, false) => 0,
+        };
         body[18..20].copy_from_slice(&capabilities.to_le_bytes());
         match Self::from_body(&body) {
             Some(rsne) => rsne,
@@ -240,11 +255,12 @@ impl Rsne {
     }
 
     /// What an association with an AP announcing this element uses, if the driver can join it:
-    /// CCMP-128 as the group cipher and among the pairwise ciphers, PSK or PSK-SHA256 key
-    /// management. Management frame protection is used when the AP is capable of it with
-    /// BIP-CMAC-128, and PSK-SHA256 then if the AP offers it. An AP that requires management frame
-    /// protection with another cipher cannot be joined.
-    pub(crate) fn negotiate(&self) -> Option<Suite> {
+    /// CCMP-128 as the group cipher and among the pairwise ciphers, and with a pre-shared key, PSK
+    /// or PSK-SHA256 key management; with `sae`, SAE. Management frame protection is used when
+    /// the AP is capable of it with BIP-CMAC-128, and PSK-SHA256 then if the AP offers it; SAE
+    /// requires it. An AP that requires management frame protection with another cipher cannot be
+    /// joined.
+    pub(crate) fn negotiate(&self, sae: bool) -> Option<Suite> {
         let body = &self.as_bytes()[2..];
         let u16_at = |at: usize| Some(u16::from_le_bytes(body.get(at..at + 2)?.try_into().ok()?));
         // A list of suite selectors: its count, then its entries.
@@ -278,6 +294,9 @@ impl Rsne {
             return None;
         }
         let offers = |akm: [u8; 4]| akms.chunks(4).any(|suite| suite == akm);
+        if sae {
+            return (mfp && offers(AKM_SAE)).then_some(Suite { akm: Akm::Sae, mfp });
+        }
         let akm = if mfp && offers(AKM_PSK_SHA256) {
             Akm::PskSha256
         } else if offers(AKM_PSK) {
@@ -286,6 +305,51 @@ impl Rsne {
             return None;
         };
         Some(Suite { akm, mfp })
+    }
+}
+
+/// Longest RSNXE the driver keeps, with its header: its capabilities fit in a few bytes.
+const RSNXE_MAX: usize = 18;
+
+/// An RSN Extension element, with its ID and length.
+#[derive(Clone, Copy)]
+pub(crate) struct Rsnxe {
+    len: u8,
+    bytes: [u8; RSNXE_MAX],
+}
+
+impl Rsnxe {
+    /// The element whose body is `body`, or `None` if it is longer than the driver keeps.
+    pub(crate) fn from_body(body: &[u8]) -> Option<Self> {
+        let mut bytes = [0; RSNXE_MAX];
+        bytes[0] = IE_RSNXE;
+        bytes[1] = body.len() as u8;
+        bytes.get_mut(2..2 + body.len())?.copy_from_slice(body);
+        Some(Self {
+            len: 2 + body.len() as u8,
+            bytes,
+        })
+    }
+
+    /// What a station that uses SAE hash to element says in its association request.
+    #[cfg(any(feature = "wpa3", test))]
+    pub(crate) fn sae_h2e() -> Self {
+        match Self::from_body(&[RSNXE_SAE_H2E]) {
+            Some(rsnxe) => rsnxe,
+            None => defmt::unreachable!(),
+        }
+    }
+
+    pub(crate) fn as_bytes(&self) -> &[u8] {
+        &self.bytes[..self.len as usize]
+    }
+
+    /// Whether it announces SAE hash to element.
+    #[cfg(any(feature = "wpa3", test))]
+    pub(crate) fn offers_sae_h2e(&self) -> bool {
+        self.as_bytes()
+            .get(2)
+            .is_some_and(|capabilities| capabilities & RSNXE_SAE_H2E != 0)
     }
 }
 
@@ -312,6 +376,9 @@ const MIC_LEN: usize = 16;
 const INFO_VERSION_HMAC_SHA1_AES: u16 = 2;
 /// Key descriptor version 3: AES-128-CMAC as MIC, AES key wrap for the key data, with PSK-SHA256.
 const INFO_VERSION_AES_CMAC: u16 = 3;
+/// Key descriptor version 0: the AKM says. With SAE (AKM 8): AES-128-CMAC as MIC, AES key wrap
+/// for the key data, as with version 3 (HMAC-SHA256 is SAE-EXT-KEY's, AKM 24).
+const INFO_VERSION_AKM_DEFINED: u16 = 0;
 const INFO_VERSION_MASK: u16 = 0x0007;
 const INFO_PAIRWISE: u16 = 1 << 3;
 const INFO_INSTALL: u16 = 1 << 6;
@@ -322,8 +389,8 @@ const INFO_ERROR: u16 = 1 << 10;
 const INFO_REQUEST: u16 = 1 << 11;
 const INFO_ENCRYPTED_KEY_DATA: u16 = 1 << 12;
 
-/// Longest reply: message 2, which carries the RSNE.
-pub(crate) const REPLY_MAX: usize = KEY_FRAME_LEN + RSNE_MAX;
+/// Longest reply: message 2, which carries the RSNE and the RSNXE.
+pub(crate) const REPLY_MAX: usize = KEY_FRAME_LEN + RSNE_MAX + RSNXE_MAX;
 
 /// Longest key data the driver unwraps. Message 3 carries the RSNE and the GTK, and sometimes a
 /// second RSNE or keys the driver ignores.
@@ -383,10 +450,14 @@ impl<'a> KeyFrame<'a> {
 }
 
 /// The MIC of the EAPOL-Key frame made of `parts`, for the key descriptor version in `info`:
-/// HMAC-SHA1 truncated to 128 bits, or AES-128-CMAC.
+/// HMAC-SHA1 truncated to 128 bits, or AES-128-CMAC (version 3, and version 0 with SAE, the only
+/// AKM-defined one the driver knows).
 fn mic(info: u16, kck: &[u8; 16], parts: &[&[u8]]) -> [u8; MIC_LEN] {
     let mut out = [0; MIC_LEN];
-    if info & INFO_VERSION_MASK == INFO_VERSION_AES_CMAC {
+    if matches!(
+        info & INFO_VERSION_MASK,
+        INFO_VERSION_AES_CMAC | INFO_VERSION_AKM_DEFINED
+    ) {
         let mut mac = match CmacAes128::new_from_slice(kck) {
             Ok(mac) => mac,
             Err(_) => defmt::unreachable!(),
@@ -457,6 +528,8 @@ pub(crate) struct Igtk {
 struct KeyData<'a> {
     /// The first RSNE, with its header.
     rsne: Option<&'a [u8]>,
+    /// The first RSNXE, with its header.
+    rsnxe: Option<&'a [u8]>,
     /// The GTK KDE's body: key ID and flags, a reserved byte, then the key.
     gtk: Option<&'a [u8]>,
     /// The IGTK KDE's body: key ID, IPN, then the key.
@@ -469,6 +542,7 @@ impl<'a> KeyData<'a> {
         const KDE: u8 = 0xDD;
         let mut found = Self {
             rsne: None,
+            rsnxe: None,
             gtk: None,
             igtk: None,
         };
@@ -482,6 +556,7 @@ impl<'a> KeyData<'a> {
             };
             match *id {
                 IE_RSN if found.rsne.is_none() => found.rsne = Some(&data[..2 + body.len()]),
+                IE_RSNXE if found.rsnxe.is_none() => found.rsnxe = Some(&data[..2 + body.len()]),
                 KDE if body.len() >= 4 && body[..4] == KDE_GTK => found.gtk = Some(&body[4..]),
                 KDE if body.len() >= 4 && body[..4] == KDE_IGTK => found.igtk = Some(&body[4..]),
                 _ => {}
@@ -554,6 +629,11 @@ pub(crate) struct Supplicant {
     rsne: Rsne,
     /// The RSNE of the AP's beacon or probe response, which message 3 must repeat.
     ap_rsne: Rsne,
+    /// The RSNXE of the association request, if any, which message 2 repeats after the RSNE.
+    rsnxe: Option<Rsnxe>,
+    /// The RSNXE of the AP's beacon or probe response, if any: message 3 must repeat it, and
+    /// carry none if the AP announced none.
+    ap_rsnxe: Option<Rsnxe>,
 
     nonce_seed: [u8; 32],
     nonce_counter: u64,
@@ -578,10 +658,17 @@ pub(crate) struct Supplicant {
 }
 
 impl Supplicant {
-    /// `seed` is what the SNonces are drawn from: 32 random bytes. `None` if the AP's RSNE offers
-    /// nothing the driver can use.
-    pub(crate) fn new(pmk: [u8; 32], aa: [u8; 6], spa: [u8; 6], ap_rsne: Rsne, seed: [u8; 32]) -> Option<Self> {
-        let suite = ap_rsne.negotiate()?;
+    /// `seed` is what the SNonces are drawn from: 32 random bytes. With `sae`, the PMK is the
+    /// one of an SAE exchange. `None` if the AP's RSNE offers nothing the driver can use.
+    pub(crate) fn new(
+        pmk: [u8; 32],
+        aa: [u8; 6],
+        spa: [u8; 6],
+        ap_rsne: Rsne,
+        seed: [u8; 32],
+        sae: bool,
+    ) -> Option<Self> {
+        let suite = ap_rsne.negotiate(sae)?;
         Some(Self {
             pmk,
             aa,
@@ -589,6 +676,8 @@ impl Supplicant {
             suite,
             rsne: Rsne::for_suite(suite),
             ap_rsne,
+            rsnxe: None,
+            ap_rsnxe: None,
             nonce_seed: seed,
             nonce_counter: 0,
             snonce: [0; 32],
@@ -601,6 +690,14 @@ impl Supplicant {
             igtk: None,
             replay_counter: None,
         })
+    }
+
+    /// The RSNXEs of the association: the station's, which message 2 repeats, and the AP's,
+    /// which message 3 must repeat.
+    pub(crate) fn with_rsnxe(mut self, rsnxe: Option<Rsnxe>, ap_rsnxe: Option<Rsnxe>) -> Self {
+        self.rsnxe = rsnxe;
+        self.ap_rsnxe = ap_rsnxe;
+        self
     }
 
     /// What the association uses.
@@ -675,12 +772,18 @@ impl Supplicant {
             &self.anonce,
             &self.snonce,
         );
+        // The key data: the RSNE and the RSNXE of the association request.
+        let mut key_data = [0; RSNE_MAX + RSNXE_MAX];
+        let rsne = self.rsne.as_bytes();
+        let rsnxe = self.rsnxe.as_ref().map_or(&[][..], Rsnxe::as_bytes);
+        key_data[..rsne.len()].copy_from_slice(rsne);
+        key_data[rsne.len()..rsne.len() + rsnxe.len()].copy_from_slice(rsnxe);
         let len = write_key_frame(
             reply,
             self.suite.akm.key_version() | INFO_PAIRWISE | INFO_MIC,
             key.replay_counter,
             &self.snonce,
-            self.rsne.as_bytes(),
+            &key_data[..rsne.len() + rsnxe.len()],
             &tptk.kck,
         );
         self.tptk = Some(tptk);
@@ -709,6 +812,10 @@ impl Supplicant {
         let data = KeyData::parse(data);
         if data.rsne != Some(self.ap_rsne.as_bytes()) {
             debug!("4-way handshake: the RSNE of message 3 is not the one the AP announced");
+            return Outcome::Abort;
+        }
+        if data.rsnxe != self.ap_rsnxe.as_ref().map(Rsnxe::as_bytes) {
+            debug!("4-way handshake: the RSNXE of message 3 is not the one the AP announced");
             return Outcome::Abort;
         }
         let Some(gtk) = data.gtk(key.rsc) else {
@@ -902,7 +1009,15 @@ mod tests {
             psk.as_slice(),
             hex("b856f849794c9b63a715cfd1ef15809adeb2aca6a49f8693a6fae8d678caa3ca")
         );
-        let mut sta = Supplicant::new(psk, [2, 0, 0, 0, 0, 1], [2, 0, 0, 0, 0, 2], rsne(AP_RSNE), [0x5E; 32]).unwrap();
+        let mut sta = Supplicant::new(
+            psk,
+            [2, 0, 0, 0, 0, 1],
+            [2, 0, 0, 0, 0, 2],
+            rsne(AP_RSNE),
+            [0x5E; 32],
+            false,
+        )
+        .unwrap();
         let mut reply = [0; REPLY_MAX];
 
         let message_1 = hex("0203005f02008a00100000000000000001
@@ -964,6 +1079,92 @@ mod tests {
         mfp: true,
     };
 
+    const SAE: Suite = Suite {
+        akm: Akm::Sae,
+        mfp: true,
+    };
+
+    #[test]
+    fn sae_is_negotiated_where_offered() {
+        let negotiate = |element: &str| rsne(element).negotiate(true);
+        // WPA3 only, and WPA2/WPA3 transition.
+        assert_eq!(
+            negotiate("30 14 0100 000fac04 0100 000fac04 0100 000fac08 cc00"),
+            Some(SAE)
+        );
+        assert_eq!(
+            negotiate("30 18 0100 000fac04 0100 000fac04 0200 000fac02 000fac08 8000"),
+            Some(SAE)
+        );
+        // Not without management frame protection, nor where SAE is not offered.
+        assert_eq!(negotiate("30 14 0100 000fac04 0100 000fac04 0100 000fac08 0000"), None);
+        assert_eq!(negotiate("30 14 0100 000fac04 0100 000fac04 0100 000fac02 8000"), None);
+        // And a pre-shared key does not join a WPA3-only network.
+        assert_eq!(
+            rsne("30 14 0100 000fac04 0100 000fac04 0100 000fac08 cc00").negotiate(false),
+            None
+        );
+        assert_eq!(
+            Rsne::for_suite(SAE).as_bytes(),
+            hex("30 14 0100 000fac04 0100 000fac04 0100 000fac08 c000")
+        );
+    }
+
+    // The 4-way handshake after SAE (key descriptor version 0: AES-128-CMAC MICs, as hostapd's
+    // `wpa_eapol_key_mic` makes them for AKM 8), computed with OpenSSL as the one above, from the PMK of the SAE test vector of
+    // IEEE 802.11-2020, J.10, and the same addresses, nonces and keys.
+    #[test]
+    fn sae_handshake_matches_vectors_computed_with_openssl() {
+        let pmk: [u8; 32] = hex("4e4dfab1a2dd8ac1a91790f953faaa452ae5c6873ab75b63605ba663f8a7fe59")
+            .try_into()
+            .unwrap();
+        let ap_rsne = rsne("30 14 0100 000fac04 0100 000fac04 0100 000fac08 cc00");
+        let mut sta = Supplicant::new(pmk, [2, 0, 0, 0, 0, 1], [2, 0, 0, 0, 0, 2], ap_rsne, [0x5E; 32], true).unwrap();
+        assert_eq!(sta.suite(), SAE);
+        let mut reply = [0; REPLY_MAX];
+
+        let message_1 = hex("0203005f02008800100000000000000001
+             000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f
+             00000000000000000000000000000000 0000000000000000 0000000000000000
+             00000000000000000000000000000000 0000");
+        let Outcome::Reply(len) = sta.handle(&message_1, &mut reply) else {
+            core::panic!("no message 2");
+        };
+        assert_eq!(
+            &reply[..len],
+            hex("01030075020108000000000000000000013c0eb2aac9a32be8c80969dfe8090f
+                 aae17974c16d88517404f3515054fb9e8f000000000000000000000000000000
+                 0000000000000000000000000000000000cd2e7c6bd64b891381afce7a374ffb
+                 e0001630140100000fac040100000fac040100000fac08c000")
+        );
+
+        let message_3 = hex("020300b70213c800100000000000000002000102030405060708090a0b0c0d0e
+                 0f101112131415161718191a1b1c1d1e1f000000000000000000000000000000
+                 002a0100000000000000000000000000002e1cdbd414bfd67a653140097b6e30
+                 1900587e2c5119cc618e37191e5b8fdb820eca15888ebeda91865c34576dc009
+                 fd4c4036dc5360f1f982472b829a88c0c82c55d63bf32b977131efec48567dab
+                 050219b9cced4578f6b183ff15cb83c653eb5b6c24db4a699be9ed");
+        let Outcome::Keys {
+            reply: len,
+            tk,
+            gtk,
+            igtk,
+        } = sta.handle(&message_3, &mut reply)
+        else {
+            core::panic!("no message 4");
+        };
+        assert_eq!(
+            &reply[..len],
+            hex("0103005f02030800000000000000000002000000000000000000000000000000
+                 0000000000000000000000000000000000000000000000000000000000000000
+                 0000000000000000000000000000000000ca2d247cf9c1c29df7bdde82141a9f
+                 330000")
+        );
+        assert_eq!(tk.unwrap().as_slice(), hex("aeb8aa4780e0bfd7497414469dd273a6"));
+        assert_eq!(gtk.unwrap().index, 1);
+        assert_eq!(igtk.unwrap().index, 4);
+    }
+
     #[test]
     fn association_rsne_follows_the_suite() {
         assert_eq!(
@@ -982,7 +1183,7 @@ mod tests {
 
     #[test]
     fn the_suite_is_negotiated_from_the_aps_rsne() {
-        let negotiate = |element: &str| rsne(element).negotiate();
+        let negotiate = |element: &str| rsne(element).negotiate(false);
         assert_eq!(negotiate(AP_RSNE), Some(PSK));
         // CCMP among several pairwise ciphers.
         assert_eq!(
@@ -1054,7 +1255,7 @@ mod tests {
     fn psk_sha256_handshake_matches_vectors_computed_with_openssl() {
         let psk = psk_from_passphrase(b"nrf70-test-passphrase", b"nrf70-wpa2").unwrap();
         let ap_rsne = rsne("30 14 0100 000fac04 0100 000fac04 0100 000fac06 cc00");
-        let mut sta = Supplicant::new(psk, [2, 0, 0, 0, 0, 1], [2, 0, 0, 0, 0, 2], ap_rsne, [0x5E; 32]).unwrap();
+        let mut sta = Supplicant::new(psk, [2, 0, 0, 0, 0, 1], [2, 0, 0, 0, 0, 2], ap_rsne, [0x5E; 32], false).unwrap();
         assert_eq!(sta.suite(), PSK_SHA256_MFP);
         let mut reply = [0; REPLY_MAX];
 
@@ -1143,7 +1344,7 @@ mod tests {
             Self {
                 pmk: psk_from_passphrase(b"correct horse", b"net").unwrap(),
                 rsne: hex(element),
-                suite: rsne(element).negotiate().unwrap(),
+                suite: rsne(element).negotiate(false).unwrap(),
                 replay_counter: 0,
                 ptk: None,
             }
@@ -1269,6 +1470,7 @@ mod tests {
             SPA,
             rsne(ap_rsne),
             [0x5E; 32],
+            false,
         )
         .unwrap()
     }
@@ -1475,6 +1677,49 @@ mod tests {
         // The beacon announced CCMP; message 3 says TKIP.
         let downgraded = hex("30 14 0100 000fac02 0100 000fac02 0100 000fac02 0c00");
         let message_3 = ap.message_3_with(&downgraded, &GTK);
+        assert!(matches!(sta.handle(&message_3, &mut reply), Outcome::Abort));
+    }
+
+    #[test]
+    fn the_rsnxes_are_repeated_and_checked() {
+        let rsnxe = Rsnxe::sae_h2e();
+        assert_eq!(rsnxe.as_bytes(), hex("f4 01 20"));
+        assert!(rsnxe.offers_sae_h2e());
+        assert!(!Rsnxe::from_body(&[0]).unwrap().offers_sae_h2e());
+        assert!(!Rsnxe::from_body(&[]).unwrap().offers_sae_h2e());
+
+        // Message 2 repeats the station's RSNXE after its RSNE.
+        let mut ap = Ap::new();
+        let mut sta = supplicant(b"correct horse").with_rsnxe(Some(rsnxe), Some(rsnxe));
+        let mut reply = [0; REPLY_MAX];
+        let Outcome::Reply(len) = sta.handle(&ap.message_1(), &mut reply) else {
+            core::panic!("no message 2");
+        };
+        let message_2 = ap.take_message_2(&reply[..len]);
+        assert_eq!(
+            message_2.key_data,
+            [Rsne::for_suite(PSK).as_bytes(), rsnxe.as_bytes()].concat()
+        );
+
+        // Message 3 has to repeat the AP's RSNXE: without it, or with another, the station leaves.
+        let rsne = ap.rsne.clone();
+        let message_3 = ap.message_3_with(&rsne, &GTK);
+        assert!(matches!(sta.handle(&message_3, &mut reply), Outcome::Abort));
+        let other = [rsne.as_slice(), &hex("f4 01 00")].concat();
+        let message_3 = ap.message_3_with(&other, &GTK);
+        assert!(matches!(sta.handle(&message_3, &mut reply), Outcome::Abort));
+        let same = [rsne.as_slice(), rsnxe.as_bytes()].concat();
+        let message_3 = ap.message_3_with(&same, &GTK);
+        assert!(matches!(sta.handle(&message_3, &mut reply), Outcome::Keys { .. }));
+
+        // An AP that announced none must send none.
+        let mut ap = Ap::new();
+        let mut sta = supplicant(b"correct horse");
+        let Outcome::Reply(len) = sta.handle(&ap.message_1(), &mut reply) else {
+            core::panic!("no message 2");
+        };
+        ap.take_message_2(&reply[..len]);
+        let message_3 = ap.message_3_with(&same, &GTK);
         assert!(matches!(sta.handle(&message_3, &mut reply), Outcome::Abort));
     }
 

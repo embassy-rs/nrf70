@@ -29,10 +29,14 @@ mod c {
     pub const RX_BUF_HEADROOM: u32 = 4;
 }
 
+#[cfg(feature = "wpa3")]
+mod sae;
 #[cfg(feature = "wpa2")]
 mod supplicant;
 #[cfg(feature = "wpa2")]
 mod wpa2;
+#[cfg(feature = "wpa3")]
+mod wpa3;
 
 #[cfg(feature = "wpa2")]
 pub use wpa2::wpa2_psk;
@@ -79,8 +83,13 @@ enum Credentials {
     /// The key of a WPA2-Personal network.
     #[cfg(feature = "wpa2")]
     Wpa2(wpa2::Wpa2),
+    /// The password of a WPA3-Personal network.
+    #[cfg(feature = "wpa3")]
+    Wpa3(wpa3::Wpa3),
 }
 
+// A join carries its credentials, a WPA3 one its password and PT: the channel holds one request.
+#[allow(clippy::large_enum_variant)]
 enum Request {
     Scan,
     Connect(Ssid, Credentials),
@@ -270,6 +279,8 @@ where
         known_scan: false,
         #[cfg(feature = "wpa2")]
         wpa2: wpa2::State::new(),
+        #[cfg(feature = "wpa3")]
+        wpa3: wpa3::State::new(),
         peer_known: false,
         carrier_on: false,
         link_up: false,
@@ -1167,6 +1178,9 @@ struct Bss {
     /// The RSN element it announces, if any.
     #[cfg(feature = "wpa2")]
     rsne: Option<supplicant::Rsne>,
+    /// The RSN Extension element it announces, if any.
+    #[cfg(feature = "wpa2")]
+    rsnxe: Option<supplicant::Rsnxe>,
 }
 
 /// The access points of the network that a connect scan found, best first. A join tries the next
@@ -1350,6 +1364,9 @@ pub struct Runner<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> {
     /// The key handshakes of a WPA2 network.
     #[cfg(feature = "wpa2")]
     wpa2: wpa2::State,
+    /// The SAE exchange of a WPA3 network.
+    #[cfg(feature = "wpa3")]
+    wpa3: wpa3::State,
     /// The RPU added the AP as a peer (`UMAC_EVENT_NEW_STATION`). TX needs it.
     peer_known: bool,
     /// The RPU reported the carrier on (`CMD_CARRIER_ON`).
@@ -1360,6 +1377,16 @@ pub struct Runner<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> {
     tx_tokens_busy: u16,
     /// [`Control::link_status`] is waiting for the RPU's answer.
     link_status_requested: bool,
+}
+
+/// What the runner asks of `wpa3.rs`, in a build without the `wpa3` feature: nothing.
+#[cfg(not(feature = "wpa3"))]
+impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
+    fn sae_start(&mut self, _bss: &Bss, _cmd: &mut c::umac_cmd_auth) {}
+
+    async fn sae_frame(&mut self, _event: &c::umac_event_mlme) -> bool {
+        false
+    }
 }
 
 /// What the runner asks of `wpa2.rs`, in a build without the `wpa2` feature: nothing.
@@ -1836,7 +1863,10 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
             }
             Ok(UMAC_EVENT_SCAN_RESULT) => self.handle_scan_result(body).await,
             Ok(UMAC_EVENT_AUTHENTICATE) => {
-                if self.conn == ConnState::Authenticating && self.is_conn_bss(mlme_bssid(unsliceit(body))) {
+                if self.conn == ConnState::Authenticating
+                    && self.is_conn_bss(mlme_bssid(unsliceit(body)))
+                    && !self.sae_frame(unsliceit(body)).await
+                {
                     // Authentication frame: header, then algorithm, transaction and status.
                     match mlme_status(unsliceit(body), 28) {
                         Some(0) => self.associate().await,
@@ -2139,11 +2169,15 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
                 signal_dbm,
                 #[cfg(feature = "wpa2")]
                 rsne: wpa2::ap_rsne(ies, beacon_ies),
+                #[cfg(feature = "wpa2")]
+                rsnxe: wpa2::ap_rsnxe(ies, beacon_ies),
             };
             let suitable = match self.conn_credentials {
                 Credentials::Open => bss.capability & CAPABILITY_PRIVACY == 0,
                 #[cfg(feature = "wpa2")]
-                Credentials::Wpa2(_) => bss.rsne.is_some_and(|rsne| rsne.negotiate().is_some()),
+                Credentials::Wpa2(_) => bss.rsne.is_some_and(|rsne| rsne.negotiate(false).is_some()),
+                #[cfg(feature = "wpa3")]
+                Credentials::Wpa3(_) => bss.rsne.is_some_and(|rsne| rsne.negotiate(true).is_some()),
             };
             debug!(
                 "found {:02x} at {} MHz, {} dBm, suitable: {}",
@@ -2178,6 +2212,16 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
             "authenticating with {:02x} at {} MHz, {} dBm",
             bss.bssid, bss.frequency, bss.signal_dbm
         );
+        let mut cmd = self.auth_cmd(&bss);
+        self.conn_bss = Some(bss);
+        // With WPA3, SAE in place of open system authentication.
+        self.sae_start(&bss, &mut cmd);
+        self.set_conn(ConnState::Authenticating, MLME_TIMEOUT);
+        self.send_cmd(cmd).await;
+    }
+
+    /// The authenticate command for `bss`: open system authentication.
+    fn auth_cmd(&self, bss: &Bss) -> c::umac_cmd_auth {
         let mut cmd: c::umac_cmd_auth = unsafe { zeroed() };
         cmd.valid_fields = c::CMD_AUTHENTICATE_FREQ_VALID | c::CMD_AUTHENTICATE_SSID_VALID;
         cmd.info.frequency = bss.frequency;
@@ -2188,9 +2232,7 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
         cmd.info.capability = bss.capability;
         cmd.info.beacon_interval = bss.beacon_interval;
         cmd.info.tsf = bss.tsf;
-        self.conn_bss = Some(bss);
-        self.set_conn(ConnState::Authenticating, MLME_TIMEOUT);
-        self.send_cmd(cmd).await;
+        cmd
     }
 
     /// Associates with the authenticated AP (NCS `nrf_wifi_wpa_supp_associate`).
@@ -3515,6 +3557,8 @@ mod tests {
             signal_dbm,
             #[cfg(feature = "wpa2")]
             rsne: None,
+            #[cfg(feature = "wpa2")]
+            rsnxe: None,
         }
     }
 
