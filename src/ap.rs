@@ -16,8 +16,9 @@ use embedded_hal_async::digital::Wait;
 
 #[cfg(feature = "wpa2")]
 use crate::{
-    authenticator::{self, Authenticator, GroupKey},
-    supplicant::{self, Rsne},
+    authenticator::{self, Authenticator, GroupKeys},
+    supplicant::{self, Rsne, Suite},
+    wpa2::DefaultKey,
 };
 use crate::{
     c, find_ie, slice8, slice8_mut, tx_priority, unsliceit, Bus, ConnState, Control, Request, Runner, Ssid,
@@ -55,9 +56,38 @@ const BEACON: u8 = 0x80;
 const DISASSOC: u8 = 0xA0;
 const AUTH: u8 = 0xB0;
 const DEAUTH: u8 = 0xC0;
+const ACTION: u8 = 0xD0;
 
-/// The management frames the RPU hands over in AP mode, as hostapd subscribes to them in the SDK.
-const SUBSCRIBED: [u8; 6] = [AUTH, ASSOC_REQ, REASSOC_REQ, DISASSOC, DEAUTH, PROBE_REQ];
+/// The management frames the RPU hands over in AP mode, as hostapd subscribes to them in the SDK,
+/// and the SA Query action frames (category 8), which management frame protection needs: with the
+/// first byte of the body each must start with.
+const SUBSCRIBED: [(u8, &[u8]); 7] = [
+    (AUTH, &[]),
+    (ASSOC_REQ, &[]),
+    (REASSOC_REQ, &[]),
+    (DISASSOC, &[]),
+    (DEAUTH, &[]),
+    (PROBE_REQ, &[]),
+    (ACTION, &[CATEGORY_SA_QUERY]),
+];
+
+/// SA Query action frames (IEEE 802.11-2020, 9.6.9).
+const CATEGORY_SA_QUERY: u8 = 8;
+#[cfg(feature = "wpa2")]
+const SA_QUERY_REQUEST: u8 = 0;
+#[cfg(feature = "wpa2")]
+const SA_QUERY_RESPONSE: u8 = 1;
+/// How long an SA Query waits for its answer, and between its requests (hostapd's
+/// `assoc_sa_query_max_timeout` and `assoc_sa_query_retry_timeout`, in TUs).
+#[cfg(feature = "wpa2")]
+const SA_QUERY_TIMEOUT_TU: u32 = 1000;
+#[cfg(feature = "wpa2")]
+const SA_QUERY_RETRY: Duration = Duration::from_micros(201 * 1024);
+/// Timeout Interval element, of the association comeback time type.
+#[cfg(feature = "wpa2")]
+const IE_TIMEOUT_INTERVAL: u8 = 56;
+#[cfg(feature = "wpa2")]
+const TIMEOUT_ASSOC_COMEBACK: u8 = 3;
 
 const IE_RATES: u8 = 1;
 const IE_DS_PARAMS: u8 = 3;
@@ -106,6 +136,8 @@ const STATUS_AUTH_ALGORITHM: u16 = 13;
 const STATUS_AUTH_SEQUENCE: u16 = 14;
 const STATUS_TOO_MANY_STATIONS: u16 = 17;
 const STATUS_RATES: u16 = 18;
+#[cfg(feature = "wpa2")]
+const STATUS_TRY_LATER: u16 = 30;
 #[cfg(feature = "wpa2")]
 const STATUS_INVALID_ELEMENT: u16 = 40;
 
@@ -233,7 +265,7 @@ impl Settings {
         }
         #[cfg(feature = "wpa2")]
         if self.privacy() {
-            w.put(Rsne::for_suite(authenticator::SUITE).as_bytes());
+            w.put(Rsne::access_point().as_bytes());
         }
         w.ie(IE_HT_CAPABILITIES, &HT_CAPABILITIES);
         self.write_ht_operation(w);
@@ -299,6 +331,13 @@ impl Settings {
         if self.band_2g() {
             w.ie(IE_EXT_RATES, &EXT_RATES_2G);
         }
+        // Refused for now while an SA Query checks the association in place: when to come back.
+        #[cfg(feature = "wpa2")]
+        if matches!(answer, Err(STATUS_TRY_LATER)) {
+            let mut comeback = [TIMEOUT_ASSOC_COMEBACK, 0, 0, 0, 0];
+            comeback[1..].copy_from_slice(&SA_QUERY_TIMEOUT_TU.to_le_bytes());
+            w.ie(IE_TIMEOUT_INTERVAL, &comeback);
+        }
         if let Ok((_, request)) = answer {
             if request.ht_capabilities.is_some() {
                 w.ie(IE_HT_CAPABILITIES, &HT_CAPABILITIES);
@@ -346,8 +385,8 @@ impl Settings {
             let rsne = find_ie(ies, supplicant::IE_RSN)
                 .and_then(Rsne::from_body)
                 .ok_or(STATUS_INVALID_ELEMENT)?;
-            rsne.check_station()?;
-            request.rsne = Some(rsne);
+            let suite = rsne.check_station()?;
+            request.rsne = Some((rsne, suite));
         }
         Ok(request)
     }
@@ -417,6 +456,23 @@ fn authentication_response(bssid: &[u8; 6], to: &[u8; 6], algorithm: u16, status
     w.len
 }
 
+/// An SA Query action frame: a request, or the response to one with the same transaction ID.
+#[cfg(feature = "wpa2")]
+fn sa_query(bssid: &[u8; 6], to: &[u8; 6], action: u8, id: [u8; 2], out: &mut [u8]) -> usize {
+    let mut w = Writer::new(out);
+    w.header(ACTION, to, bssid).put(&[CATEGORY_SA_QUERY, action]).put(&id);
+    w.len
+}
+
+/// An SA Query of a station's association.
+#[cfg(feature = "wpa2")]
+#[derive(Clone, Copy)]
+struct SaQuery {
+    id: [u8; 2],
+    retry_at: Instant,
+    deadline: Instant,
+}
+
 fn deauthentication(bssid: &[u8; 6], to: &[u8; 6], reason: u16, out: &mut [u8]) -> usize {
     let mut w = Writer::new(out);
     w.header(DEAUTH, to, bssid).le16(reason);
@@ -426,6 +482,8 @@ fn deauthentication(bssid: &[u8; 6], to: &[u8; 6], reason: u16, out: &mut [u8]) 
 /// A received management frame.
 struct Mgmt<'a> {
     subtype: u8,
+    /// The frame control's Protected bit.
+    protected: bool,
     to: [u8; 6],
     from: [u8; 6],
     bssid: [u8; 6],
@@ -441,6 +499,7 @@ impl<'a> Mgmt<'a> {
         let addr = |n: usize| -> [u8; 6] { header[4 + 6 * n..10 + 6 * n].try_into().unwrap() };
         Some(Self {
             subtype: header[0] & 0xF0,
+            protected: header[1] & 0x40 != 0,
             to: addr(0),
             from: addr(1),
             bssid: addr(2),
@@ -466,7 +525,7 @@ struct AssocRequest {
     wmm: bool,
     /// Its RSNE, with WPA2.
     #[cfg(feature = "wpa2")]
-    rsne: Option<Rsne>,
+    rsne: Option<(Rsne, Suite)>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, defmt::Format)]
@@ -503,10 +562,17 @@ struct Station {
     poll_deadline: Option<Instant>,
     /// With WPA2, the RSNE of its association request, which message 2 must repeat.
     #[cfg(feature = "wpa2")]
-    rsne: Option<Rsne>,
+    rsne: Option<(Rsne, Suite)>,
     /// With WPA2, when the last handshake message goes out again if unanswered.
     #[cfg(feature = "wpa2")]
     retry_at: Option<Instant>,
+    /// With management frame protection, the SA Query under way, which checks the association of
+    /// a station that asks for a new one.
+    #[cfg(feature = "wpa2")]
+    sa_query: Option<SaQuery>,
+    /// The last SA Query went unanswered: the station's next association request is taken.
+    #[cfg(feature = "wpa2")]
+    sa_query_timed_out: bool,
 }
 
 impl Station {
@@ -529,6 +595,10 @@ impl Station {
             rsne: None,
             #[cfg(feature = "wpa2")]
             retry_at: None,
+            #[cfg(feature = "wpa2")]
+            sa_query: None,
+            #[cfg(feature = "wpa2")]
+            sa_query_timed_out: false,
         }
     }
 }
@@ -697,11 +767,11 @@ pub(crate) struct State<'a> {
     storage: &'a mut Storage,
     /// With WPA2, the group key in use.
     #[cfg(feature = "wpa2")]
-    gtk: Option<GroupKey>,
+    gtk: Option<GroupKeys>,
     /// With WPA2, while the group key is renewed: the next one, which becomes the one in use once
     /// every station has it.
     #[cfg(feature = "wpa2")]
-    next_gtk: Option<GroupKey>,
+    next_gtk: Option<GroupKeys>,
     /// With WPA2, when the group key is renewed next.
     #[cfg(feature = "wpa2")]
     rekey_at: Option<Instant>,
@@ -802,9 +872,11 @@ impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
         if !self.set_interface_type(c::iftype::IFTYPE_AP).await {
             return Err(ApError::Refused);
         }
-        for subtype in SUBSCRIBED {
+        for (subtype, prefix) in SUBSCRIBED {
             let mut cmd: c::umac_cmd_mgmt_frame_reg = unsafe { zeroed() };
             cmd.info.frame_type = subtype as u16;
+            cmd.info.frame_match.frame_match_len = prefix.len() as _;
+            cmd.info.frame_match.frame_match[..prefix.len()].copy_from_slice(prefix);
             self.send_cmd(cmd).await;
         }
 
@@ -855,14 +927,15 @@ impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
         cmd.bss_info.preamble = 1;
         cmd.bss_info.slot = settings.band_2g() as u8;
         self.send_cmd(cmd).await;
-        // With WPA2, the group key the access point sends broadcasts with.
+        // With WPA2, the group keys the access point sends broadcasts with: the GTK, and the IGTK
+        // that protects its broadcast management frames.
         #[cfg(feature = "wpa2")]
         if let Security::Wpa2 { seed, .. } = settings.security {
-            let gtk = GroupKey::derive(&seed, &self.ap.mac_addr, 0, 1);
-            self.add_key(None, supplicant::CIPHER_SUITE_CCMP, gtk.index, &gtk.key, &[0; 6])
-                .await;
-            self.set_default_key(gtk.index, true).await;
-            self.ap.gtk = Some(gtk);
+            let keys = GroupKeys::derive(&seed, &self.ap.mac_addr, 0);
+            self.install_group_keys(&keys).await;
+            self.set_default_key(keys.gtk.index, DefaultKey::Multicast).await;
+            self.set_default_key(keys.igtk.index, DefaultKey::Management).await;
+            self.ap.gtk = Some(keys);
             self.ap.next_gtk = None;
             self.ap.gtks = 0;
             self.ap.rekey_at = Some(Instant::now() + GROUP_REKEY);
@@ -1019,13 +1092,20 @@ impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
                 } else if sequence != 1 {
                     STATUS_AUTH_SEQUENCE
                 } else {
-                    // A station that authenticates again starts over.
-                    if let Some(slot) = self.ap.storage.stations.find(&mgmt.from) {
-                        self.remove_station(slot, None).await;
-                    }
-                    match self.ap.storage.stations.find_or_add(&mgmt.from) {
-                        Some(_) => STATUS_SUCCESS,
-                        None => STATUS_TOO_MANY_STATIONS,
+                    match self.ap.storage.stations.find(&mgmt.from) {
+                        // A protected association does not end on an unprotected frame that anyone
+                        // could forge: it stays until a new association is checked (SA Query).
+                        Some(slot) if self.protected_association(slot) => STATUS_SUCCESS,
+                        // Otherwise a station that authenticates again starts over.
+                        found => {
+                            if let Some(slot) = found {
+                                self.remove_station(slot, None).await;
+                            }
+                            match self.ap.storage.stations.find_or_add(&mgmt.from) {
+                                Some(_) => STATUS_SUCCESS,
+                                None => STATUS_TOO_MANY_STATIONS,
+                            }
+                        }
                     }
                 };
                 debug!("authentication from {:02x}: status {}", mgmt.from, status);
@@ -1040,6 +1120,23 @@ impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
                     self.send_mgmt(&out[..len], false).await;
                     return;
                 };
+                // A station with a protected association asks for a new one: maybe it lost its keys, maybe
+                // the request is forged. It is refused for now, and an SA Query checks the association
+                // in place; unanswered, the next request is taken (hostapd's `check_assoc_ies`).
+                #[cfg(feature = "wpa2")]
+                if self.protected_association(slot)
+                    && !self.ap.storage.stations.0[slot].is_some_and(|s| s.sa_query_timed_out)
+                {
+                    debug!(
+                        "association request from {:02x}, associated with protection: SA Query",
+                        mgmt.from
+                    );
+                    self.start_sa_query(slot).await;
+                    let len =
+                        settings.association_response(&bssid, &mgmt.from, reassoc, Err(STATUS_TRY_LATER), &mut out);
+                    self.send_mgmt(&out[..len], false).await;
+                    return;
+                }
                 if self.ap.storage.stations.0[slot].is_some_and(|s| s.phase == Phase::Associated) {
                     // Associating again: the RPU's entry goes, the new one comes with the answer.
                     self.remove_station(slot, None).await;
@@ -1073,9 +1170,23 @@ impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
                 let len = settings.association_response(&bssid, &mgmt.from, reassoc, answer, &mut out);
                 self.send_mgmt(&out[..len], false).await;
             }
+            #[cfg(feature = "wpa2")]
+            ACTION => self.sa_query_frame(&mgmt).await,
             DISASSOC | DEAUTH => {
                 if let Some(slot) = self.ap.storage.stations.find(&mgmt.from) {
-                    info!("station {:02x} left, reason {}", mgmt.from, mgmt.le16(0));
+                    if self.protected_association(slot) && !mgmt.protected {
+                        debug!(
+                            "unprotected disassociation or deauthentication from {:02x} ignored",
+                            mgmt.from
+                        );
+                        return;
+                    }
+                    info!(
+                        "station {:02x} left, reason {} (protected {})",
+                        mgmt.from,
+                        mgmt.le16(0),
+                        mgmt.protected
+                    );
                     self.remove_station(slot, None).await;
                 }
             }
@@ -1142,6 +1253,11 @@ impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
         if station.wmm {
             flags |= c::STA_FLAG_WME;
         }
+        // Management frame protection, which the RPU does for the frames to and from the station.
+        #[cfg(feature = "wpa2")]
+        if station.rsne.is_some_and(|(_, suite)| suite.mfp) {
+            flags |= c::STA_FLAG_MFP;
+        }
         info.sta_flags2 = c::sta_flag_update {
             mask: c::STA_FLAG_AUTHORIZED | c::STA_FLAG_SHORT_PREAMBLE | c::STA_FLAG_WME | c::STA_FLAG_MFP,
             set: flags,
@@ -1167,6 +1283,19 @@ impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
         self.send_cmd(cmd).await;
         if let Some(slot) = self.ap.storage.stations.find(addr) {
             self.ap.storage.stations.0[slot].as_mut().unwrap().authorized = true;
+        }
+    }
+
+    /// Whether the station of `slot` has an association with management frame protection, its keys
+    /// in place: frames that would end it have to be protected.
+    fn protected_association(&self, slot: usize) -> bool {
+        #[cfg(feature = "wpa2")]
+        return self.ap.storage.stations.0[slot]
+            .is_some_and(|s| s.authorized && s.rsne.is_some_and(|(_, suite)| suite.mfp));
+        #[cfg(not(feature = "wpa2"))]
+        {
+            let _ = slot;
+            false
         }
     }
 
@@ -1379,7 +1508,11 @@ impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
                 let retry = s.retry_at;
                 #[cfg(not(feature = "wpa2"))]
                 let retry = None;
-                [retry, Some(s.poll_deadline.unwrap_or(s.last_seen + INACTIVITY))]
+                #[cfg(feature = "wpa2")]
+                let query = s.sa_query.map(|query| query.retry_at.min(query.deadline));
+                #[cfg(not(feature = "wpa2"))]
+                let query = None;
+                [retry, query, Some(s.poll_deadline.unwrap_or(s.last_seen + INACTIVITY))]
             })
             .chain([rekey])
             .flatten()
@@ -1398,6 +1531,8 @@ impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
         if self.ap.next_gtk.is_none() && self.ap.rekey_at.is_some_and(|at| now >= at) {
             self.start_rekey().await;
         }
+        #[cfg(feature = "wpa2")]
+        self.check_sa_queries(now).await;
         for slot in 0..MAX_STATIONS {
             let Some(station) = self.ap.storage.stations.0[slot].filter(|s| s.phase == Phase::Associated) else {
                 continue;
@@ -1555,14 +1690,16 @@ impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
         ) else {
             return;
         };
-        let Some(sta_rsne) = station.rsne else {
+        let Some((sta_rsne, suite)) = station.rsne else {
             return;
         };
         self.ap.nonces += 1;
         let aa = self.ap.mac_addr;
         let anonce = authenticator::anonce(&seed, &aa, &station.addr, self.ap.nonces);
-        let ap_rsne = Rsne::for_suite(authenticator::SUITE);
-        self.ap.storage.handshakes[slot] = Some(Authenticator::new(psk, aa, station.addr, ap_rsne, sta_rsne, anonce));
+        let ap_rsne = Rsne::access_point();
+        debug!("4-way handshake with {:02x}: {}", station.addr, suite);
+        let handshake = Authenticator::new(psk, aa, station.addr, ap_rsne, sta_rsne, suite, anonce);
+        self.ap.storage.handshakes[slot] = Some(handshake);
         self.send_handshake_message(slot).await;
     }
 
@@ -1624,7 +1761,7 @@ impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
                 // The pairwise key, then the port (hostapd's PTKINITDONE).
                 self.add_key(Some(from), supplicant::CIPHER_SUITE_CCMP, 0, &tk, &[0; 6])
                     .await;
-                self.set_default_key(0, false).await;
+                self.set_default_key(0, DefaultKey::Unicast).await;
                 self.authorize_station(&from).await;
                 info!("station {:02x} has its keys", from);
                 // The authenticator stays, for the group key handshakes. One that joined while the
@@ -1654,15 +1791,17 @@ impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
     /// for reception until it is in use, and to each station with its keys in a group key
     /// handshake.
     async fn start_rekey(&mut self) {
-        let (Some(Security::Wpa2 { seed, .. }), Some(gtk)) = (self.ap.settings.map(|s| s.security), self.ap.gtk) else {
+        let (Some(Security::Wpa2 { seed, .. }), Some(_)) = (self.ap.settings.map(|s| s.security), self.ap.gtk) else {
             return;
         };
         self.ap.gtks += 1;
-        let next = GroupKey::derive(&seed, &self.ap.mac_addr, self.ap.gtks, 3 - gtk.index);
-        self.add_key(None, supplicant::CIPHER_SUITE_CCMP, next.index, &next.key, &[0; 6])
-            .await;
+        let next = GroupKeys::derive(&seed, &self.ap.mac_addr, self.ap.gtks);
+        self.install_group_keys(&next).await;
         self.ap.next_gtk = Some(next);
-        debug!("renewing the group key: key {}", next.index);
+        debug!(
+            "renewing the group keys: keys {} and {}",
+            next.gtk.index, next.igtk.index
+        );
         for slot in 0..MAX_STATIONS {
             if self.ap.storage.stations.0[slot].is_some_and(|s| s.authorized) {
                 self.start_group_handshake(slot, next).await;
@@ -1671,7 +1810,7 @@ impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
         self.finish_rekey().await;
     }
 
-    async fn start_group_handshake(&mut self, slot: usize, next: GroupKey) {
+    async fn start_group_handshake(&mut self, slot: usize, next: GroupKeys) {
         let started = self.ap.storage.handshakes[slot]
             .as_mut()
             .is_some_and(|handshake| handshake.start_group(next));
@@ -1696,14 +1835,113 @@ impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
         if pending {
             return;
         }
-        self.set_default_key(next.index, true).await;
+        self.set_default_key(next.gtk.index, DefaultKey::Multicast).await;
+        self.set_default_key(next.igtk.index, DefaultKey::Management).await;
         self.ap.gtk = Some(next);
         self.ap.next_gtk = None;
         self.ap.rekey_at = Some(Instant::now() + GROUP_REKEY);
-        info!("group key {} in use", next.index);
+        info!("group keys {} and {} in use", next.gtk.index, next.igtk.index);
     }
 
-    /// Sends an EAPOL frame to a station, from the access point. A frame that finds no TX token
+    /// Gives the RPU group keys, which it receives with until one is made the default: the GTK,
+    /// and the IGTK for BIP-CMAC-128.
+    async fn install_group_keys(&mut self, keys: &GroupKeys) {
+        let (gtk, igtk) = (keys.gtk, keys.igtk);
+        self.add_key(None, supplicant::CIPHER_SUITE_CCMP, gtk.index, &gtk.key, &[0; 6])
+            .await;
+        self.add_key(
+            None,
+            supplicant::CIPHER_SUITE_BIP_CMAC_128,
+            igtk.index,
+            &igtk.key,
+            &[0; 6],
+        )
+        .await;
+    }
+
+    /// Starts an SA Query of the association of the station of `slot`, if none is under way: a
+    /// protected request, which only the station that has the keys can answer.
+    async fn start_sa_query(&mut self, slot: usize) {
+        let now = Instant::now();
+        let id = (self.ap.cookie as u16).to_le_bytes();
+        let Some(station) = self.ap.storage.stations.get(slot).filter(|s| s.sa_query.is_none()) else {
+            return;
+        };
+        station.sa_query = Some(SaQuery {
+            id,
+            retry_at: now + SA_QUERY_RETRY,
+            deadline: now + Duration::from_micros(SA_QUERY_TIMEOUT_TU as u64 * 1024),
+        });
+        let to = station.addr;
+        self.send_sa_query(&to, SA_QUERY_REQUEST, id).await;
+    }
+
+    async fn send_sa_query(&mut self, to: &[u8; 6], action: u8, id: [u8; 2]) {
+        let mut frame = [0; 28];
+        let len = sa_query(&self.ap.mac_addr, to, action, id, &mut frame);
+        self.send_mgmt(&frame[..len], false).await;
+    }
+
+    /// Sends the requests of the SA Queries again, and ends the ones that went unanswered: those
+    /// stations' next association request is taken.
+    async fn check_sa_queries(&mut self, now: Instant) {
+        for slot in 0..MAX_STATIONS {
+            let Some(station) = self.ap.storage.stations.get(slot) else {
+                continue;
+            };
+            let Some(query) = station.sa_query.as_mut() else {
+                continue;
+            };
+            if now >= query.deadline {
+                station.sa_query = None;
+                station.sa_query_timed_out = true;
+                info!(
+                    "station {:02x} did not answer the SA Query: its next association request is taken",
+                    station.addr
+                );
+            } else if now >= query.retry_at {
+                query.retry_at = now + SA_QUERY_RETRY;
+                let (to, id) = (station.addr, query.id);
+                self.send_sa_query(&to, SA_QUERY_REQUEST, id).await;
+            }
+        }
+    }
+
+    /// An SA Query action frame from a station (hostapd's `ieee802_11_sa_query_action`): a request,
+    /// which gets its response, or the response to the access point's request, which keeps the
+    /// station's association. Only protected ones count.
+    async fn sa_query_frame(&mut self, mgmt: &Mgmt<'_>) {
+        let [CATEGORY_SA_QUERY, action, id0, id1, ..] = *mgmt.body else {
+            return;
+        };
+        let Some(slot) = self.ap.storage.stations.find(&mgmt.from) else {
+            return;
+        };
+        if !self.protected_association(slot) || !mgmt.protected {
+            debug!("SA Query from {:02x} ignored: not protected", mgmt.from);
+            return;
+        }
+        match action {
+            SA_QUERY_REQUEST => self.send_sa_query(&mgmt.from, SA_QUERY_RESPONSE, [id0, id1]).await,
+            SA_QUERY_RESPONSE => {
+                let Some(station) = self.ap.storage.stations.get(slot) else {
+                    return;
+                };
+                if station.sa_query.is_some_and(|query| query.id == [id0, id1]) {
+                    station.sa_query = None;
+                    info!(
+                        "station {:02x} answered the SA Query: it keeps its association",
+                        mgmt.from
+                    );
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Sends an EAPOL frame to a station, from the access point, through the frames kept for
+    /// sleeping stations: a dozing one gets it when the TIM wakes it up (sent right away, the
+    /// group key handshakes of a laptop in power save got lost). A frame that finds no TX token
     /// free is lost, and goes out again on the handshake's timeout.
     async fn send_eapol_to(&mut self, to: &[u8; 6], eapol: &[u8]) {
         let mut frame = [0u32; (14 + authenticator::MESSAGE_MAX).div_ceil(4)];
@@ -1712,7 +1950,11 @@ impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
         else {
             return;
         };
-        if self.send_frame(&frame, len).await.is_none() {
+        let held = match self.ap.storage.stations.find(to) {
+            Some(slot) => self.hold_for(slot, &frame, len).await,
+            None => false,
+        };
+        if !held && self.send_frame(&frame, len).await.is_none() {
             warn!("EAPOL frame for {:02x} not sent: no TX token free", to);
         }
     }

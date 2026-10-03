@@ -80,6 +80,13 @@ Working:
   The group key is renewed once a day (hostapd's `wpa_group_rekey`): each station gets the next
   one in a group key handshake, and broadcasts go out with it once they all have it. Renewed every
   30 s for a test, the laptop took each new key within 32 ms and missed none of the broadcasts.
+  Management frame protection (IEEE 802.11w) is offered as with a WPA2/WPA3 transition network:
+  PSK and PSK-SHA256, protection capable. A station that uses it gets the IGTK (BIP-CMAC-128) too,
+  renewed with the GTK; its unprotected deauthentications are ignored, a new association request
+  of it is refused for 1 s while an SA Query checks the association in place, and its SA Queries
+  are answered. A laptop chose PSK-SHA256 with protection, and answered the SA Query.
+  The access point's EAPOL frames go through the frames kept for sleeping stations: sent right
+  away, the group key handshakes of a dozing laptop got lost.
   The chip sends group frames right away, and a dozing station misses them: 13 broadcasts out of
   30 reached a dozing laptop. While a station sleeps, the driver sends each group frame to every
   station with keys as a unicast frame instead (hostapd's `multicast_to_unicast`), and the
@@ -125,7 +132,7 @@ Not yet:
   `ConnectError::SecurityMismatch`.
 - Target wake time, and the current drawn in power save and low power mode, which is not
   measured yet.
-- In AP mode: WPA3, management frame protection, and U-APSD (not announced). The nRF70 has
+- In AP mode: WPA3, and U-APSD (not announced). The nRF70 has
   20 MHz channels only. Delivery to sleeping stations was checked with a laptop that wakes up
   when a beacon says frames wait for it; PS-Poll is not tested.
 
@@ -139,7 +146,7 @@ Not yet:
   3 KB of RAM to a WPA2 application on an nRF5340, and the `p256` crate.
 - `ap` (off by default): `Control::start_ap_open` and `Control::stop_ap`, and with `wpa2`
   `Control::start_ap_wpa2`. It adds about 15 KB of flash and 9 KB of RAM on an nRF5340, 6 KB of
-  which in `State` for the frames kept for stations that sleep; with `wpa2`, 25 KB and 11 KB.
+  which in `State` for the frames kept for stations that sleep; with `wpa2`, 32 KB and 12 KB.
 
 ```toml
 nrf70 = { version = "0.2", features = ["wpa3", "ap"] }

@@ -51,7 +51,7 @@ const SUITE_BIP_CMAC_128: [u8; 4] = [0x00, 0x0F, 0xAC, 6];
 /// The GTK key data encapsulation (KDE): OUI 00-0F-AC, data type 1.
 pub(crate) const KDE_GTK: [u8; 4] = [0x00, 0x0F, 0xAC, 1];
 /// The IGTK KDE: data type 9.
-const KDE_IGTK: [u8; 4] = [0x00, 0x0F, 0xAC, 9];
+pub(crate) const KDE_IGTK: [u8; 4] = [0x00, 0x0F, 0xAC, 9];
 
 /// RSN capabilities bit: management frame protection required.
 const RSN_CAP_MFPR: u16 = 1 << 6;
@@ -381,29 +381,61 @@ impl Rsne {
         Some(Suite { akm, mfp, group })
     }
 
-    /// Checks the RSNE of a station's association request against what a WPA2 access point of
-    /// the driver offers: CCMP-128 as group and pairwise cipher, PSK key management, no
-    /// management frame protection. Returns the IEEE 802.11 status code to refuse the station
-    /// with otherwise, as hostapd's `wpa_validate_wpa_ie` chooses it.
+    /// The RSNE of a WPA2 access point of the driver: CCMP-128 as group and pairwise cipher, PSK and
+    /// PSK-SHA256 key management, management frame protection capable with BIP-CMAC-128 (the
+    /// default group management cipher, which goes without saying).
     #[cfg(feature = "ap")]
-    pub(crate) fn check_station(&self) -> Result<(), u16> {
+    pub(crate) fn access_point() -> Self {
+        let mut body = [0; 24];
+        body[0..2].copy_from_slice(&1u16.to_le_bytes());
+        body[2..6].copy_from_slice(&SUITE_CCMP);
+        body[6..8].copy_from_slice(&1u16.to_le_bytes());
+        body[8..12].copy_from_slice(&SUITE_CCMP);
+        body[12..14].copy_from_slice(&2u16.to_le_bytes());
+        body[14..18].copy_from_slice(&AKM_PSK);
+        body[18..22].copy_from_slice(&AKM_PSK_SHA256);
+        body[22..24].copy_from_slice(&RSN_CAP_MFPC.to_le_bytes());
+        match Self::from_body(&body) {
+            Some(rsne) => rsne,
+            None => defmt::unreachable!(),
+        }
+    }
+
+    /// Checks the RSNE of a station's association request against [`Self::access_point`], and
+    /// returns what the station chose: PSK-SHA256 if it names it, else PSK, and management frame
+    /// protection if it is capable of it. Returns the IEEE 802.11 status code to refuse it with
+    /// otherwise, as hostapd's `wpa_validate_wpa_ie` chooses it.
+    #[cfg(feature = "ap")]
+    pub(crate) fn check_station(&self) -> Result<Suite, u16> {
         const INVALID_ELEMENT: u16 = 40;
         const INVALID_GROUP_CIPHER: u16 = 41;
         const INVALID_PAIRWISE_CIPHER: u16 = 42;
         const INVALID_AKMP: u16 = 43;
-        const ROBUST_MANAGEMENT_POLICY_VIOLATION: u16 = 31;
+        const CIPHER_REJECTED_PER_POLICY: u16 = 46;
         let fields = self.fields().ok_or(INVALID_ELEMENT)?;
+        let names = |list: &[u8], suite: [u8; 4]| list.chunks(4).any(|s| s == suite);
         if fields.group != SUITE_CCMP {
-            Err(INVALID_GROUP_CIPHER)
-        } else if !fields.pairwise.chunks(4).any(|suite| suite == SUITE_CCMP) {
-            Err(INVALID_PAIRWISE_CIPHER)
-        } else if !fields.akms.chunks(4).any(|suite| suite == AKM_PSK) {
-            Err(INVALID_AKMP)
-        } else if fields.capabilities & RSN_CAP_MFPR != 0 {
-            Err(ROBUST_MANAGEMENT_POLICY_VIOLATION)
-        } else {
-            Ok(())
+            return Err(INVALID_GROUP_CIPHER);
         }
+        if !names(fields.pairwise, SUITE_CCMP) {
+            return Err(INVALID_PAIRWISE_CIPHER);
+        }
+        let akm = if names(fields.akms, AKM_PSK_SHA256) {
+            Akm::PskSha256
+        } else if names(fields.akms, AKM_PSK) {
+            Akm::Psk
+        } else {
+            return Err(INVALID_AKMP);
+        };
+        let mfp = fields.capabilities & RSN_CAP_MFPC != 0;
+        if mfp && fields.group_management != SUITE_BIP_CMAC_128 {
+            return Err(CIPHER_REJECTED_PER_POLICY);
+        }
+        Ok(Suite {
+            akm,
+            mfp,
+            group: GroupCipher::Ccmp,
+        })
     }
 }
 

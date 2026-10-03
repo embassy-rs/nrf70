@@ -65,6 +65,19 @@ impl State {
     }
 }
 
+/// What a default key is sent with.
+#[derive(Clone, Copy)]
+pub(crate) enum DefaultKey {
+    /// Unicast data frames: a pairwise key.
+    Unicast,
+    /// Group data frames: a GTK.
+    #[cfg_attr(not(feature = "ap"), allow(dead_code))]
+    Multicast,
+    /// Group management frames: an IGTK, with management frame protection.
+    #[cfg_attr(not(feature = "ap"), allow(dead_code))]
+    Management,
+}
+
 /// The pre-shared key of the WPA2-Personal network `ssid`, from its passphrase: PBKDF2-HMAC-SHA1
 /// with 4096 iterations, which is slow on purpose. `None` if the passphrase is not 8 to 63 bytes
 /// long. The key depends on nothing else, so it can be stored in place of the passphrase.
@@ -339,7 +352,7 @@ impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
             // A new pairwise key starts counting packets from zero.
             self.add_key(Some(bss.bssid), supplicant::CIPHER_SUITE_CCMP, 0, &tk, &[0; 6])
                 .await;
-            self.set_default_key(0, false).await;
+            self.set_default_key(0, DefaultKey::Unicast).await;
             debug!("pairwise key installed");
         }
         if let Some(gtk) = keys.gtk {
@@ -397,18 +410,18 @@ impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
         self.send_cmd(cmd).await;
     }
 
-    /// Makes key `index` the one unicast frames are sent with, or with `multicast` the one group
-    /// frames are (NCS `nrf_wifi_sys_fmac_set_key`).
-    pub(super) async fn set_default_key(&mut self, index: u8, multicast: bool) {
+    /// Makes key `index` the one `kind` frames are sent with (NCS `nrf_wifi_wpa_supp_set_key` with
+    /// `set_tx`, and `nrf_wifi_sys_fmac_set_key`).
+    pub(super) async fn set_default_key(&mut self, index: u8, kind: DefaultKey) {
         let mut cmd: c::umac_cmd_set_key = unsafe { zeroed() };
         cmd.key_info.valid_fields = c::KEY_IDX_VALID;
         cmd.key_info.key_idx = index;
-        let kind = if multicast {
-            c::KEY_DEFAULT_TYPE_MULTICAST
-        } else {
-            c::KEY_DEFAULT_TYPE_UNICAST
+        let flags = match kind {
+            DefaultKey::Unicast => c::KEY_DEFAULT | c::KEY_DEFAULT_TYPE_UNICAST,
+            DefaultKey::Multicast => c::KEY_DEFAULT | c::KEY_DEFAULT_TYPE_MULTICAST,
+            DefaultKey::Management => c::KEY_DEFAULT_MGMT | c::KEY_DEFAULT_TYPE_MULTICAST,
         };
-        cmd.key_info.flags = (c::KEY_DEFAULT | kind) as _;
+        cmd.key_info.flags = flags as _;
         self.send_cmd(cmd).await;
     }
 }
