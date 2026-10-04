@@ -1900,22 +1900,12 @@ impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
         }
     }
 
-    /// A frame came in: its transmitter, if a station, is there. `frame` is as the RPU hands it
-    /// over, with the 802.11 header (whose second address is the transmitter) or as an A-MSDU
-    /// subframe (whose source is the station).
-    pub(super) fn ap_seen(&mut self, frame: &[u8], pkt_type: u32) {
+    /// A frame came in from `src`: if a station, it is there.
+    pub(super) fn ap_seen(&mut self, src: &[u8; 6]) {
         if !self.ap.running {
             return;
         }
-        let from = match pkt_type {
-            c::PKT_TYPE_MPDU | c::PKT_TYPE_MSDU_WITH_MAC => frame.get(10..16),
-            c::PKT_TYPE_MSDU => frame.get(6..12),
-            _ => None,
-        };
-        let slot = from
-            .and_then(|from| from.try_into().ok())
-            .and_then(|from: [u8; 6]| self.ap.storage.stations.find(&from));
-        if let Some(slot) = slot {
+        if let Some(slot) = self.ap.storage.stations.find(src) {
             self.station_seen(slot);
         }
     }
@@ -2091,9 +2081,9 @@ impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
         self.send_eapol_to(&station.addr, &out[..len]).await;
     }
 
-    /// Takes an EAPOL frame from a station, as an Ethernet frame (hostapd's `wpa_receive`).
-    pub(super) async fn ap_eapol(&mut self, frame: &[u8]) {
-        let from: [u8; 6] = frame[6..12].try_into().unwrap();
+    /// Takes an EAPOL frame from the station `from` (hostapd's `wpa_receive`).
+    pub(super) async fn ap_eapol(&mut self, from: &[u8; 6], eapol: &[u8]) {
+        let from = *from;
         let (Some(slot), Some(gtk)) = (self.ap.storage.stations.find(&from), self.ap.gtk) else {
             debug!(
                 "EAPOL frame from {:02x} ignored: not a station of the access point",
@@ -2105,7 +2095,7 @@ impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
         let Some(handshake) = self.ap.storage.handshakes[slot].as_mut() else {
             return;
         };
-        match handshake.handle(&frame[14..], &gtk, &mut out) {
+        match handshake.handle(eapol, &gtk, &mut out) {
             authenticator::Outcome::Ignored => {}
             authenticator::Outcome::Send(len) => {
                 debug!("4-way handshake with {:02x}: message 2, sending message 3", from);

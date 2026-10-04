@@ -753,42 +753,63 @@ fn write_ethernet(out: &mut [u8], dst: &[u8], src: &[u8], ethertype: u16, payloa
     Some(len)
 }
 
-/// Converts a received frame, as the RPU hands it over, into an Ethernet II frame in `out` (NCS
-/// `nrf_wifi_fmac_rx_event_process` and the conversions it calls). `pkt_type` is one of the
-/// `PKT_TYPE_*` values and `mac_header_len` the 802.11 header length the RPU reports.
-fn rx_to_ethernet(frame: &[u8], pkt_type: u32, mac_header_len: usize, out: &mut [u8]) -> Option<usize> {
-    match pkt_type {
-        c::PKT_TYPE_MPDU => {
-            let fc = u16::from_le_bytes(frame.get(0..2)?.try_into().ok()?);
-            let addr = |n: usize| frame.get(4 + 6 * n..10 + 6 * n);
-            let addr4 = frame.get(24..30);
-            let (dst, src) = match fc & (FC_TO_DS | FC_FROM_DS) {
-                FC_FROM_DS => (addr(0)?, addr(2)?),
-                FC_TO_DS => (addr(2)?, addr(1)?),
-                0 => (addr(0)?, addr(1)?),
-                _ => (addr(0)?, addr4?),
-            };
-            let body = frame.get(mac_header_len..)?;
-            let ethertype = llc_ethertype(body)?;
-            write_ethernet(out, dst, src, ethertype, body.get(llc_skip(ethertype)..)?)
-        }
-        c::PKT_TYPE_MSDU_WITH_MAC => rx_to_ethernet(frame.get(mac_header_len..)?, c::PKT_TYPE_MSDU, 0, out),
-        c::PKT_TYPE_MSDU => {
-            // An A-MSDU subframe: destination, source and length, then the LLC/SNAP header.
-            let length = u16::from_be_bytes(frame.get(12..14)?.try_into().ok()?) as usize;
-            let body = frame.get(14..(14 + length).min(frame.len()))?;
-            let ethertype = llc_ethertype(body)?;
-            write_ethernet(
-                out,
-                &frame[0..6],
-                &frame[6..12],
-                ethertype,
-                body.get(llc_skip(ethertype)..)?,
-            )
-        }
-        _ => None,
+/// A received data frame, as the RPU hands it over, seen as the Ethernet frame it carries.
+struct RxFrame<'f> {
+    dst: [u8; 6],
+    src: [u8; 6],
+    /// The ethertype, or the length of an 802.3 frame.
+    ethertype: u16,
+    payload: &'f [u8],
+}
+
+impl<'f> RxFrame<'f> {
+    /// Reads `frame` (NCS `nrf_wifi_fmac_rx_event_process` and the conversions it calls).
+    /// `pkt_type` is one of the `PKT_TYPE_*` values and `mac_header_len` the 802.11 header length
+    /// the RPU reports.
+    fn parse(frame: &'f [u8], pkt_type: u32, mac_header_len: usize) -> Option<Self> {
+        let mac = |at: usize| -> Option<[u8; 6]> { frame.get(at..at + 6)?.try_into().ok() };
+        let (dst, src, body) = match pkt_type {
+            c::PKT_TYPE_MPDU => {
+                let fc = u16::from_le_bytes(frame.get(0..2)?.try_into().ok()?);
+                let addr = |n: usize| mac(4 + 6 * n);
+                let (dst, src) = match fc & (FC_TO_DS | FC_FROM_DS) {
+                    FC_FROM_DS => (addr(0)?, addr(2)?),
+                    FC_TO_DS => (addr(2)?, addr(1)?),
+                    0 => (addr(0)?, addr(1)?),
+                    _ => (addr(0)?, mac(24)?),
+                };
+                (dst, src, frame.get(mac_header_len..)?)
+            }
+            c::PKT_TYPE_MSDU_WITH_MAC => return Self::parse(frame.get(mac_header_len..)?, c::PKT_TYPE_MSDU, 0),
+            c::PKT_TYPE_MSDU => {
+                // An A-MSDU subframe: destination, source and length, then the LLC/SNAP header.
+                let length = u16::from_be_bytes(frame.get(12..14)?.try_into().ok()?) as usize;
+                (mac(0)?, mac(6)?, frame.get(14..(14 + length).min(frame.len()))?)
+            }
+            _ => return None,
+        };
+        let ethertype = llc_ethertype(body)?;
+        Some(Self {
+            dst,
+            src,
+            ethertype,
+            payload: body.get(llc_skip(ethertype)..)?,
+        })
+    }
+
+    /// Writes the frame as an Ethernet II frame into `out`. Returns its length, or `None` if it
+    /// does not fit.
+    fn write_ethernet(&self, out: &mut [u8]) -> Option<usize> {
+        write_ethernet(out, &self.dst, &self.src, self.ethertype, self.payload)
     }
 }
+
+/// A key handshake frame, which `rx_frame` returns copied out of the frame's buffer. Never one
+/// without the `wpa2` feature.
+#[cfg(feature = "wpa2")]
+type RxEapol = wpa2::RxEapol;
+#[cfg(not(feature = "wpa2"))]
+type RxEapol = core::convert::Infallible;
 
 /// The status code in the frame of an authentication or association event, `offset` bytes in (after
 /// the 24-byte header and the fields before the status), or `None` if the RPU reports a timeout.
@@ -1504,8 +1525,8 @@ impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
         false
     }
 
-    async fn rx_eapol(&mut self, _frame: &[u8], _pkt_type: u32, _mac_header_len: usize) -> bool {
-        false
+    async fn rx_eapol(&mut self, eapol: RxEapol) {
+        match eapol {}
     }
 
     async fn frame_sent(&mut self, _token: usize) {}
@@ -1546,7 +1567,7 @@ impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
 
     fn ap_frame_done(&mut self, _token: usize, _acked: bool) {}
 
-    fn ap_seen(&mut self, _frame: &[u8], _pkt_type: u32) {}
+    fn ap_seen(&mut self, _src: &[u8; 6]) {}
 
     fn ap_deadline(&self) -> Option<Instant> {
         None
@@ -2671,30 +2692,42 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
     }
 
     async fn rx_deliver(&mut self, desc_id: usize, len: usize, pkt_type: u32, mac_header_len: usize) {
+        // A key handshake frame comes back copied, and is handled once the frame's buffer (1.6 KB
+        // of the runner's future) is gone: its handshake can go as deep as the next join.
+        if let Some(eapol) = self.rx_frame(desc_id, len, pkt_type, mac_header_len).await {
+            self.rx_eapol(eapol).await;
+        }
+    }
+
+    /// Reads a received frame and hands it to embassy-net, or returns it if it is a key handshake
+    /// frame.
+    async fn rx_frame(&mut self, desc_id: usize, len: usize, pkt_type: u32, mac_header_len: usize) -> Option<RxEapol> {
         if len > RX_MAX_DATA_SIZE {
             warn!("RX frame of {} bytes dropped", len);
-            return;
+            return None;
         }
         let mut frame = [0u32; RX_MAX_DATA_SIZE / 4];
         let words = len.div_ceil(4);
         self.read(rx_buf_addr(desc_id) + c::RX_BUF_HEADROOM, None, &mut frame[..words])
             .await;
-        let bytes = &slice8(&frame)[..len];
-        self.ap_seen(bytes, pkt_type);
-
-        // Key handshake frames are the supplicant's, not embassy-net's.
-        if self.rx_eapol(bytes, pkt_type, mac_header_len).await {
-            return;
+        let Some(rx) = RxFrame::parse(&slice8(&frame)[..len], pkt_type, mac_header_len) else {
+            warn!("RX frame of type {} not converted", pkt_type);
+            return None;
+        };
+        self.ap_seen(&rx.src);
+        #[cfg(feature = "wpa2")]
+        if rx.ethertype == supplicant::ETHERTYPE_EAPOL {
+            return wpa2::RxEapol::copy(&rx);
         }
-
         let Some(out) = self.ch.try_rx_buf() else {
             debug!("RX frame dropped, embassy-net has no buffer free");
-            return;
+            return None;
         };
-        match rx_to_ethernet(bytes, pkt_type, mac_header_len, out) {
+        match rx.write_ethernet(out) {
             Some(n) => self.ch.rx_done(n),
-            None => warn!("RX frame of type {} not converted", pkt_type),
+            None => warn!("RX frame of {} bytes too long for embassy-net", len),
         }
+        None
     }
 
     /// Handles events until `done` holds, or `timeout` passes. Returns whether `done` held.
@@ -3744,11 +3777,42 @@ mod tests {
         frame
     }
 
+    fn to_ethernet(frame: &[u8], pkt_type: u32, mac_header_len: usize, out: &mut [u8]) -> Option<usize> {
+        RxFrame::parse(frame, pkt_type, mac_header_len)?.write_ethernet(out)
+    }
+
+    #[test]
+    fn the_ethertype_is_read_in_each_kind_of_frame() {
+        const EAPOL: u16 = 0x888E;
+        let ethertype = |frame: &[u8], pkt_type, mac_header_len| {
+            RxFrame::parse(frame, pkt_type, mac_header_len).map(|rx| rx.ethertype)
+        };
+        let mut mpdu = from_ds_frame(&[1, 3, 0, 95]);
+        assert_eq!(ethertype(&mpdu, c::PKT_TYPE_MPDU, 24), Some(0x0800));
+        mpdu[30..32].copy_from_slice(&EAPOL.to_be_bytes());
+        assert_eq!(ethertype(&mpdu, c::PKT_TYPE_MPDU, 24), Some(EAPOL));
+
+        let mut subframe = vec![1, 1, 1, 1, 1, 1, 3, 3, 3, 3, 3, 3, 0, 12];
+        subframe.extend_from_slice(&[0xAA, 0xAA, 0x03, 0x00, 0x00, 0x00, 0x88, 0x8E, 1, 3, 0, 95]);
+        assert_eq!(ethertype(&subframe, c::PKT_TYPE_MSDU, 0), Some(EAPOL));
+        let mut with_mac = vec![0; 24];
+        with_mac.extend_from_slice(&subframe);
+        assert_eq!(ethertype(&with_mac, c::PKT_TYPE_MSDU_WITH_MAC, 24), Some(EAPOL));
+        assert_eq!(
+            RxFrame::parse(&with_mac, c::PKT_TYPE_MSDU_WITH_MAC, 24).map(|rx| rx.src),
+            Some([3; 6])
+        );
+
+        // Cut before the ethertype, and a packet type the RPU does not use.
+        assert_eq!(ethertype(&mpdu[..31], c::PKT_TYPE_MPDU, 24), None);
+        assert_eq!(ethertype(&mpdu, 7, 24), None);
+    }
+
     #[test]
     fn mpdu_from_the_ap_becomes_ethernet() {
         let frame = from_ds_frame(&[0x45, 0xAB, 0xCD]);
         let mut out = [0u8; 64];
-        let len = rx_to_ethernet(&frame, c::PKT_TYPE_MPDU, 24, &mut out);
+        let len = to_ethernet(&frame, c::PKT_TYPE_MPDU, 24, &mut out);
         assert_eq!(
             &out[..unwrap!(len)],
             [1, 1, 1, 1, 1, 1, 3, 3, 3, 3, 3, 3, 0x08, 0x00, 0x45, 0xAB, 0xCD]
@@ -3762,7 +3826,7 @@ mod tests {
         subframe.extend_from_slice(&[0xAA, 0xAA, 0x03, 0x00, 0x00, 0x00, 0x08, 0x06, 7, 8, 9]);
         subframe.extend_from_slice(&[0, 0, 0]); // padding to a multiple of 4
         let mut out = [0u8; 64];
-        let len = rx_to_ethernet(&subframe, c::PKT_TYPE_MSDU, 0, &mut out);
+        let len = to_ethernet(&subframe, c::PKT_TYPE_MSDU, 0, &mut out);
         assert_eq!(
             &out[..unwrap!(len)],
             [1, 1, 1, 1, 1, 1, 3, 3, 3, 3, 3, 3, 0x08, 0x06, 7, 8, 9]
@@ -3773,7 +3837,7 @@ mod tests {
     fn rx_frame_too_big_for_the_buffer_is_refused() {
         let frame = from_ds_frame(&[0; 100]);
         let mut out = [0u8; 64];
-        assert_eq!(rx_to_ethernet(&frame, c::PKT_TYPE_MPDU, 24, &mut out), None);
+        assert_eq!(to_ethernet(&frame, c::PKT_TYPE_MPDU, 24, &mut out), None);
     }
 
     fn bss(frequency: u32, signal_dbm: i32) -> Bss {

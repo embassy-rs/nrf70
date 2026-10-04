@@ -15,8 +15,8 @@ use rand_core::CryptoRng;
 
 use crate::supplicant::{self, Gtk, Igtk, Outcome, Rsne, Rsnxe, Supplicant};
 use crate::{
-    c, find_ie, llc_ethertype, rx_to_ethernet, slice8_mut, write_ethernet, Bss, Bus, ConnState, ConnectError, Control,
-    Credentials, Runner, MAX_TX_TOKENS,
+    c, find_ie, slice8_mut, write_ethernet, Bss, Bus, ConnState, ConnectError, Control, Credentials, Runner, RxFrame,
+    MAX_TX_TOKENS,
 };
 
 /// How long the last message of a handshake gets to leave before its keys go in anyway.
@@ -40,9 +40,34 @@ struct HeldMessage1 {
     answer_at: Instant,
 }
 
-/// Longest EAPOL frame the supplicant is handed, as an Ethernet frame: the fixed part of an
-/// EAPOL-Key frame, and key data with a few elements and keys.
-const EAPOL_RX_MAX: usize = 14 + 99 + 400;
+/// Longest EAPOL frame the handshakes are handed: the fixed part of an EAPOL-Key frame, and key
+/// data with a few elements and keys.
+const EAPOL_MAX: usize = 99 + 400;
+
+/// A key handshake frame, copied out of the buffer it was received in.
+pub(crate) struct RxEapol {
+    src: [u8; 6],
+    len: usize,
+    bytes: [u8; EAPOL_MAX],
+}
+
+impl RxEapol {
+    /// Copies the EAPOL frame `rx` carries. `None`, with a warning, if it is longer than the
+    /// handshakes take.
+    pub(crate) fn copy(rx: &RxFrame) -> Option<Self> {
+        let mut eapol = Self {
+            src: rx.src,
+            len: rx.payload.len(),
+            bytes: [0; EAPOL_MAX],
+        };
+        let Some(bytes) = eapol.bytes.get_mut(..rx.payload.len()) else {
+            warn!("EAPOL frame of {} bytes dropped", rx.payload.len());
+            return None;
+        };
+        bytes.copy_from_slice(rx.payload);
+        Some(eapol)
+    }
+}
 
 /// What a WPA2-Personal network is joined with.
 #[derive(Clone, Copy)]
@@ -166,17 +191,6 @@ pub(crate) fn ap_rsnxe(ies: &[u8], beacon_ies: &[u8]) -> Option<Rsnxe> {
         .and_then(Rsnxe::from_body)
 }
 
-/// The ethertype of a received frame, as [`rx_to_ethernet`] would write it, without converting
-/// the frame.
-fn rx_ethertype(frame: &[u8], pkt_type: u32, mac_header_len: usize) -> Option<u16> {
-    match pkt_type {
-        c::PKT_TYPE_MPDU => llc_ethertype(frame.get(mac_header_len..)?),
-        c::PKT_TYPE_MSDU_WITH_MAC => rx_ethertype(frame.get(mac_header_len..)?, c::PKT_TYPE_MSDU, 0),
-        c::PKT_TYPE_MSDU => llc_ethertype(frame.get(14..)?),
-        _ => None,
-    }
-}
-
 /// The runner's side of WPA2. The first items are what `lib.rs` calls, each with an empty
 /// counterpart there for a build without the feature.
 impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
@@ -243,21 +257,15 @@ impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
         self.wpa2.supplicant.is_some()
     }
 
-    /// Takes a received frame if it is an EAPOL one, and says whether it did: key handshake
-    /// frames are the supplicant's, not embassy-net's.
-    pub(super) async fn rx_eapol(&mut self, frame: &[u8], pkt_type: u32, mac_header_len: usize) -> bool {
-        if rx_ethertype(frame, pkt_type, mac_header_len) != Some(supplicant::ETHERTYPE_EAPOL) {
-            return false;
+    /// Hands a key handshake frame to the supplicant, or with an access point running, to its
+    /// authenticator.
+    pub(super) async fn rx_eapol(&mut self, eapol: RxEapol) {
+        let payload = &eapol.bytes[..eapol.len];
+        #[cfg(feature = "ap")]
+        if self.ap_running() {
+            return self.ap_eapol(&eapol.src, payload).await;
         }
-        let mut eapol = [0; EAPOL_RX_MAX];
-        match rx_to_ethernet(frame, pkt_type, mac_header_len, &mut eapol) {
-            // From a station of the access point: its authenticator's.
-            #[cfg(feature = "ap")]
-            Some(n) if self.ap_running() => self.ap_eapol(&eapol[..n]).await,
-            Some(n) => self.handle_eapol(&eapol[..n]).await,
-            None => warn!("EAPOL frame of {} bytes dropped", frame.len()),
-        }
-        true
+        self.handle_eapol(&eapol.src, payload).await;
     }
 
     /// The RPU reported the frame of TX token `token` sent. If that was the last message of a
@@ -307,9 +315,9 @@ impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
         self.wpa2.held_message_1 = None;
     }
 
-    /// Takes an EAPOL frame from the AP of the association, as an Ethernet frame: message 1 of the
-    /// first handshake waits, the rest goes to [`Self::answer_eapol`].
-    async fn handle_eapol(&mut self, frame: &[u8]) {
+    /// Takes an EAPOL frame from `src`, the AP of the association: message 1 of the first handshake
+    /// waits, the rest goes to [`Self::answer_eapol`].
+    async fn handle_eapol(&mut self, src: &[u8; 6], eapol: &[u8]) {
         let (Some(bss), true) = (self.conn_bss, self.wpa2.supplicant.is_some()) else {
             debug!("EAPOL frame ignored: no WPA2 association");
             return;
@@ -317,14 +325,13 @@ impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
         if !matches!(
             self.conn,
             ConnState::Handshake | ConnState::Authorizing | ConnState::Connected
-        ) || frame[6..12] != bss.bssid
+        ) || *src != bss.bssid
         {
             debug!("EAPOL frame ignored: not from the AP of an association");
             return;
         }
         // Message 1 of the first handshake waits a moment, in case a newer one follows (see
         // MESSAGE_1_HOLD).
-        let eapol = &frame[14..];
         if self.conn == ConnState::Handshake && supplicant::is_message_1(eapol) && eapol.len() <= HELD_MESSAGE_1_MAX {
             let answer_at =
                 (self.wpa2.held_message_1.as_ref()).map_or(Instant::now() + MESSAGE_1_HOLD, |held| held.answer_at);
@@ -487,53 +494,5 @@ impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
         };
         cmd.key_info.flags = flags as _;
         self.send_cmd(&mut cmd).await;
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    extern crate std;
-
-    use core::assert_eq;
-    use std::vec;
-
-    use super::*;
-
-    #[test]
-    fn ethertype_is_read_without_converting_the_frame() {
-        let mut mpdu = vec![
-            0x08, 0x02, // frame control: data, FromDS
-            0x00, 0x00, // duration
-            1, 1, 1, 1, 1, 1, // addr1: our MAC, the destination
-            2, 2, 2, 2, 2, 2, // addr2: BSSID
-            3, 3, 3, 3, 3, 3, // addr3: the source
-            0x00, 0x00, // sequence control
-            0xAA, 0xAA, 0x03, 0x00, 0x00, 0x00, // LLC/SNAP (RFC 1042)
-            0x08, 0x00, // IPv4
-            1, 3, 0, 95,
-        ];
-        assert_eq!(rx_ethertype(&mpdu, c::PKT_TYPE_MPDU, 24), Some(0x0800));
-        mpdu[30..32].copy_from_slice(&supplicant::ETHERTYPE_EAPOL.to_be_bytes());
-        assert_eq!(
-            rx_ethertype(&mpdu, c::PKT_TYPE_MPDU, 24),
-            Some(supplicant::ETHERTYPE_EAPOL)
-        );
-
-        let mut subframe = vec![1, 1, 1, 1, 1, 1, 3, 3, 3, 3, 3, 3, 0, 12];
-        subframe.extend_from_slice(&[0xAA, 0xAA, 0x03, 0x00, 0x00, 0x00, 0x88, 0x8E, 1, 3, 0, 95]);
-        assert_eq!(
-            rx_ethertype(&subframe, c::PKT_TYPE_MSDU, 0),
-            Some(supplicant::ETHERTYPE_EAPOL)
-        );
-        let mut with_mac = vec![0; 24];
-        with_mac.extend_from_slice(&subframe);
-        assert_eq!(
-            rx_ethertype(&with_mac, c::PKT_TYPE_MSDU_WITH_MAC, 24),
-            Some(supplicant::ETHERTYPE_EAPOL)
-        );
-
-        // Cut before the ethertype, and a packet type the RPU does not use.
-        assert_eq!(rx_ethertype(&mpdu[..31], c::PKT_TYPE_MPDU, 24), None);
-        assert_eq!(rx_ethertype(&mpdu, 7, 24), None);
     }
 }
