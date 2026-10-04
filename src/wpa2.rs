@@ -471,7 +471,7 @@ impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
                 info.flags = c::KEY_DEFAULT_TYPE_MULTICAST as _;
             }
         }
-        self.send_cmd(cmd).await;
+        self.send_cmd(&mut cmd).await;
     }
 
     /// Makes key `index` the one `kind` frames are sent with (NCS `nrf_wifi_wpa_supp_set_key` with
@@ -486,7 +486,7 @@ impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
             DefaultKey::Management => c::KEY_DEFAULT_MGMT | c::KEY_DEFAULT_TYPE_MULTICAST,
         };
         cmd.key_info.flags = flags as _;
-        self.send_cmd(cmd).await;
+        self.send_cmd(&mut cmd).await;
     }
 }
 

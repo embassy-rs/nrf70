@@ -353,7 +353,7 @@ impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
         sae_data(&mut cmd, &data);
         self.wpa3.confirm_sent = true;
         self.set_conn(ConnState::Authenticating, MLME_TIMEOUT);
-        self.send_cmd(cmd).await;
+        self.send_cmd(&mut cmd).await;
         debug!("SAE: commit taken, confirm sent");
     }
 
@@ -380,7 +380,7 @@ impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
         let mut cmd = self.auth_cmd(&bss);
         self.sae_commit(&mut cmd);
         self.set_conn(ConnState::Authenticating, MLME_TIMEOUT);
-        self.send_cmd(cmd).await;
+        self.send_cmd(&mut cmd).await;
     }
 
     /// The access point's confirm: if it is the one the shared key gives, the PMK is good and

@@ -1672,7 +1672,7 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
         } else {
             c::ps_state::PS_DISABLED
         } as _;
-        self.send_cmd(cmd).await;
+        self.send_cmd(&mut cmd).await;
     }
 
     pub async fn run(&mut self) -> ! {
@@ -1846,8 +1846,8 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
                 let _ = self.shared.power_done.try_send(());
             }
             Request::PowerSave => {
-                let cmd: c::umac_cmd_get_power_save_info = unsafe { zeroed() };
-                self.send_cmd(cmd).await;
+                let mut cmd: c::umac_cmd_get_power_save_info = unsafe { zeroed() };
+                self.send_cmd(&mut cmd).await;
             }
             #[cfg(feature = "ap")]
             Request::StartAp(settings) => {
@@ -2272,9 +2272,9 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
             Some(known) => {
                 cmd.info.scan_params.num_scan_channels = known.count as _;
                 let center_frequency = known.frequencies();
-                self.send_cmd(ScanChannelsCmd { cmd, center_frequency }).await;
+                self.send_cmd(&mut ScanChannelsCmd { cmd, center_frequency }).await;
             }
-            None => self.send_cmd(cmd).await,
+            None => self.send_cmd(&mut cmd).await,
         }
     }
 
@@ -2387,7 +2387,7 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
         // With WPA3, SAE in place of open system authentication.
         self.sae_start(&bss, &mut cmd);
         self.set_conn(ConnState::Authenticating, MLME_TIMEOUT);
-        self.send_cmd(cmd).await;
+        self.send_cmd(&mut cmd).await;
     }
 
     /// The authenticate command for `bss`: open system authentication.
@@ -2427,7 +2427,7 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
         info.maxidle_insec = 300;
         self.secure_association(&bss, info);
         self.set_conn(ConnState::Associating, MLME_TIMEOUT);
-        self.send_cmd(cmd).await;
+        self.send_cmd(&mut cmd).await;
     }
 
     /// Completes the connection once the RPU has added the AP as a peer and turned the carrier
@@ -2467,7 +2467,7 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
     async fn get_station(&mut self, bss: Bss) {
         let mut cmd: c::umac_cmd_get_sta = unsafe { zeroed() };
         cmd.info.mac_addr = bss.bssid;
-        self.send_cmd(cmd).await;
+        self.send_cmd(&mut cmd).await;
     }
 
     /// Reports the link up: the port is open.
@@ -2491,7 +2491,7 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
             mask: c::STA_FLAG_AUTHORIZED,
             set: c::STA_FLAG_AUTHORIZED,
         };
-        self.send_cmd(cmd).await;
+        self.send_cmd(&mut cmd).await;
     }
 
     /// Deauthenticates from the AP, reason 3 "leaving" (NCS `nrf_wifi_wpa_supp_deauthenticate`).
@@ -2503,7 +2503,7 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
         cmd.valid_fields = c::CMD_MLME_MAC_ADDR_VALID;
         cmd.info.reason_code = 3;
         cmd.info.mac_addr = bss.bssid;
-        self.send_cmd(cmd).await;
+        self.send_cmd(&mut cmd).await;
     }
 
     // ========= data path
@@ -2941,29 +2941,38 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
         }
     }
 
-    async fn send_cmd<T: Command>(&mut self, mut cmd: T) {
+    /// Sends a command to the RPU. It is taken by reference: an async function keeps what it is
+    /// given across its awaits, and the caller its own copy too, so a command passed by value
+    /// (the authentication one takes 1.7 KB) was held three times in the runner's future.
+    async fn send_cmd<T: Command>(&mut self, cmd: &mut T) {
         cmd.fill();
+        self.send_message(T::MESSAGE_TYPE, sliceit(cmd)).await;
+    }
 
-        #[repr(C, packed)]
-        struct Msg<T> {
-            header: c::host_rpu_msg,
-            cmd: T,
-        }
-
-        let mut msg = Msg {
-            header: unsafe { zeroed() },
-            cmd,
-        };
-        msg.header.hdr.len = size_of::<Msg<T>>() as _;
-        msg.header.type_ = T::MESSAGE_TYPE as _;
-
-        // A command longer than one buffer goes out in fragments, which the RPU reassembles
-        // using the total length in the header (NCS `hal_rpu_cmd_queue`).
-        for fragment in sliceit(&msg).chunks(MAX_CMD_SIZE) {
+    /// Sends a message to the RPU: its header, then `body`. A message longer than one command
+    /// buffer goes out in fragments, which the RPU reassembles using the total length in the
+    /// header (NCS `hal_rpu_cmd_queue`).
+    async fn send_message(&mut self, message_type: c::host_rpu_msg_type, body: &[u8]) {
+        const HEADER: usize = size_of::<c::host_rpu_msg>();
+        let mut header: c::host_rpu_msg = unsafe { zeroed() };
+        header.hdr.len = (HEADER + body.len()) as _;
+        header.type_ = message_type as _;
+        let mut rest = body;
+        let mut first = true;
+        while first || !rest.is_empty() {
             let mut buf = [0u32; MAX_CMD_SIZE / 4];
-            slice8_mut(&mut buf)[..fragment.len()].copy_from_slice(fragment);
-            let words = &buf[..fragment.len().div_ceil(4)];
-            if with_timeout(Duration::from_secs(1), self.rpu_cmd_ctrl_send(words))
+            let bytes = slice8_mut(&mut buf);
+            let mut len = 0;
+            if first {
+                bytes[..HEADER].copy_from_slice(sliceit(&header));
+                len = HEADER;
+                first = false;
+            }
+            let n = rest.len().min(MAX_CMD_SIZE - len);
+            bytes[len..len + n].copy_from_slice(&rest[..n]);
+            len += n;
+            rest = &rest[n..];
+            if with_timeout(Duration::from_secs(1), self.rpu_cmd_ctrl_send(&buf[..len.div_ceil(4)]))
                 .await
                 .is_err()
             {
@@ -2982,7 +2991,7 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
             buf_sz: RX_MAX_DATA_SIZE as _, // the RPU adds the headroom itself
             num_bufs: RX_BUFS_PER_QUEUE as _,
         };
-        let cmd = c::cmd_sys_init {
+        let mut cmd = c::cmd_sys_init {
             sys_head: unsafe { zeroed() },
             wdev_id: 0,
             sys_params: c::sys_params {
@@ -3056,14 +3065,14 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
             bt_coex_disable: 1,
             display_scan_abort_on_bss_limit: 0,
         };
-        self.send_cmd(cmd).await;
+        self.send_cmd(&mut cmd).await;
     }
 
     /// Sets the MAC address of the default interface (NCS `wifi_nrf_fmac_set_vif_macaddr`).
     async fn set_mac_address(&mut self, mac_addr: [u8; 6]) {
         let mut cmd: c::umac_cmd_change_macaddr = unsafe { zeroed() };
         cmd.macaddr_info.mac_addr = mac_addr;
-        self.send_cmd(cmd).await;
+        self.send_cmd(&mut cmd).await;
     }
 
     /// Brings the default interface up or down and waits for the RPU to confirm (NCS
@@ -3072,7 +3081,7 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
         let mut cmd: c::umac_cmd_chg_vif_state = unsafe { zeroed() };
         cmd.info.state = up as _;
         cmd.info.if_index = 0;
-        self.send_cmd(cmd).await;
+        self.send_cmd(&mut cmd).await;
 
         self.wait_for_event(
             "IFFLAGS_STATUS",
@@ -3087,14 +3096,14 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
     async fn trigger_scan(&mut self) {
         let mut cmd: c::umac_cmd_scan = unsafe { zeroed() };
         cmd.info.scan_reason = c::scan_reason::SCAN_DISPLAY as _;
-        self.send_cmd(cmd).await;
+        self.send_cmd(&mut cmd).await;
     }
 
     /// Asks for the results of a finished scan (NCS `nrf_wifi_sys_fmac_scan_res_get`).
     async fn get_scan_results(&mut self, reason: c::scan_reason) {
         let mut cmd: c::umac_cmd_get_scan_results = unsafe { zeroed() };
         cmd.scan_reason = reason as _;
-        self.send_cmd(cmd).await;
+        self.send_cmd(&mut cmd).await;
     }
 
     async fn init_rx(&mut self) {
