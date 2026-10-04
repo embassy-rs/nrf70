@@ -15,6 +15,7 @@
 
 #![no_std]
 #![deny(unused_must_use)]
+#![warn(missing_docs)]
 #![allow(async_fn_in_trait)]
 
 use core::mem::{align_of, size_of, zeroed};
@@ -89,6 +90,9 @@ const IRQ_POLL_PERIOD: Duration = Duration::from_millis(50);
 /// Longest event the driver reassembles. Longer ones are drained and dropped.
 const MAX_EVENT_LEN: usize = 4096;
 
+/// What the driver keeps for as long as it runs, outside the runner's future: the channels between
+/// its parts, the event buffer, the access point's station table and the cached PMKs. It goes in a
+/// `static`, for example a `StaticCell`.
 pub struct State {
     shared: Shared,
     ch: ch::State<MTU, 4, 4>,
@@ -103,6 +107,7 @@ pub struct State {
 }
 
 impl State {
+    /// An empty state, for [`new`].
     pub fn new() -> Self {
         Self {
             ch: ch::State::new(),
@@ -122,6 +127,7 @@ impl Default for State {
     }
 }
 
+/// The network device that embassy-net runs on.
 pub type NetDriver<'a> = ch::Device<'a, MTU>;
 
 /// Board settings, which the nRF Connect SDK takes from the devicetree and Kconfig.
@@ -144,17 +150,33 @@ pub struct Config {
 /// Highest TX power per band and modulation, in dBm (the devicetree's `wifi-max-tx-pwr-*`).
 #[derive(Clone, Copy, Debug, defmt::Format)]
 pub struct TxPowerCeiling {
+    /// 2.4 GHz, DSSS (802.11b).
     pub dsss_2g: u8,
+    /// 2.4 GHz, OFDM at MCS 0.
     pub mcs0_2g: u8,
+    /// 2.4 GHz, OFDM at MCS 7.
     pub mcs7_2g: u8,
+    /// 5 GHz, the low channels, at MCS 0.
     pub mcs0_5g_low: u8,
+    /// 5 GHz, the low channels, at MCS 7.
     pub mcs7_5g_low: u8,
+    /// 5 GHz, the middle channels, at MCS 0.
     pub mcs0_5g_mid: u8,
+    /// 5 GHz, the middle channels, at MCS 7.
     pub mcs7_5g_mid: u8,
+    /// 5 GHz, the high channels, at MCS 0.
     pub mcs0_5g_high: u8,
+    /// 5 GHz, the high channels, at MCS 7.
     pub mcs7_5g_high: u8,
 }
 
+/// Turns the nRF70 on and brings its station interface up, then returns the [`NetDriver`] for
+/// embassy-net, the [`Control`] for the application and the [`Runner`], whose [`Runner::run`] has
+/// to run in a task of its own.
+///
+/// `bus` reaches the chip; `bucken` drives its BUCKEN input and `iovdd_ctl` the power to its I/O
+/// interface (P0.31 on the nRF7002-DK), which the driver turns on in that order; `host_irq` is its
+/// HOST_IRQ output.
 pub async fn new<'a, BUS, IN, OUT>(
     state: &'a mut State,
     bus: BUS,
@@ -253,6 +275,8 @@ fn parse_event(buf: &[u8]) -> Event<'_> {
     }
 }
 
+/// The part of the driver that owns the chip: it carries the frames, and does what [`Control`]
+/// asks.
 pub struct Runner<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> {
     ch: ch::Runner<'a, MTU>,
     state_ch: ch::StateRunner<'a>,
@@ -385,6 +409,8 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
         self.rpu.send_cmd(&mut cmd).await;
     }
 
+    /// Runs the driver: handles the RPU's events, the frames to send and the requests of
+    /// [`Control`]. It never returns.
     pub async fn run(&mut self) -> ! {
         info!("running...");
 

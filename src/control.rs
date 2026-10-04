@@ -220,22 +220,34 @@ impl Scanner<'_> {
 /// Frequency band of a BSS.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, defmt::Format)]
 pub enum Band {
+    /// 2.4 GHz.
     Band2_4GHz,
+    /// 5 GHz.
     Band5GHz,
+    /// A band the driver does not know, by the RPU's number.
     Unknown(u32),
 }
 
 /// Security of a BSS, as the RPU classifies it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, defmt::Format)]
 pub enum Security {
+    /// No encryption.
     Open,
+    /// WEP.
     Wep,
+    /// WPA, the version before WPA2.
     Wpa,
+    /// WPA2-Personal.
     Wpa2,
+    /// WPA2-Personal with PSK-SHA256 key management.
     Wpa2Sha256,
+    /// WPA3-Personal (SAE), alone or beside WPA2.
     Wpa3,
+    /// WAPI.
     Wapi,
+    /// WPA2-Enterprise (802.1X).
     Eap,
+    /// Another kind (other enterprise and SHA-384 variants), by the RPU's number.
     Unknown(u32),
 }
 
@@ -244,16 +256,22 @@ pub enum Security {
 pub struct BssInfo {
     ssid: [u8; 32],
     ssid_len: u8,
+    /// The access point's MAC address.
     pub bssid: [u8; 6],
+    /// Its band.
     pub band: Band,
+    /// Its channel number.
     pub channel: u32,
     /// Signal strength in dBm, when the RPU reports it in mBm.
     pub rssi: Option<i32>,
+    /// The security it announces.
     pub security: Security,
+    /// Its beacon interval, in time units (1.024 ms).
     pub beacon_interval: u16,
 }
 
 impl BssInfo {
+    /// The network's SSID, which may be empty (a hidden network).
     pub fn ssid(&self) -> &[u8] {
         &self.ssid[..self.ssid_len as usize]
     }
