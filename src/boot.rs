@@ -13,7 +13,7 @@ use crate::control::ScanEvent;
 use crate::rpu::regions::*;
 use crate::rpu::{Processor, MAX_TX_AGGREGATION, RX_BUFS, RX_BUFS_PER_QUEUE, RX_MAX_DATA_SIZE};
 use crate::station::ConnState;
-use crate::{c, ch, sliceit, Bus, Config, ConnectError, Runner, TxPowerCeiling, EVENT_TIMEOUT};
+use crate::{c, ch, sliceit, Bus, ConnectError, Runner, TxPowerCeiling, EVENT_TIMEOUT};
 
 /// How long a deauthentication frame gets to leave before the chip is turned off.
 const POWER_OFF_DELAY: Duration = Duration::from_millis(20);
@@ -260,10 +260,33 @@ const FALLBACK_MAC_ADDRESS: [u8; 6] = [0x02, 0x70, 0x02, 0x00, 0x00, 0x01];
 impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT> {
     /// Turns the chip on, loads its firmware and brings the interface up.
     pub(crate) async fn init(&mut self) {
-        let config = self.config;
         self.rpu.reset();
         self.tx_tokens_busy = 0;
+        self.power_on().await;
+        self.boot_firmware().await;
+        let mac_addr = self.init_umac().await;
+        self.init_done = false;
+        if !self.wait_until(EVENT_TIMEOUT, |r| r.init_done).await {
+            panic!("timed out waiting for INIT_DONE");
+        }
+        info!("======== INIT DONE!! ==========");
 
+        info!("Bringing the interface up...");
+        self.set_mac_address(mac_addr).await;
+        self.set_station_address(mac_addr);
+        self.set_ap_address(mac_addr);
+        self.state_ch
+            .set_hardware_address(ch::driver::HardwareAddress::Ethernet(mac_addr));
+        self.set_interface_state(true).await;
+        self.powered = true;
+        if self.power_save {
+            self.set_power_save(true).await;
+        }
+    }
+
+    /// Powers the chip up (BUCKEN, then the power to its I/O interface), wakes the RPU up and
+    /// enables its clocks and its interrupt.
+    async fn power_on(&mut self) {
         info!("power on...");
         Timer::after(Duration::from_millis(10)).await;
         self.bucken.set_high().unwrap();
@@ -279,8 +302,11 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
 
         info!("enable interrupt...");
         self.rpu.irq_enable().await;
+    }
 
-        // Based on 'nrf_wifi_fmac_fw_load'
+    /// Loads the firmware patches into both processors and boots them (NCS
+    /// `nrf_wifi_fmac_fw_load`).
+    async fn boot_firmware(&mut self) {
         let fw = parse_firmware(FIRMWARE);
 
         info!("reset processors...");
@@ -313,13 +339,16 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
             "firmware booted: UMAC {}.{}.{}.{}, LMAC {}.{}.{}.{}",
             umac_ver[0], umac_ver[1], umac_ver[2], umac_ver[3], lmac_ver[0], lmac_ver[1], lmac_ver[2], lmac_ver[3]
         );
+    }
 
+    /// Reads the OTP, sets the RX buffers up and sends the UMAC its init command, with the RF
+    /// parameters the OTP gives (NCS `nrf_wifi_fmac_dev_init`). Returns the chip's MAC address.
+    async fn init_umac(&mut self) -> [u8; 6] {
         info!("Initializing rpu info...");
         self.rpu.init_info().await;
 
         info!("Reading OTP...");
         let otp = self.rpu.read_otp().await;
-        let rf_params = rf_params(&otp, &config.max_tx_power);
         let mac_addr = match otp_mac_address(&otp.info) {
             Some(mac) => mac,
             None => {
@@ -339,24 +368,9 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
         self.rpu.init_rx().await;
 
         info!("Initializing umac...");
-        self.init_umac(&rf_params, &config).await;
-        self.init_done = false;
-        if !self.wait_until(EVENT_TIMEOUT, |r| r.init_done).await {
-            panic!("timed out waiting for INIT_DONE");
-        }
-        info!("======== INIT DONE!! ==========");
-
-        info!("Bringing the interface up...");
-        self.set_mac_address(mac_addr).await;
-        self.set_station_address(mac_addr);
-        self.set_ap_address(mac_addr);
-        self.state_ch
-            .set_hardware_address(ch::driver::HardwareAddress::Ethernet(mac_addr));
-        self.set_interface_state(true).await;
-        self.powered = true;
-        if self.power_save {
-            self.set_power_save(true).await;
-        }
+        let rf_params = rf_params(&otp, &self.config.max_tx_power);
+        self.send_sys_init(&rf_params).await;
+        mac_addr
     }
 
     /// Puts the chip in its shutdown state (NCS `rpu_pwroff`), after leaving the network.
@@ -383,7 +397,7 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
 
     /// Sends the system init command (NCS `umac_cmd_sys_init`), with the SDK's defaults for a
     /// station.
-    async fn init_umac(&mut self, rf_params: &c::phy_rf_params, config: &Config) {
+    async fn send_sys_init(&mut self, rf_params: &c::phy_rf_params) {
         let mut rf_params_bytes = [0u8; c::RF_PARAMS_SIZE as usize];
         rf_params_bytes.copy_from_slice(sliceit(rf_params));
 
@@ -395,7 +409,7 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
             sys_head: unsafe { zeroed() },
             wdev_id: 0,
             sys_params: c::sys_params {
-                sleep_enable: if config.low_power {
+                sleep_enable: if self.config.low_power {
                     c::HW_SLEEP_ENABLE
                 } else {
                     c::SLEEP_DISABLE
@@ -437,7 +451,7 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
                 vbat_threshold: 0,
             },
             tcp_ip_checksum_offload: 0,
-            country_code: config.country_code,
+            country_code: self.config.country_code,
             op_band: c::op_band::BAND_ALL as _,
             // Management frames stay in the RPU instead of taking RX buffers.
             mgmt_buff_offload: 1,

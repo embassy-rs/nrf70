@@ -976,14 +976,7 @@ impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
         // that protects its broadcast management frames.
         #[cfg(feature = "wpa2")]
         if let Some(seed) = settings.security.seed() {
-            let keys = GroupKeys::derive(&seed, &self.ap.mac_addr, 0);
-            self.install_group_keys(&keys).await;
-            self.set_default_key(keys.gtk.index, DefaultKey::Multicast).await;
-            self.set_default_key(keys.igtk.index, DefaultKey::Management).await;
-            self.ap.gtk = Some(keys);
-            self.ap.next_gtk = None;
-            self.ap.gtks = 0;
-            self.ap.rekey_at = Some(Instant::now() + GROUP_REKEY);
+            self.start_group_keys(&seed).await;
         }
 
         self.ap.settings = Some(*settings);
@@ -1148,6 +1141,19 @@ impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
     /// The RPU answered an interface type change.
     pub(super) fn interface_type_set(&mut self, body: &[u8]) {
         self.ap.set_interface = Some(unsliceit::<c::umac_event_set_interface>(body).return_value);
+    }
+
+    /// Gives the RPU the first group keys of a WPA2 or WPA3 access point, drawn from `seed`.
+    #[cfg(feature = "wpa2")]
+    async fn start_group_keys(&mut self, seed: &[u8; 32]) {
+        let keys = GroupKeys::derive(seed, &self.ap.mac_addr, 0);
+        self.install_group_keys(&keys).await;
+        self.set_default_key(keys.gtk.index, DefaultKey::Multicast).await;
+        self.set_default_key(keys.igtk.index, DefaultKey::Management).await;
+        self.ap.gtk = Some(keys);
+        self.ap.next_gtk = None;
+        self.ap.gtks = 0;
+        self.ap.rekey_at = Some(Instant::now() + GROUP_REKEY);
     }
 
     /// Sends a management frame (the SDK's `nrf_wifi_nl80211_send_mlme`). With `noack`, the RPU
