@@ -582,6 +582,32 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "wpa3")]
+    fn a_station_with_a_cached_pmk_names_it_and_gets_the_keys() {
+        let (pmk, pmkid) = ([0x5A; 32], [0x87; 16]);
+        let ap_rsne = Rsne::access_point(WPA3);
+        let rsnxe = Some(Rsnxe::sae_h2e());
+        let mut station = Supplicant::new(pmk, AA, SPA, ap_rsne, [7; 32], true)
+            .unwrap()
+            .with_rsnxe(rsnxe, rsnxe)
+            .with_pmkid(Some(pmkid));
+        // The association request names the PMKID after the capabilities, and is taken as any
+        // other.
+        let sta_rsne = *station.rsne();
+        assert_eq!(sta_rsne.as_bytes()[1], 20 + 2 + 16);
+        assert!(sta_rsne.names_pmkid(&pmkid));
+        assert!(!sta_rsne.names_pmkid(&[0; 16]));
+        let suite = sta_rsne.check_station(WPA3).unwrap();
+        assert_eq!((suite.akm, suite.mfp), (crate::supplicant::Akm::Sae, true));
+        // Message 2 repeats it.
+        let mut ap = Authenticator::new(pmk, AA, SPA, ap_rsne, sta_rsne, suite, anonce(&[3; 32], &AA, &SPA, 0))
+            .with_rsnxe(rsnxe, rsnxe)
+            .with_pmkid(Some(pmkid));
+        handshake(&mut ap, &mut station, &GroupKeys::derive(&[3; 32], &AA, 0));
+        assert!(ap.done());
+    }
+
+    #[test]
     fn a_wrong_passphrase_gets_no_message_3_and_the_handshake_gives_up() {
         let (mut ap, mut station, gtk) = pair(b"wrong horse");
         let mut out = [0; MESSAGE_MAX];

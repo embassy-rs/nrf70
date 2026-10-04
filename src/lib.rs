@@ -34,6 +34,8 @@ mod ap;
 #[cfg(all(feature = "ap", feature = "wpa2"))]
 mod authenticator;
 #[cfg(feature = "wpa3")]
+mod pmksa;
+#[cfg(feature = "wpa3")]
 mod sae;
 #[cfg(feature = "wpa2")]
 mod supplicant;
@@ -191,6 +193,9 @@ pub struct State {
     ch: ch::State<MTU, 4, 4>,
     #[cfg(feature = "ap")]
     ap_storage: ap::Storage,
+    /// The PMKs of the WPA3 access points joined.
+    #[cfg(feature = "wpa3")]
+    pmksa_cache: wpa3::PmksaCache,
 }
 
 impl State {
@@ -199,6 +204,8 @@ impl State {
             ch: ch::State::new(),
             #[cfg(feature = "ap")]
             ap_storage: ap::Storage::new(),
+            #[cfg(feature = "wpa3")]
+            pmksa_cache: wpa3::PmksaCache::new(),
             shared: Shared {
                 requests: Channel::new(),
                 scan_results: Channel::new(),
@@ -299,7 +306,7 @@ where
         #[cfg(feature = "wpa2")]
         wpa2: wpa2::State::new(),
         #[cfg(feature = "wpa3")]
-        wpa3: wpa3::State::new(),
+        wpa3: wpa3::State::new(&mut state.pmksa_cache),
         peer_known: false,
         carrier_on: false,
         link_up: false,
@@ -1402,9 +1409,9 @@ pub struct Runner<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> {
     /// The key handshakes of a WPA2 network.
     #[cfg(feature = "wpa2")]
     wpa2: wpa2::State,
-    /// The SAE exchange of a WPA3 network.
+    /// The SAE exchange of a WPA3 network, and the PMKs of earlier ones.
     #[cfg(feature = "wpa3")]
-    wpa3: wpa3::State,
+    wpa3: wpa3::State<'a>,
     /// The RPU added the AP as a peer (`UMAC_EVENT_NEW_STATION`). TX needs it.
     peer_known: bool,
     /// The RPU reported the carrier on (`CMD_CARRIER_ON`).
@@ -1427,6 +1434,10 @@ impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
 
     async fn sae_frame(&mut self, _event: &c::umac_event_mlme) -> bool {
         false
+    }
+
+    fn pmksa_failed(&mut self, _error: &ConnectError) -> Option<Bss> {
+        None
     }
 }
 
@@ -2137,6 +2148,14 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
         ) {
             self.deauthenticate().await;
         }
+        // A PMK cached from an earlier SAE exchange that the access point does not take: SAE again.
+        if let Some(bss) = self.pmksa_failed(&error) {
+            self.peer_known = false;
+            self.carrier_on = false;
+            self.forget_keys();
+            self.authenticate(bss).await;
+            return;
+        }
         if refused {
             if let Some(bss) = self.conn_candidates.take_best() {
                 info!("trying the next access point of the network");
@@ -2157,6 +2176,11 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
     async fn connection_lost(&mut self) {
         match self.conn {
             ConnState::Idle => {}
+            // Nothing is associated yet: the end of the association that a new authentication with
+            // the same access point follows (SAE after a cached PMK that did not serve), which the
+            // RPU reports after the authentication has started. An authentication that fails ends
+            // with its own event, or times out.
+            ConnState::Authenticating => debug!("disconnection ignored: not associated"),
             ConnState::Connected => {
                 warn!("disconnected");
                 self.reset_conn();

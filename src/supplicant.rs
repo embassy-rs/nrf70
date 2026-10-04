@@ -298,6 +298,19 @@ impl Rsne {
         &self.bytes[..self.len as usize]
     }
 
+    /// The element of [`Self::for_suite`], which ends with the capabilities, naming `pmkid` after
+    /// them: the association request of a station that uses the PMK of an earlier SAE exchange.
+    #[cfg(feature = "wpa3")]
+    fn with_pmkid(&self, pmkid: &[u8; 16]) -> Self {
+        let mut rsne = *self;
+        let at = self.len as usize;
+        rsne.bytes[at..at + 2].copy_from_slice(&1u16.to_le_bytes());
+        rsne.bytes[at + 2..at + 18].copy_from_slice(pmkid);
+        rsne.len += 18;
+        rsne.bytes[1] += 18;
+        rsne
+    }
+
     /// The fields of the element, if it is an RSN version 1 one with a group cipher and lists of
     /// pairwise ciphers and key management suites.
     fn fields(&self) -> Option<RsneFields<'_>> {
@@ -947,6 +960,16 @@ impl Supplicant {
     pub(crate) fn with_rsnxe(mut self, rsnxe: Option<Rsnxe>, ap_rsnxe: Option<Rsnxe>) -> Self {
         self.rsnxe = rsnxe;
         self.ap_rsnxe = ap_rsnxe;
+        self
+    }
+
+    /// The PMKID of the PMK, if it comes from an earlier SAE exchange: the association request
+    /// names it, and message 2 repeats it with the rest of the RSNE.
+    #[cfg(feature = "wpa3")]
+    pub(crate) fn with_pmkid(mut self, pmkid: Option<[u8; 16]>) -> Self {
+        if let Some(pmkid) = pmkid {
+            self.rsne = self.rsne.with_pmkid(&pmkid);
+        }
         self
     }
 

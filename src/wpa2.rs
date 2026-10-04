@@ -174,12 +174,13 @@ impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
             (Credentials::Wpa2(wpa2), Some(ap_rsne)) => {
                 Supplicant::new(wpa2.psk, bss.bssid, self.wpa2.mac_addr, ap_rsne, wpa2.nonce_seed, false)
             }
-            // WPA3: the PMK of the SAE exchange that just went through.
+            // WPA3: the PMK of the SAE exchange that just went through, or of an earlier one.
             #[cfg(feature = "wpa3")]
             (Credentials::Wpa3(wpa3), Some(ap_rsne)) => self
                 .wpa3
                 .pmk
-                .and_then(|pmk| Supplicant::new(pmk, bss.bssid, self.wpa2.mac_addr, ap_rsne, wpa3.seed, true)),
+                .and_then(|pmk| Supplicant::new(pmk, bss.bssid, self.wpa2.mac_addr, ap_rsne, wpa3.seed, true))
+                .map(|supplicant| supplicant.with_pmkid(self.wpa3.pmkid)),
             _ => None,
         }
         .map(|supplicant| supplicant.with_rsnxe(self.association_rsnxe(), bss.rsnxe));

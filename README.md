@@ -60,6 +60,13 @@ Working:
   against the test vectors of IEEE 802.11-2020, J.10, and the handshake after it against vectors
   computed with OpenSSL. Both PWE derivations were checked on an nRF7002-DK against hostapd, with
   group key renewals every 30 s.
+  The PMK of each exchange is kept for 12 hours, for the four access points joined last: joining
+  one of them again with the same password skips SAE (an open system authentication, and an
+  association that names the PMKID), and goes through SAE after all if the access point no longer
+  has the PMK or does not take it. That saves the exchange's curve computations, 0.42 s on an
+  nRF5340 at 128 MHz with hash to element: rejoining hostapd after a power cycle took 0.51 s
+  instead of 0.93 s. Both fallbacks were checked by spoiling the cached PMKID, then the cached
+  PMK.
 - Access point mode with `Control::start_ap_open`, with the `ap` cargo feature: an open network on
   a 2.4 GHz channel (1 to 13) or a 5 GHz one that needs no radar detection (36 to 48, 149 to
   177), for up to four stations. The firmware sends the beacons; the driver answers probe,
@@ -150,8 +157,8 @@ Working:
 Not yet:
 
 - Beyond WPA2-Personal and WPA3-Personal with CCMP (see above): TKIP as pairwise cipher (WPA
-  networks without WPA2), SAE on other groups than 19 and SAE-EXT-KEY, SAE password identifiers,
-  and PMK caching. An access point that requires one of them is reported as
+  networks without WPA2), SAE on other groups than 19 and SAE-EXT-KEY, and SAE password
+  identifiers. An access point that requires one of them is reported as
   `ConnectError::SecurityMismatch`.
 - Target wake time, and the current drawn in power save and low power mode, which is not
   measured yet.

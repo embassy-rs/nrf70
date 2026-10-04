@@ -1,6 +1,7 @@
 //! What the runner needs for WPA3-Personal networks, behind the `wpa3` feature: the SAE exchange,
 //! which takes the place of open system authentication, and the PMK it leaves for the 4-way
-//! handshake of `wpa2.rs`. The exchange itself is in `sae.rs`.
+//! handshake of `wpa2.rs`. The exchange itself is in `sae.rs`. The PMK is kept (`pmksa.rs`): the
+//! next join of the same access point skips SAE.
 //!
 //! The nRF70 firmware sends the SAE commit and confirm messages as authentication frames, from the
 //! authenticate command (`AUTHTYPE_SAE`, with the frame's body from its transaction sequence
@@ -9,7 +10,7 @@
 
 use core::mem::zeroed;
 
-use defmt::{debug, warn};
+use defmt::{debug, info, warn};
 use embassy_time::Instant;
 use embedded_hal::digital::{InputPin, OutputPin};
 use embedded_hal_async::digital::Wait;
@@ -17,6 +18,7 @@ use hmac::{Hmac, KeyInit, Mac};
 use rand_core::CryptoRng;
 use sha2::Sha256;
 
+use crate::pmksa::{self, Pmksa};
 use crate::sae::{self, Pt, Sae};
 use crate::supplicant::Rsnxe;
 use crate::{c, Bss, Bus, ConnState, ConnectError, Control, Credentials, Runner, MLME_TIMEOUT};
@@ -26,6 +28,12 @@ const PASSWORD_MAX: usize = 128;
 
 /// The longest anti-clogging token the driver keeps.
 const TOKEN_MAX: usize = 64;
+
+/// How many access points' PMKs the station keeps.
+const PMKSA_CACHE: usize = 4;
+
+/// The PMKs of the access points joined.
+pub(crate) type PmksaCache = pmksa::Cache<PMKSA_CACHE>;
 
 /// Authentication algorithm number of SAE.
 const AUTH_ALGORITHM_SAE: u16 = 3;
@@ -51,6 +59,8 @@ pub(crate) struct Wpa3 {
     pub(crate) pt: Pt,
     /// What the SAE scalars and the supplicant's nonces are drawn from.
     pub(crate) seed: [u8; 32],
+    /// Which network the password is for, for the PMKs kept.
+    network: u64,
 }
 
 impl Wpa3 {
@@ -66,6 +76,7 @@ impl Wpa3 {
             password_len: password.len() as u8,
             pt: Pt::derive(ssid, password, None),
             seed,
+            network: pmksa::network_id(ssid, password),
         };
         wpa3.password[..password.len()].copy_from_slice(password);
         Some(wpa3)
@@ -76,8 +87,8 @@ impl Wpa3 {
     }
 }
 
-/// What the runner keeps of the SAE exchange of a join.
-pub(crate) struct State {
+/// What the runner keeps of the SAE exchange of a join, and the PMKs of earlier ones.
+pub(crate) struct State<'a> {
     sae: Option<Sae>,
     /// The exchange uses hash to element: the access point announces it.
     h2e: bool,
@@ -88,12 +99,16 @@ pub(crate) struct State {
     /// The anti-clogging token the access point asked for, if any.
     token: [u8; TOKEN_MAX],
     token_len: usize,
-    /// The PMK of the exchange that went through, for the association.
+    /// The PMK of the exchange that went through, or of an earlier one, for the association.
     pub(crate) pmk: Option<[u8; 32]>,
+    /// The PMKID of the earlier exchange whose PMK the association uses, if it does: the
+    /// association request names it.
+    pub(crate) pmkid: Option<[u8; 16]>,
+    cache: &'a mut PmksaCache,
 }
 
-impl State {
-    pub(crate) const fn new() -> Self {
+impl<'a> State<'a> {
+    pub(crate) fn new(cache: &'a mut PmksaCache) -> Self {
         Self {
             sae: None,
             h2e: false,
@@ -102,6 +117,8 @@ impl State {
             token: [0; TOKEN_MAX],
             token_len: 0,
             pmk: None,
+            pmkid: None,
+            cache,
         }
     }
 }
@@ -115,6 +132,11 @@ impl Control<'_> {
     ///
     /// The exchange runs here, on the host, and needs random numbers: 32 bytes from `rng`, any
     /// cryptographically secure generator the application has, taken before joining.
+    ///
+    /// The PMK of the exchange is kept for 12 hours, for the four access points joined last: the
+    /// next join of one of them with the same password skips SAE (an open system authentication,
+    /// and the association names the PMK), and goes through SAE after all if the access point no
+    /// longer has it.
     pub async fn join_wpa3(
         &mut self,
         ssid: &[u8],
@@ -157,12 +179,24 @@ pub(crate) fn scalars(seed: &[u8; 32], attempt: u32) -> (p256::Scalar, p256::Sca
 
 impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
     /// For a WPA3 join, starts SAE with `bss` in place of open system authentication: a new
-    /// exchange, whose commit goes in the authenticate command `cmd`.
+    /// exchange, whose commit goes in the authenticate command `cmd`. With the PMK of an earlier
+    /// exchange with `bss`, `cmd` stays an open system authentication, and the association names
+    /// its PMKID (wpa_supplicant's `sae_pmksa_caching`).
     pub(super) fn sae_start(&mut self, bss: &Bss, cmd: &mut c::umac_cmd_auth) {
         let Credentials::Wpa3(wpa3) = self.conn_credentials else {
             return;
         };
         let h2e = bss.rsnxe.is_some_and(|rsnxe| rsnxe.offers_sae_h2e());
+        self.wpa3.h2e = h2e;
+        self.wpa3.sae = None;
+        self.wpa3.pmk = None;
+        self.wpa3.pmkid = None;
+        if let Some(pmksa) = self.wpa3.cache.get(&bss.bssid, wpa3.network, Instant::now()) {
+            debug!("SAE: the PMK of an earlier exchange, open system authentication");
+            self.wpa3.pmk = Some(pmksa.pmk);
+            self.wpa3.pmkid = Some(pmksa.pmkid);
+            return;
+        }
         let pwe = if h2e {
             Some(wpa3.pt.pwe(&self.wpa2_mac_addr(), &bss.bssid))
         } else {
@@ -171,10 +205,8 @@ impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
         self.wpa3.attempts += 1;
         let (rand, mask) = scalars(&wpa3.seed, self.wpa3.attempts);
         self.wpa3.sae = pwe.and_then(|pwe| Sae::new(pwe, rand, mask));
-        self.wpa3.h2e = h2e;
         self.wpa3.confirm_sent = false;
         self.wpa3.token_len = 0;
-        self.wpa3.pmk = None;
         debug!(
             "SAE with {}",
             if h2e { "hash to element" } else { "hunting and pecking" }
@@ -325,7 +357,14 @@ impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
         match sae.check_confirm(body) {
             Ok(()) => {
                 debug!("SAE: done");
-                self.wpa3.pmk = Some(sae.pmk());
+                let pmksa = Pmksa {
+                    pmk: sae.pmk(),
+                    pmkid: sae.pmkid(),
+                };
+                self.wpa3.pmk = Some(pmksa.pmk);
+                if let (Some(bss), Credentials::Wpa3(wpa3)) = (self.conn_bss, self.conn_credentials) {
+                    self.wpa3.cache.insert(&bss.bssid, wpa3.network, pmksa, Instant::now());
+                }
                 self.associate().await;
             }
             Err(refusal) => {
@@ -333,6 +372,26 @@ impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
                 self.connect_failed(ConnectError::HandshakeFailed).await;
             }
         }
+    }
+
+    /// After `error`, whether a join that used the PMK of an earlier exchange goes on with SAE:
+    /// the access point no longer has it (hostapd refuses the association with status 53, which the
+    /// RPU reports as the removal of its peer) or does not take it (the 4-way handshake fails). The
+    /// PMK is forgotten, and the access point to try again comes back.
+    pub(super) fn pmksa_failed(&mut self, error: &ConnectError) -> Option<Bss> {
+        let retry = matches!(
+            error,
+            ConnectError::AuthenticationRejected(_)
+                | ConnectError::AssociationRejected(_)
+                | ConnectError::Timeout
+                | ConnectError::Disconnected
+                | ConnectError::HandshakeFailed
+        );
+        let bss = self.conn_bss.filter(|_| retry && self.wpa3.pmkid.is_some())?;
+        info!("the access point did not take the PMK of the last SAE exchange: SAE again");
+        self.wpa3.cache.remove(&bss.bssid);
+        self.wpa3.pmkid = None;
+        Some(bss)
     }
 
     /// The RSNXE the association request carries for WPA3: with hash to element.

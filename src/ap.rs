@@ -659,7 +659,7 @@ struct Station {
     /// With WPA3, the PMK of the SAE exchange that authenticated it, or of an earlier one that its
     /// association request named.
     #[cfg(feature = "wpa3")]
-    pmksa: Option<wpa3::Pmksa>,
+    pmksa: Option<crate::pmksa::Pmksa>,
     /// With WPA2, when the last handshake message goes out again if unanswered.
     #[cfg(feature = "wpa2")]
     retry_at: Option<Instant>,
@@ -1301,7 +1301,8 @@ impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
                     };
                     let station = self.ap.storage.stations.get(slot).unwrap();
                     if station.pmksa.is_none() {
-                        station.pmksa = self.ap.storage.pmksa_cache.find(&mgmt.from, &rsne, Instant::now());
+                        station.pmksa =
+                            wpa3::cached_pmksa(&self.ap.storage.pmksa_cache, &mgmt.from, &rsne, Instant::now());
                         if station.pmksa.is_some() {
                             debug!("association request from {:02x}: cached PMK, {}", mgmt.from, suite);
                         }
