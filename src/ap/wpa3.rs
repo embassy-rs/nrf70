@@ -200,8 +200,8 @@ impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
             return self.ap_sae_reply(from, 1, STATUS_UNSPECIFIED, &[]).await;
         };
         let mut sae = loop {
-            self.ap.sae_attempts += 1;
-            let (rand, mask) = scalars(&seed, self.ap.sae_attempts);
+            self.ap.rsn.sae_attempts += 1;
+            let (rand, mask) = scalars(&seed, self.ap.rsn.sae_attempts);
             if let Some(sae) = Sae::new(pwe, rand, mask) {
                 break sae;
             }
@@ -259,7 +259,7 @@ impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
         let len = exchange.sae.write_confirm(&mut confirm);
         let pmksa = exchange.sae.pmksa();
         if let Some(station) = self.ap.storage.stations.get(slot) {
-            station.pmksa = Some(pmksa);
+            station.rsn.pmksa = Some(pmksa);
         }
         self.ap.storage.pmksa_cache.insert(from, NETWORK, pmksa, Instant::now());
         debug!("SAE with {:02x}: confirmed", from);

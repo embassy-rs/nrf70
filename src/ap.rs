@@ -600,25 +600,30 @@ struct Station {
     poll_deadline: Option<Instant>,
     /// It is being let go: it keeps its place in the RPU until it hears why.
     leaving: Option<Leaving>,
-    /// With WPA2, the RSNE of its association request, which message 2 must repeat.
+    /// With WPA2 and WPA3, its security association.
     #[cfg(feature = "wpa2")]
+    rsn: StationRsn,
+}
+
+/// The security association of a station of a WPA2 or WPA3 access point (IEEE 802.11-2020,
+/// 12.6): what it asked for, its PMK, and the handshake and SA Query under way.
+#[cfg(feature = "wpa2")]
+#[derive(Clone, Copy)]
+struct StationRsn {
+    /// The RSNE of its association request, which message 2 must repeat.
     rsne: Option<(Rsne, Suite)>,
-    /// With WPA2, the RSNXE of its association request, if any, which message 2 must repeat.
-    #[cfg(feature = "wpa2")]
+    /// The RSNXE of its association request, if any, which message 2 must repeat.
     rsnxe: Option<Rsnxe>,
     /// With WPA3, the PMK of the SAE exchange that authenticated it, or of an earlier one that its
     /// association request named.
     #[cfg(feature = "wpa3")]
     pmksa: Option<crate::pmksa::Pmksa>,
-    /// With WPA2, when the last handshake message goes out again if unanswered.
-    #[cfg(feature = "wpa2")]
+    /// When the last handshake message goes out again if unanswered.
     retry_at: Option<Instant>,
     /// With management frame protection, the SA Query under way, which checks the association of
     /// a station that asks for a new one.
-    #[cfg(feature = "wpa2")]
     sa_query: Option<SaQuery>,
     /// The last SA Query went unanswered: the station's next association request is taken.
-    #[cfg(feature = "wpa2")]
     sa_query_timed_out: bool,
 }
 
@@ -640,17 +645,15 @@ impl Station {
             poll_deadline: None,
             leaving: None,
             #[cfg(feature = "wpa2")]
-            rsne: None,
-            #[cfg(feature = "wpa2")]
-            rsnxe: None,
-            #[cfg(feature = "wpa3")]
-            pmksa: None,
-            #[cfg(feature = "wpa2")]
-            retry_at: None,
-            #[cfg(feature = "wpa2")]
-            sa_query: None,
-            #[cfg(feature = "wpa2")]
-            sa_query_timed_out: false,
+            rsn: StationRsn {
+                rsne: None,
+                rsnxe: None,
+                #[cfg(feature = "wpa3")]
+                pmksa: None,
+                retry_at: None,
+                sa_query: None,
+                sa_query_timed_out: false,
+            },
         }
     }
 }
@@ -838,31 +841,35 @@ impl Storage {
 }
 
 /// What the runner keeps for the access point.
+/// The keys of a WPA2 or WPA3 access point: its group keys, and how many keys and exchanges were
+/// drawn from its seed.
+#[cfg(feature = "wpa2")]
+struct ApRsn {
+    /// The group key in use.
+    gtk: Option<GroupKeys>,
+    /// While the group key is renewed: the next one, which becomes the one in use once every
+    /// station has it.
+    next_gtk: Option<GroupKeys>,
+    /// When the group key is renewed next.
+    rekey_at: Option<Instant>,
+    /// How many group keys were drawn.
+    gtks: u64,
+    /// How many ANonces were drawn.
+    nonces: u64,
+    /// With WPA3, how many SAE exchanges drew their scalars.
+    #[cfg(feature = "wpa3")]
+    sae_attempts: u32,
+}
+
 pub(crate) struct State<'a> {
     /// The access point is up.
     pub(crate) running: bool,
     settings: Option<Settings>,
     mac_addr: [u8; 6],
     storage: &'a mut Storage,
-    /// With WPA2, the group key in use.
+    /// With WPA2 and WPA3, the group keys and what the keys are drawn with.
     #[cfg(feature = "wpa2")]
-    gtk: Option<GroupKeys>,
-    /// With WPA2, while the group key is renewed: the next one, which becomes the one in use once
-    /// every station has it.
-    #[cfg(feature = "wpa2")]
-    next_gtk: Option<GroupKeys>,
-    /// With WPA2, when the group key is renewed next.
-    #[cfg(feature = "wpa2")]
-    rekey_at: Option<Instant>,
-    /// With WPA2, how many group keys were drawn.
-    #[cfg(feature = "wpa2")]
-    gtks: u64,
-    /// With WPA2, how many ANonces were drawn.
-    #[cfg(feature = "wpa2")]
-    nonces: u64,
-    /// With WPA3, how many SAE exchanges drew their scalars.
-    #[cfg(feature = "wpa3")]
-    sae_attempts: u32,
+    rsn: ApRsn,
     /// The RPU's answer to the last interface type change.
     set_interface: Option<i32>,
     /// Identifies each management frame sent, for the RPU's TX status.
@@ -879,17 +886,15 @@ impl<'a> State<'a> {
             mac_addr: [0; 6],
             storage,
             #[cfg(feature = "wpa2")]
-            gtk: None,
-            #[cfg(feature = "wpa2")]
-            next_gtk: None,
-            #[cfg(feature = "wpa2")]
-            rekey_at: None,
-            #[cfg(feature = "wpa2")]
-            gtks: 0,
-            #[cfg(feature = "wpa2")]
-            nonces: 0,
-            #[cfg(feature = "wpa3")]
-            sae_attempts: 0,
+            rsn: ApRsn {
+                gtk: None,
+                next_gtk: None,
+                rekey_at: None,
+                gtks: 0,
+                nonces: 0,
+                #[cfg(feature = "wpa3")]
+                sae_attempts: 0,
+            },
             set_interface: None,
             cookie: 0,
             token_stations: [None; MAX_TX_TOKENS],
@@ -1093,8 +1098,8 @@ impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
         self.ap.running = false;
         #[cfg(feature = "wpa2")]
         {
-            self.ap.next_gtk = None;
-            self.ap.rekey_at = None;
+            self.ap.rsn.next_gtk = None;
+            self.ap.rsn.rekey_at = None;
         }
         self.set_interface_type(c::iftype::IFTYPE_STATION).await;
         info!("access point down");
@@ -1109,8 +1114,8 @@ impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
         self.ap.storage.clear();
         #[cfg(feature = "wpa2")]
         {
-            self.ap.next_gtk = None;
-            self.ap.rekey_at = None;
+            self.ap.rsn.next_gtk = None;
+            self.ap.rsn.rekey_at = None;
         }
     }
 
@@ -1150,10 +1155,10 @@ impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
         self.install_group_keys(&keys).await;
         self.set_default_key(keys.gtk.index, DefaultKey::Multicast).await;
         self.set_default_key(keys.igtk.index, DefaultKey::Management).await;
-        self.ap.gtk = Some(keys);
-        self.ap.next_gtk = None;
-        self.ap.gtks = 0;
-        self.ap.rekey_at = Some(Instant::now() + GROUP_REKEY);
+        self.ap.rsn.gtk = Some(keys);
+        self.ap.rsn.next_gtk = None;
+        self.ap.rsn.gtks = 0;
+        self.ap.rsn.rekey_at = Some(Instant::now() + GROUP_REKEY);
     }
 
     /// Sends a management frame (the SDK's `nrf_wifi_nl80211_send_mlme`). With `noack`, the RPU
@@ -1281,7 +1286,7 @@ impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
         if self.protected_association(slot)
             && !self.ap.storage.stations.0[slot]
                 .as_ref()
-                .is_some_and(|s| s.sa_query_timed_out)
+                .is_some_and(|s| s.rsn.sa_query_timed_out)
         {
             debug!(
                 "association request from {:02x}, associated with protection: SA Query",
@@ -1297,12 +1302,12 @@ impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
             // Associating again: the RPU's entry goes, the new one comes with the answer.
             // The PMK of the SAE exchange just before stays.
             #[cfg(feature = "wpa3")]
-            let pmksa = self.ap.storage.stations.0[slot].as_ref().and_then(|s| s.pmksa);
+            let pmksa = self.ap.storage.stations.0[slot].as_ref().and_then(|s| s.rsn.pmksa);
             self.remove_station(slot, None).await;
             slot = self.ap.storage.stations.find_or_add(&mgmt.from).unwrap();
             #[cfg(feature = "wpa3")]
             if let Some(station) = self.ap.storage.stations.get(slot) {
-                station.pmksa = pmksa;
+                station.rsn.pmksa = pmksa;
             }
         }
         let body = mgmt.body.get(if reassoc { 6 } else { 0 }..).unwrap_or(&[]);
@@ -1318,13 +1323,13 @@ impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
                 return Ok(request);
             };
             let station = self.ap.storage.stations.get(slot).unwrap();
-            if station.pmksa.is_none() {
-                station.pmksa = wpa3::cached_pmksa(&self.ap.storage.pmksa_cache, &mgmt.from, &rsne, Instant::now());
-                if station.pmksa.is_some() {
+            if station.rsn.pmksa.is_none() {
+                station.rsn.pmksa = wpa3::cached_pmksa(&self.ap.storage.pmksa_cache, &mgmt.from, &rsne, Instant::now());
+                if station.rsn.pmksa.is_some() {
                     debug!("association request from {:02x}: cached PMK, {}", mgmt.from, suite);
                 }
             }
-            match station.pmksa {
+            match station.rsn.pmksa {
                 Some(_) => Ok(request),
                 None => Err(STATUS_INVALID_PMKID),
             }
@@ -1339,8 +1344,8 @@ impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
             station.wmm = request.wmm;
             #[cfg(feature = "wpa2")]
             {
-                station.rsne = request.rsne;
-                station.rsnxe = request.rsnxe;
+                station.rsn.rsne = request.rsne;
+                station.rsn.rsnxe = request.rsnxe;
             }
             station.phase = Phase::Responded;
         }
@@ -1458,7 +1463,7 @@ impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
         }
         // Management frame protection, which the RPU does for the frames to and from the station.
         #[cfg(feature = "wpa2")]
-        if station.rsne.is_some_and(|(_, suite)| suite.mfp) {
+        if station.rsn.rsne.is_some_and(|(_, suite)| suite.mfp) {
             flags |= c::STA_FLAG_MFP;
         }
         info.sta_flags2 = c::sta_flag_update {
@@ -1495,7 +1500,7 @@ impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
         #[cfg(feature = "wpa2")]
         return self.ap.storage.stations.0[slot]
             .as_ref()
-            .is_some_and(|s| s.authorized && s.rsne.is_some_and(|(_, suite)| suite.mfp));
+            .is_some_and(|s| s.authorized && s.rsn.rsne.is_some_and(|(_, suite)| suite.mfp));
         #[cfg(not(feature = "wpa2"))]
         {
             let _ = slot;
@@ -1571,8 +1576,8 @@ impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
         });
         #[cfg(feature = "wpa2")]
         {
-            station.retry_at = None;
-            station.sa_query = None;
+            station.rsn.retry_at = None;
+            station.rsn.sa_query = None;
         }
         self.tell_leaving(slot).await;
         // It may have been the last one a group key renewal waited for.
@@ -1811,7 +1816,7 @@ impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
             return None;
         }
         #[cfg(feature = "wpa2")]
-        let rekey = self.ap.rekey_at.filter(|_| self.ap.next_gtk.is_none());
+        let rekey = self.ap.rsn.rekey_at.filter(|_| self.ap.rsn.next_gtk.is_none());
         #[cfg(not(feature = "wpa2"))]
         let rekey = None;
         let stations = self
@@ -1828,11 +1833,11 @@ impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
                     return [Some(leaving.deadline), None, None];
                 }
                 #[cfg(feature = "wpa2")]
-                let retry = s.retry_at;
+                let retry = s.rsn.retry_at;
                 #[cfg(not(feature = "wpa2"))]
                 let retry = None;
                 #[cfg(feature = "wpa2")]
-                let query = s.sa_query.map(|query| query.retry_at.min(query.deadline));
+                let query = s.rsn.sa_query.map(|query| query.retry_at.min(query.deadline));
                 #[cfg(not(feature = "wpa2"))]
                 let query = None;
                 [retry, query, Some(s.poll_deadline.unwrap_or(s.last_seen + INACTIVITY))]
@@ -1851,7 +1856,7 @@ impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
         }
         let now = Instant::now();
         #[cfg(feature = "wpa2")]
-        if self.ap.next_gtk.is_none() && self.ap.rekey_at.is_some_and(|at| now >= at) {
+        if self.ap.rsn.next_gtk.is_none() && self.ap.rsn.rekey_at.is_some_and(|at| now >= at) {
             self.start_rekey().await;
         }
         #[cfg(feature = "wpa2")]
@@ -1880,7 +1885,7 @@ impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
             return Some(Due::Removal(None));
         }
         #[cfg(feature = "wpa2")]
-        if station.retry_at.is_some_and(|at| now >= at) {
+        if station.rsn.retry_at.is_some_and(|at| now >= at) {
             return Some(Due::HandshakeMessage);
         }
         match station.poll_deadline {
@@ -2065,13 +2070,13 @@ impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
             return None;
         };
         let security = &settings.security;
-        let (Some(seed), Some(offer), Some((sta_rsne, suite))) = (security.seed(), security.offer(), station.rsne)
+        let (Some(seed), Some(offer), Some((sta_rsne, suite))) = (security.seed(), security.offer(), station.rsn.rsne)
         else {
             return None;
         };
         // The PMK: the SAE exchange's with SAE, which message 1 names, else the pre-shared key.
         #[cfg(feature = "wpa3")]
-        let (pmk, pmkid) = match station.pmksa {
+        let (pmk, pmkid) = match station.rsn.pmksa {
             Some(pmksa) if suite.akm == Akm::Sae => (Some(pmksa.pmk), Some(pmksa.pmkid)),
             _ => (security.psk(), None),
         };
@@ -2079,13 +2084,13 @@ impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
         let (pmk, pmkid) = (security.psk(), None);
         let pmk = pmk?;
         let aa = self.ap.mac_addr;
-        let anonce = authenticator::anonce(&seed, &aa, &station.addr, self.ap.nonces + 1);
+        let anonce = authenticator::anonce(&seed, &aa, &station.addr, self.ap.rsn.nonces + 1);
         let ap_rsne = Rsne::access_point(offer);
         debug!("4-way handshake with {:02x}: {}", station.addr, suite);
         let handshake = Authenticator::new(pmk, aa, station.addr, ap_rsne, sta_rsne, suite, anonce)
-            .with_rsnxe(security.rsnxe(), station.rsnxe)
+            .with_rsnxe(security.rsnxe(), station.rsn.rsnxe)
             .with_pmkid(pmkid);
-        self.ap.nonces += 1;
+        self.ap.rsn.nonces += 1;
         Some(handshake)
     }
 
@@ -2093,7 +2098,10 @@ impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
     /// lets the station go after [`authenticator::TRIES`] unanswered ones (reason 15, or 16 for a
     /// group key handshake).
     async fn send_handshake_message(&mut self, slot: usize) {
-        let (Some(gtk), Some(addr)) = (self.ap.gtk, self.ap.storage.stations.0[slot].as_ref().map(|s| s.addr)) else {
+        let (Some(gtk), Some(addr)) = (
+            self.ap.rsn.gtk,
+            self.ap.storage.stations.0[slot].as_ref().map(|s| s.addr),
+        ) else {
             return;
         };
         let Some(handshake) = self.ap.storage.handshakes[slot].as_mut() else {
@@ -2115,7 +2123,7 @@ impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
             return;
         };
         if let Some(station) = self.ap.storage.stations.get(slot) {
-            station.retry_at = Some(Instant::now() + HANDSHAKE_RETRY);
+            station.rsn.retry_at = Some(Instant::now() + HANDSHAKE_RETRY);
         }
         self.send_eapol_to(&addr, &out[..len]).await;
     }
@@ -2123,7 +2131,7 @@ impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
     /// Takes an EAPOL frame from the station `from` (hostapd's `wpa_receive`).
     pub(super) async fn ap_eapol(&mut self, from: &[u8; 6], eapol: &[u8]) {
         let from = *from;
-        let (Some(slot), Some(gtk)) = (self.ap.storage.stations.find(&from), self.ap.gtk) else {
+        let (Some(slot), Some(gtk)) = (self.ap.storage.stations.find(&from), self.ap.rsn.gtk) else {
             debug!(
                 "EAPOL frame from {:02x} ignored: not a station of the access point",
                 from
@@ -2139,13 +2147,13 @@ impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
             authenticator::Outcome::Send(len) => {
                 debug!("4-way handshake with {:02x}: message 2, sending message 3", from);
                 if let Some(station) = self.ap.storage.stations.get(slot) {
-                    station.retry_at = Some(Instant::now() + HANDSHAKE_RETRY);
+                    station.rsn.retry_at = Some(Instant::now() + HANDSHAKE_RETRY);
                 }
                 self.send_eapol_to(&from, &out[..len]).await;
             }
             authenticator::Outcome::Done { tk } => {
                 if let Some(station) = self.ap.storage.stations.get(slot) {
-                    station.retry_at = None;
+                    station.rsn.retry_at = None;
                 }
                 // The pairwise key, then the port (hostapd's PTKINITDONE).
                 self.add_key(Some(from), CIPHER_SUITE_CCMP, 0, &tk, &[0; 6]).await;
@@ -2154,13 +2162,13 @@ impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
                 info!("station {:02x} has its keys", from);
                 // The authenticator stays, for the group key handshakes. One that joined while the
                 // group key is renewed got the one in use, and gets the next one now.
-                if let Some(next) = self.ap.next_gtk {
+                if let Some(next) = self.ap.rsn.next_gtk {
                     self.start_group_handshake(slot, next).await;
                 }
             }
             authenticator::Outcome::GroupDone => {
                 if let Some(station) = self.ap.storage.stations.get(slot) {
-                    station.retry_at = None;
+                    station.rsn.retry_at = None;
                 }
                 debug!("station {:02x} has the new group key", from);
                 self.finish_rekey().await;
@@ -2181,13 +2189,16 @@ impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
     /// for reception until it is in use, and to each station with its keys in a group key
     /// handshake.
     async fn start_rekey(&mut self) {
-        let (Some(seed), Some(_)) = (self.ap.settings.as_ref().and_then(|s| s.security.seed()), self.ap.gtk) else {
+        let (Some(seed), Some(_)) = (
+            self.ap.settings.as_ref().and_then(|s| s.security.seed()),
+            self.ap.rsn.gtk,
+        ) else {
             return;
         };
-        self.ap.gtks += 1;
-        let next = GroupKeys::derive(&seed, &self.ap.mac_addr, self.ap.gtks);
+        self.ap.rsn.gtks += 1;
+        let next = GroupKeys::derive(&seed, &self.ap.mac_addr, self.ap.rsn.gtks);
         self.install_group_keys(&next).await;
-        self.ap.next_gtk = Some(next);
+        self.ap.rsn.next_gtk = Some(next);
         debug!(
             "renewing the group keys: keys {} and {}",
             next.gtk.index, next.igtk.index
@@ -2212,7 +2223,7 @@ impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
     /// Puts the next group key in use once no station is still being given it (hostapd's
     /// `wpa_group_setkeysdone`): broadcasts go out with it from then on.
     async fn finish_rekey(&mut self) {
-        let Some(next) = self.ap.next_gtk else {
+        let Some(next) = self.ap.rsn.next_gtk else {
             return;
         };
         let pending = self
@@ -2227,9 +2238,9 @@ impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
         }
         self.set_default_key(next.gtk.index, DefaultKey::Multicast).await;
         self.set_default_key(next.igtk.index, DefaultKey::Management).await;
-        self.ap.gtk = Some(next);
-        self.ap.next_gtk = None;
-        self.ap.rekey_at = Some(Instant::now() + GROUP_REKEY);
+        self.ap.rsn.gtk = Some(next);
+        self.ap.rsn.next_gtk = None;
+        self.ap.rsn.rekey_at = Some(Instant::now() + GROUP_REKEY);
         info!("group keys {} and {} in use", next.gtk.index, next.igtk.index);
     }
 
@@ -2248,10 +2259,10 @@ impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
     async fn start_sa_query(&mut self, slot: usize) {
         let now = Instant::now();
         let id = (self.ap.cookie as u16).to_le_bytes();
-        let Some(station) = self.ap.storage.stations.get(slot).filter(|s| s.sa_query.is_none()) else {
+        let Some(station) = self.ap.storage.stations.get(slot).filter(|s| s.rsn.sa_query.is_none()) else {
             return;
         };
-        station.sa_query = Some(SaQuery {
+        station.rsn.sa_query = Some(SaQuery {
             id,
             retry_at: now + SA_QUERY_RETRY,
             deadline: now + Duration::from_micros(SA_QUERY_TIMEOUT_TU as u64 * 1024),
@@ -2273,12 +2284,12 @@ impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
             let Some(station) = self.ap.storage.stations.get(slot) else {
                 continue;
             };
-            let Some(query) = station.sa_query.as_mut() else {
+            let Some(query) = station.rsn.sa_query.as_mut() else {
                 continue;
             };
             if now >= query.deadline {
-                station.sa_query = None;
-                station.sa_query_timed_out = true;
+                station.rsn.sa_query = None;
+                station.rsn.sa_query_timed_out = true;
                 info!(
                     "station {:02x} did not answer the SA Query: its next association request is taken",
                     station.addr
@@ -2311,8 +2322,8 @@ impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
                 let Some(station) = self.ap.storage.stations.get(slot) else {
                     return;
                 };
-                if station.sa_query.is_some_and(|query| query.id == [id0, id1]) {
-                    station.sa_query = None;
+                if station.rsn.sa_query.is_some_and(|query| query.id == [id0, id1]) {
+                    station.rsn.sa_query = None;
                     info!(
                         "station {:02x} answered the SA Query: it keeps its association",
                         mgmt.from
