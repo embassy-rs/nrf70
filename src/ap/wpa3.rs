@@ -93,17 +93,22 @@ fn sae_authentication(bssid: &[u8; 6], to: &[u8; 6], sequence: u16, status: u16,
 }
 
 impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
+    /// The password and PT of a WPA3 access point.
+    fn ap_wpa3(&self) -> Option<&Wpa3> {
+        match self.ap.settings.as_ref().map(|settings| &settings.security) {
+            Some(Security::Wpa3 { wpa3, .. }) => Some(wpa3),
+            _ => None,
+        }
+    }
+
     /// An SAE authentication frame from a station: a commit, or a confirm.
     pub(super) async fn ap_sae_frame(&mut self, mgmt: &Mgmt<'_>) {
-        let Some(Security::Wpa3 { wpa3, .. }) = self.ap.settings.map(|settings| settings.security) else {
-            return;
-        };
         let (Some(sequence), Some(status)) = (mgmt.le16(2), mgmt.le16(4)) else {
             return;
         };
         let body = mgmt.body.get(6..).unwrap_or(&[]);
         match sequence {
-            1 => self.ap_sae_commit(&mgmt.from, status, body, &wpa3).await,
+            1 => self.ap_sae_commit(&mgmt.from, status, body).await,
             2 => self.ap_sae_confirm(&mgmt.from, body).await,
             _ => {}
         }
@@ -118,7 +123,10 @@ impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
     /// A station's commit: a new exchange answers it with the access point's commit. The PWE is
     /// derived by hash to element if the station uses it (status 126), else by hunting and
     /// pecking, which takes 0.39 s on an nRF5340 at 128 MHz.
-    async fn ap_sae_commit(&mut self, from: &[u8; 6], status: u16, body: &[u8], wpa3: &Wpa3) {
+    async fn ap_sae_commit(&mut self, from: &[u8; 6], status: u16, body: &[u8]) {
+        let Some(seed) = self.ap_wpa3().map(|wpa3| wpa3.seed) else {
+            return;
+        };
         let h2e = match status {
             STATUS_SUCCESS => false,
             STATUS_SAE_HASH_TO_ELEMENT => true,
@@ -160,7 +168,7 @@ impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
         let under_way = (self.ap.storage.exchanges.iter().enumerate())
             .filter(|(slot, exchange)| Some(*slot) != known && exchange.as_ref().is_some_and(|e| !e.confirmed))
             .count();
-        let expected = anti_clogging_token(&wpa3.seed, from);
+        let expected = anti_clogging_token(&seed, from);
         if under_way >= ANTI_CLOGGING_THRESHOLD && token != Some(&expected[..]) {
             debug!("SAE with {:02x}: anti-clogging token asked for", from);
             let mut reply = [0; 2 + 3 + TOKEN_LEN];
@@ -183,17 +191,17 @@ impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
         };
 
         let bssid = self.ap.mac_addr;
-        let pwe = if h2e {
-            Some(wpa3.pt.pwe(&bssid, from))
-        } else {
-            sae::pwe_hunting_and_pecking(wpa3.password(), &[], &bssid, from)
+        let pwe = match self.ap_wpa3() {
+            Some(wpa3) if h2e => Some(wpa3.pt.pwe(&bssid, from)),
+            Some(wpa3) => sae::pwe_hunting_and_pecking(wpa3.password(), &[], &bssid, from),
+            None => None,
         };
         let Some(pwe) = pwe else {
             return self.ap_sae_reply(from, 1, STATUS_UNSPECIFIED, &[]).await;
         };
         let mut sae = loop {
             self.ap.sae_attempts += 1;
-            let (rand, mask) = scalars(&wpa3.seed, self.ap.sae_attempts);
+            let (rand, mask) = scalars(&seed, self.ap.sae_attempts);
             if let Some(sae) = Sae::new(pwe, rand, mask) {
                 break sae;
             }

@@ -659,13 +659,24 @@ impl Station {
 /// place in the RPU's table of pending frames.
 struct Stations([Option<Station>; MAX_STATIONS]);
 
+/// What a station is due when its time is up.
+enum Due {
+    /// To go, with this reason in its deauthentication, or none if it has had one.
+    Removal(Option<u16>),
+    /// The handshake message it did not answer, again.
+    #[cfg(feature = "wpa2")]
+    HandshakeMessage,
+    /// A frame it has to acknowledge.
+    Poll,
+}
+
 impl Stations {
     const fn new() -> Self {
         Self([None; MAX_STATIONS])
     }
 
     fn find(&self, addr: &[u8; 6]) -> Option<usize> {
-        self.0.iter().position(|s| s.is_some_and(|s| s.addr == *addr))
+        self.0.iter().position(|s| s.as_ref().is_some_and(|s| s.addr == *addr))
     }
 
     /// The slot of `addr`, a new one if it has none. `None` if every slot is taken.
@@ -933,7 +944,7 @@ impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
 
     /// Starts the access point (hostapd's setup through the SDK's `nrf_wifi_wpa_supp_init_ap`,
     /// `register_mgmt_frames_ap` and `nrf_wifi_wpa_supp_start_ap`).
-    pub(super) async fn start_ap(&mut self, settings: Settings) -> Result<(), ApError> {
+    pub(super) async fn start_ap(&mut self, settings: &Settings) -> Result<(), ApError> {
         let connecting = !matches!(self.conn, ConnState::Idle | ConnState::Connected);
         let scanning = self
             .scan_deadline
@@ -953,14 +964,14 @@ impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
         self.subscribe_frames().await;
         self.set_channel(settings.frequency).await;
         self.carrier_on = false;
-        self.send_start_ap(&settings).await;
+        self.send_start_ap(settings).await;
         if !self.wait_until(CARRIER_TIMEOUT, |r| r.carrier_on).await {
             warn!("the access point did not start");
             self.set_interface_type(c::iftype::IFTYPE_STATION).await;
             return Err(ApError::Refused);
         }
 
-        self.set_bss(&settings).await;
+        self.set_bss(settings).await;
         // With WPA2, the group keys the access point sends broadcasts with: the GTK, and the IGTK
         // that protects its broadcast management frames.
         #[cfg(feature = "wpa2")]
@@ -975,7 +986,7 @@ impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
             self.ap.rekey_at = Some(Instant::now() + GROUP_REKEY);
         }
 
-        self.ap.settings = Some(settings);
+        self.ap.settings = Some(*settings);
         self.ap.storage.clear();
         for slot in 0..MAX_STATIONS {
             self.write_pending_entry(slot, &[0; 6]).await;
@@ -1142,7 +1153,7 @@ impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
     /// Sends a management frame (the SDK's `nrf_wifi_nl80211_send_mlme`). With `noack`, the RPU
     /// does not wait for an acknowledgement, nor retry.
     async fn send_mgmt(&mut self, frame: &[u8], noack: bool) {
-        let Some(settings) = self.ap.settings else {
+        let Some(frequency) = self.ap.settings.as_ref().map(|settings| settings.frequency) else {
             return;
         };
         let mut cmd: c::umac_cmd_mgmt_tx = unsafe { zeroed() };
@@ -1151,8 +1162,8 @@ impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
         if noack {
             info.flags = c::CMD_FRAME_DONT_WAIT_FOR_ACK;
         }
-        info.frequency = settings.frequency;
-        info.freq_params = freq_params(settings.frequency);
+        info.frequency = frequency;
+        info.freq_params = freq_params(frequency);
         info.frame.frame_len = frame.len() as _;
         for (to, from) in info.frame.frame.iter_mut().zip(frame) {
             *to = *from as _;
@@ -1166,168 +1177,210 @@ impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
     /// `ieee802_11_mgmt` does with it.
     pub(super) async fn ap_frame(&mut self, body: &[u8]) {
         let event: &c::umac_event_mlme = unsliceit(body);
-        let Some(settings) = self.ap.settings.filter(|_| self.ap.running) else {
-            return;
-        };
-        let frame = mlme_frame(event);
-        let Some(mgmt) = Mgmt::parse(frame) else {
-            return;
-        };
-        let bssid = self.ap.mac_addr;
-        if mgmt.subtype != PROBE_REQ && mgmt.bssid != bssid {
+        if !self.ap.running || self.ap.settings.is_none() {
             return;
         }
-        let mut out = [0u8; 400];
+        let Some(mgmt) = Mgmt::parse(mlme_frame(event)) else {
+            return;
+        };
+        if mgmt.subtype != PROBE_REQ && mgmt.bssid != self.ap.mac_addr {
+            return;
+        }
         match mgmt.subtype {
-            PROBE_REQ => {
-                if settings.probed(mgmt.body) {
-                    let len = settings.probe_response(&bssid, &mgmt.from, &mut out);
-                    // A probe request to everyone gets its answer once (hostapd's `noack`).
-                    self.send_mgmt(&out[..len], mgmt.to == [0xFF; 6]).await;
-                }
-            }
-            AUTH => {
-                let (Some(algorithm), Some(sequence)) = (mgmt.le16(0), mgmt.le16(2)) else {
-                    return;
-                };
-                // WPA3: SAE, in place of open system authentication.
-                #[cfg(feature = "wpa3")]
-                if algorithm == AUTH_ALGORITHM_SAE && matches!(settings.security, Security::Wpa3 { .. }) {
-                    return self.ap_sae_frame(&mgmt).await;
-                }
-                let status = if algorithm != c::auth_type::AUTHTYPE_OPEN_SYSTEM as u16 {
-                    STATUS_AUTH_ALGORITHM
-                } else if sequence != 1 {
-                    STATUS_AUTH_SEQUENCE
-                } else {
-                    match self.ap.storage.stations.find(&mgmt.from) {
-                        // A protected association does not end on an unprotected frame that anyone
-                        // could forge: it stays until a new association is checked (SA Query).
-                        Some(slot) if self.protected_association(slot) => STATUS_SUCCESS,
-                        // Otherwise a station that authenticates again starts over.
-                        found => {
-                            if let Some(slot) = found {
-                                self.remove_station(slot, None).await;
-                            }
-                            match self.ap.storage.stations.find_or_add(&mgmt.from) {
-                                Some(_) => STATUS_SUCCESS,
-                                None => STATUS_TOO_MANY_STATIONS,
-                            }
-                        }
-                    }
-                };
-                debug!("authentication from {:02x}: status {}", mgmt.from, status);
-                let len = authentication_response(&bssid, &mgmt.from, algorithm, status, &mut out);
-                self.send_mgmt(&out[..len], false).await;
-            }
-            ASSOC_REQ | REASSOC_REQ => {
-                let reassoc = mgmt.subtype == REASSOC_REQ;
-                let Some(mut slot) = self.ap.storage.stations.find(&mgmt.from) else {
-                    debug!("association request from {:02x}, not authenticated", mgmt.from);
-                    let len = deauthentication(&bssid, &mgmt.from, REASON_CLASS2_FROM_UNAUTHENTICATED, &mut out);
-                    self.send_mgmt(&out[..len], false).await;
-                    return;
-                };
-                // A station with a protected association asks for a new one: maybe it lost its keys, maybe
-                // the request is forged. It is refused for now, and an SA Query checks the association
-                // in place; unanswered, the next request is taken (hostapd's `check_assoc_ies`).
-                #[cfg(feature = "wpa2")]
-                if self.protected_association(slot)
-                    && !self.ap.storage.stations.0[slot].is_some_and(|s| s.sa_query_timed_out)
-                {
-                    debug!(
-                        "association request from {:02x}, associated with protection: SA Query",
-                        mgmt.from
-                    );
-                    self.start_sa_query(slot).await;
-                    let len =
-                        settings.association_response(&bssid, &mgmt.from, reassoc, Err(STATUS_TRY_LATER), &mut out);
-                    self.send_mgmt(&out[..len], false).await;
-                    return;
-                }
-                if self.ap.storage.stations.0[slot].is_some_and(|s| s.phase == Phase::Associated) {
-                    // Associating again: the RPU's entry goes, the new one comes with the answer.
-                    // The PMK of the SAE exchange just before stays.
-                    #[cfg(feature = "wpa3")]
-                    let pmksa = self.ap.storage.stations.0[slot].and_then(|s| s.pmksa);
-                    self.remove_station(slot, None).await;
-                    slot = self.ap.storage.stations.find_or_add(&mgmt.from).unwrap();
-                    #[cfg(feature = "wpa3")]
-                    if let Some(station) = self.ap.storage.stations.get(slot) {
-                        station.pmksa = pmksa;
-                    }
-                }
-                let body = mgmt.body.get(if reassoc { 6 } else { 0 }..).unwrap_or(&[]);
-                let request = settings.association_request(body);
-                // SAE needs the PMK of an SAE exchange: the one just before, or after an open system
-                // authentication, a cached one that the request names (hostapd's `check_assoc_ies`).
-                #[cfg(feature = "wpa3")]
-                let request = request.and_then(|request| {
-                    let Some((rsne, suite)) = request.rsne.filter(|(_, suite)| suite.akm == Akm::Sae) else {
-                        return Ok(request);
-                    };
-                    let station = self.ap.storage.stations.get(slot).unwrap();
-                    if station.pmksa.is_none() {
-                        station.pmksa =
-                            wpa3::cached_pmksa(&self.ap.storage.pmksa_cache, &mgmt.from, &rsne, Instant::now());
-                        if station.pmksa.is_some() {
-                            debug!("association request from {:02x}: cached PMK, {}", mgmt.from, suite);
-                        }
-                    }
-                    match station.pmksa {
-                        Some(_) => Ok(request),
-                        None => Err(STATUS_INVALID_PMKID),
-                    }
-                });
-                let status = match &request {
-                    Ok(request) => {
-                        let station = self.ap.storage.stations.get(slot).unwrap();
-                        station.capability = request.capability;
-                        station.listen_interval = request.listen_interval;
-                        station.rates = request.rates;
-                        station.rates_len = request.rates_len as u8;
-                        station.ht_capabilities = request.ht_capabilities;
-                        station.wmm = request.wmm;
-                        #[cfg(feature = "wpa2")]
-                        {
-                            station.rsne = request.rsne;
-                            station.rsnxe = request.rsnxe;
-                        }
-                        station.phase = Phase::Responded;
-                        STATUS_SUCCESS
-                    }
-                    Err(status) => *status,
-                };
-                debug!("association request from {:02x}: status {}", mgmt.from, status);
-                let answer = request
-                    .as_ref()
-                    .map(|request| (slot as u16 + 1, request))
-                    .map_err(|status| *status);
-                let len = settings.association_response(&bssid, &mgmt.from, reassoc, answer, &mut out);
-                self.send_mgmt(&out[..len], false).await;
-            }
+            PROBE_REQ => self.ap_probe_request(&mgmt).await,
+            AUTH => self.ap_authentication(&mgmt).await,
+            ASSOC_REQ | REASSOC_REQ => self.ap_association_request(&mgmt).await,
             #[cfg(feature = "wpa2")]
             ACTION => self.sa_query_frame(&mgmt).await,
-            DISASSOC | DEAUTH => {
-                if let Some(slot) = self.ap.storage.stations.find(&mgmt.from) {
-                    if self.protected_association(slot) && !mgmt.protected {
-                        debug!(
-                            "unprotected disassociation or deauthentication from {:02x} ignored",
-                            mgmt.from
-                        );
-                        return;
-                    }
-                    info!(
-                        "station {:02x} left, reason {} (protected {})",
-                        mgmt.from,
-                        mgmt.le16(0),
-                        mgmt.protected
-                    );
-                    self.remove_station(slot, None).await;
-                }
-            }
+            DISASSOC | DEAUTH => self.ap_station_left(&mgmt).await,
             _ => {}
         }
+    }
+
+    /// Answers a probe request that asks for the network.
+    async fn ap_probe_request(&mut self, mgmt: &Mgmt<'_>) {
+        let mut out = [0u8; 400];
+        let Some(settings) = &self.ap.settings else {
+            return;
+        };
+        if !settings.probed(mgmt.body) {
+            return;
+        }
+        let len = settings.probe_response(&self.ap.mac_addr, &mgmt.from, &mut out);
+        // A probe request to everyone gets its answer once (hostapd's `noack`).
+        self.send_mgmt(&out[..len], mgmt.to == [0xFF; 6]).await;
+    }
+
+    /// Answers an authentication request: open system authentication, or with WPA3 an SAE frame.
+    async fn ap_authentication(&mut self, mgmt: &Mgmt<'_>) {
+        let (Some(algorithm), Some(sequence)) = (mgmt.le16(0), mgmt.le16(2)) else {
+            return;
+        };
+        // WPA3: SAE, in place of open system authentication.
+        #[cfg(feature = "wpa3")]
+        if algorithm == AUTH_ALGORITHM_SAE
+            && matches!(
+                self.ap.settings.as_ref().map(|s| &s.security),
+                Some(Security::Wpa3 { .. })
+            )
+        {
+            return self.ap_sae_frame(mgmt).await;
+        }
+        let status = if algorithm != c::auth_type::AUTHTYPE_OPEN_SYSTEM as u16 {
+            STATUS_AUTH_ALGORITHM
+        } else if sequence != 1 {
+            STATUS_AUTH_SEQUENCE
+        } else {
+            match self.ap.storage.stations.find(&mgmt.from) {
+                // A protected association does not end on an unprotected frame that anyone
+                // could forge: it stays until a new association is checked (SA Query).
+                Some(slot) if self.protected_association(slot) => STATUS_SUCCESS,
+                // Otherwise a station that authenticates again starts over.
+                found => {
+                    if let Some(slot) = found {
+                        self.remove_station(slot, None).await;
+                    }
+                    match self.ap.storage.stations.find_or_add(&mgmt.from) {
+                        Some(_) => STATUS_SUCCESS,
+                        None => STATUS_TOO_MANY_STATIONS,
+                    }
+                }
+            }
+        };
+        debug!("authentication from {:02x}: status {}", mgmt.from, status);
+        let mut out = [0u8; 400];
+        let len = authentication_response(&self.ap.mac_addr, &mgmt.from, algorithm, status, &mut out);
+        self.send_mgmt(&out[..len], false).await;
+    }
+
+    /// Answers an association or reassociation request, and keeps what the station asks for.
+    async fn ap_association_request(&mut self, mgmt: &Mgmt<'_>) {
+        let reassoc = mgmt.subtype == REASSOC_REQ;
+        let Some(mut slot) = self.ap.storage.stations.find(&mgmt.from) else {
+            debug!("association request from {:02x}, not authenticated", mgmt.from);
+            let mut out = [0u8; 400];
+            let len = deauthentication(
+                &self.ap.mac_addr,
+                &mgmt.from,
+                REASON_CLASS2_FROM_UNAUTHENTICATED,
+                &mut out,
+            );
+            self.send_mgmt(&out[..len], false).await;
+            return;
+        };
+        // A station with a protected association asks for a new one: maybe it lost its keys, maybe
+        // the request is forged. It is refused for now, and an SA Query checks the association
+        // in place; unanswered, the next request is taken (hostapd's `check_assoc_ies`).
+        #[cfg(feature = "wpa2")]
+        if self.protected_association(slot)
+            && !self.ap.storage.stations.0[slot]
+                .as_ref()
+                .is_some_and(|s| s.sa_query_timed_out)
+        {
+            debug!(
+                "association request from {:02x}, associated with protection: SA Query",
+                mgmt.from
+            );
+            self.start_sa_query(slot).await;
+            return self.ap_association_response(mgmt, Err(STATUS_TRY_LATER)).await;
+        }
+        if self.ap.storage.stations.0[slot]
+            .as_ref()
+            .is_some_and(|s| s.phase == Phase::Associated)
+        {
+            // Associating again: the RPU's entry goes, the new one comes with the answer.
+            // The PMK of the SAE exchange just before stays.
+            #[cfg(feature = "wpa3")]
+            let pmksa = self.ap.storage.stations.0[slot].as_ref().and_then(|s| s.pmksa);
+            self.remove_station(slot, None).await;
+            slot = self.ap.storage.stations.find_or_add(&mgmt.from).unwrap();
+            #[cfg(feature = "wpa3")]
+            if let Some(station) = self.ap.storage.stations.get(slot) {
+                station.pmksa = pmksa;
+            }
+        }
+        let body = mgmt.body.get(if reassoc { 6 } else { 0 }..).unwrap_or(&[]);
+        let Some(settings) = &self.ap.settings else {
+            return;
+        };
+        let request = settings.association_request(body);
+        // SAE needs the PMK of an SAE exchange: the one just before, or after an open system
+        // authentication, a cached one that the request names (hostapd's `check_assoc_ies`).
+        #[cfg(feature = "wpa3")]
+        let request = request.and_then(|request| {
+            let Some((rsne, suite)) = request.rsne.filter(|(_, suite)| suite.akm == Akm::Sae) else {
+                return Ok(request);
+            };
+            let station = self.ap.storage.stations.get(slot).unwrap();
+            if station.pmksa.is_none() {
+                station.pmksa = wpa3::cached_pmksa(&self.ap.storage.pmksa_cache, &mgmt.from, &rsne, Instant::now());
+                if station.pmksa.is_some() {
+                    debug!("association request from {:02x}: cached PMK, {}", mgmt.from, suite);
+                }
+            }
+            match station.pmksa {
+                Some(_) => Ok(request),
+                None => Err(STATUS_INVALID_PMKID),
+            }
+        });
+        if let Ok(request) = &request {
+            let station = self.ap.storage.stations.get(slot).unwrap();
+            station.capability = request.capability;
+            station.listen_interval = request.listen_interval;
+            station.rates = request.rates;
+            station.rates_len = request.rates_len as u8;
+            station.ht_capabilities = request.ht_capabilities;
+            station.wmm = request.wmm;
+            #[cfg(feature = "wpa2")]
+            {
+                station.rsne = request.rsne;
+                station.rsnxe = request.rsnxe;
+            }
+            station.phase = Phase::Responded;
+        }
+        debug!(
+            "association request from {:02x}: status {}",
+            mgmt.from,
+            request.as_ref().err().copied().unwrap_or(STATUS_SUCCESS)
+        );
+        let answer = request
+            .as_ref()
+            .map(|request| (slot as u16 + 1, request))
+            .map_err(|status| *status);
+        self.ap_association_response(mgmt, answer).await;
+    }
+
+    /// Answers an association request: with the association ID and what the request settled,
+    /// or a status code.
+    async fn ap_association_response(&mut self, mgmt: &Mgmt<'_>, answer: Result<(u16, &AssocRequest), u16>) {
+        let mut out = [0u8; 400];
+        let Some(settings) = &self.ap.settings else {
+            return;
+        };
+        let reassoc = mgmt.subtype == REASSOC_REQ;
+        let len = settings.association_response(&self.ap.mac_addr, &mgmt.from, reassoc, answer, &mut out);
+        self.send_mgmt(&out[..len], false).await;
+    }
+
+    /// A station leaves: a disassociation or a deauthentication.
+    async fn ap_station_left(&mut self, mgmt: &Mgmt<'_>) {
+        let Some(slot) = self.ap.storage.stations.find(&mgmt.from) else {
+            return;
+        };
+        if self.protected_association(slot) && !mgmt.protected {
+            debug!(
+                "unprotected disassociation or deauthentication from {:02x} ignored",
+                mgmt.from
+            );
+            return;
+        }
+        info!(
+            "station {:02x} left, reason {} (protected {})",
+            mgmt.from,
+            mgmt.le16(0),
+            mgmt.protected
+        );
+        self.remove_station(slot, None).await;
     }
 
     /// The RPU reports a management frame sent (`UMAC_EVENT_FRAME_TX_STATUS`): an acknowledged
@@ -1358,20 +1411,25 @@ impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
         }
         station.phase = Phase::Associated;
         station.last_seen = Instant::now();
-        let station = *station;
-        self.add_station(slot, &station).await;
-        info!("station {:02x} joined, association ID {}", station.addr, slot + 1);
-        if self.ap.settings.is_some_and(|settings| settings.privacy()) {
+        let addr = station.addr;
+        self.add_station(slot).await;
+        info!("station {:02x} joined, association ID {}", addr, slot + 1);
+        if self.ap.settings.as_ref().is_some_and(|settings| settings.privacy()) {
             // WPA2: the port opens once the 4-way handshake is done.
             #[cfg(feature = "wpa2")]
             self.start_handshake(slot).await;
         } else {
-            self.authorize_station(&station.addr).await;
+            self.authorize_station(&addr).await;
         }
     }
 
-    /// Adds a station to the RPU, its port closed (the SDK's `nrf_wifi_wpa_supp_sta_add`).
-    async fn add_station(&mut self, slot: usize, station: &Station) {
+    /// Adds the station of `slot` to the RPU, its port closed (the SDK's
+    /// `nrf_wifi_wpa_supp_sta_add`).
+    async fn add_station(&mut self, slot: usize) {
+        let Some(station) = &self.ap.storage.stations.0[slot] else {
+            return;
+        };
+        let addr = station.addr;
         let mut cmd: c::umac_cmd_add_sta = unsafe { zeroed() };
         cmd.valid_fields = c::CMD_NEW_STATION_AID_VALID
             | c::CMD_NEW_STATION_STA_CAPABILITY_VALID
@@ -1405,9 +1463,9 @@ impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
             cmd.valid_fields |= c::CMD_NEW_STATION_HT_CAPABILITY_VALID;
             info.ht_capability[..ht.len()].copy_from_slice(&ht);
         }
-        info.mac_addr = station.addr;
+        info.mac_addr = addr;
         self.rpu.send_cmd(&mut cmd).await;
-        self.write_pending_entry(slot, &station.addr).await;
+        self.write_pending_entry(slot, &addr).await;
     }
 
     /// Opens a station's port (the SDK's `nrf_wifi_wpa_supp_sta_set_flags`).
@@ -1430,6 +1488,7 @@ impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
     fn protected_association(&self, slot: usize) -> bool {
         #[cfg(feature = "wpa2")]
         return self.ap.storage.stations.0[slot]
+            .as_ref()
             .is_some_and(|s| s.authorized && s.rsne.is_some_and(|(_, suite)| suite.mfp));
         #[cfg(not(feature = "wpa2"))]
         {
@@ -1442,23 +1501,25 @@ impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
     /// is a `reason` (hostapd's `ap_sta_deauthenticate` and `ap_free_sta`). An associated station
     /// is let go first, and removed once it has heard why (see [`Self::let_go`]).
     async fn remove_station(&mut self, slot: usize, reason: Option<u16>) {
-        let Some(station) = self.ap.storage.stations.0[slot] else {
+        let Some((addr, phase, leaving)) = (self.ap.storage.stations.0[slot].as_ref())
+            .map(|station| (station.addr, station.phase, station.leaving.is_some()))
+        else {
             return;
         };
-        if let (Some(reason), Phase::Associated, None) = (reason, station.phase, station.leaving) {
+        if let (Some(reason), Phase::Associated, false) = (reason, phase, leaving) {
             return self.let_go(slot, reason).await;
         }
         self.ap.storage.stations.0[slot] = None;
         self.forget_frames(slot);
         if let Some(reason) = reason {
             let mut frame = [0; 26];
-            let len = deauthentication(&self.ap.mac_addr, &station.addr, reason, &mut frame);
+            let len = deauthentication(&self.ap.mac_addr, &addr, reason, &mut frame);
             self.send_mgmt(&frame[..len], false).await;
         }
-        if station.phase == Phase::Associated {
+        if phase == Phase::Associated {
             let mut cmd: c::umac_cmd_del_sta = unsafe { zeroed() };
             cmd.valid_fields = c::CMD_DEL_STATION_MAC_ADDR_VALID;
-            cmd.info.mac_addr = station.addr;
+            cmd.info.mac_addr = addr;
             self.rpu.send_cmd(&mut cmd).await;
             self.write_pending_entry(slot, &[0; 6]).await;
         }
@@ -1565,7 +1626,10 @@ impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
     pub(super) async fn ap_station_removed(&mut self, body: &[u8]) {
         let addr = unsliceit::<c::umac_event_new_station>(body).mac_addr;
         if let Some(slot) = self.ap.storage.stations.find(&addr) {
-            if self.ap.storage.stations.0[slot].is_some_and(|s| s.phase == Phase::Associated) {
+            if self.ap.storage.stations.0[slot]
+                .as_ref()
+                .is_some_and(|s| s.phase == Phase::Associated)
+            {
                 info!("station {:02x} removed by the RPU", addr);
                 self.ap.storage.stations.0[slot] = None;
                 self.forget_frames(slot);
@@ -1589,7 +1653,7 @@ impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
     /// frames, and its deauthentication if it waits.
     async fn write_pending_bits(&mut self, slot: usize) {
         let mut bits = self.ap.storage.held.categories(slot);
-        let leaving = self.ap.storage.stations.0[slot].and_then(|s| s.leaving);
+        let leaving = self.ap.storage.stations.0[slot].as_ref().and_then(|s| s.leaving);
         if leaving.is_some_and(|leaving| !leaving.sent) {
             bits |= 1 << access_category(0);
         }
@@ -1615,7 +1679,10 @@ impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
             return false;
         };
         // A station being let go gets no more frames.
-        if self.ap.storage.stations.0[slot].is_some_and(|s| s.leaving.is_some()) {
+        if self.ap.storage.stations.0[slot]
+            .as_ref()
+            .is_some_and(|s| s.leaving.is_some())
+        {
             return true;
         }
         self.hold_for(slot, frame, len).await
@@ -1623,17 +1690,18 @@ impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
 
     /// Sends a group frame as unicast frames, if a station with keys sleeps. Says whether it did.
     async fn ap_group_frame(&mut self, frame: &mut [u32], len: usize) -> bool {
-        let stations = self.ap.storage.stations.0;
+        let stations = &self.ap.storage.stations.0;
         if !stations.iter().flatten().any(|s| s.authorized && s.asleep) {
             return false;
         }
-        for (slot, station) in stations.iter().enumerate() {
-            let Some(station) = station.filter(|s| s.authorized) else {
+        for slot in 0..MAX_STATIONS {
+            let station = self.ap.storage.stations.0[slot].as_ref();
+            let Some(addr) = station.filter(|s| s.authorized).map(|s| s.addr) else {
                 continue;
             };
-            slice8_mut(frame)[..6].copy_from_slice(&station.addr);
+            slice8_mut(frame)[..6].copy_from_slice(&addr);
             if !self.hold_for(slot, frame, len).await && self.send_frame(frame, len).await.is_none() {
-                debug!("group frame for {:02x} dropped: no TX token free", station.addr);
+                debug!("group frame for {:02x} dropped: no TX token free", addr);
             }
         }
         true
@@ -1642,15 +1710,16 @@ impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
     /// Keeps a frame for the station of `slot` if it sleeps, or if frames wait for it already.
     /// Says whether it did.
     async fn hold_for(&mut self, slot: usize, frame: &[u32], len: usize) -> bool {
-        let Some(station) = self.ap.storage.stations.0[slot] else {
+        let Some(station) = &self.ap.storage.stations.0[slot] else {
             return false;
         };
         // Frames go out directly to a station that is awake, or within what it asked for.
         if (!station.asleep || station.service_period > 0) && self.ap.storage.held.count(slot) == 0 {
             return false;
         }
+        let addr = station.addr;
         if !self.ap.storage.held.hold(slot, frame, len) {
-            debug!("frame for sleeping station {:02x} dropped", station.addr);
+            debug!("frame for sleeping station {:02x} dropped", addr);
         }
         self.write_pending_bits(slot).await;
         true
@@ -1698,8 +1767,10 @@ impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
             return;
         }
         for slot in 0..MAX_STATIONS {
-            while let Some(station) = self.ap.storage.stations.0[slot] {
-                if station.asleep && station.service_period == 0 {
+            while let Some((asleep, service_period)) =
+                (self.ap.storage.stations.0[slot].as_ref()).map(|station| (station.asleep, station.service_period))
+            {
+                if asleep && service_period == 0 {
                     break;
                 }
                 let Some(i) = self.ap.storage.held.oldest(slot) else {
@@ -1709,7 +1780,7 @@ impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
                     break;
                 };
                 let more = self.ap.storage.held.count(slot) > 1;
-                let last = !station.asleep || station.service_period == 1 || !more;
+                let last = !asleep || service_period == 1 || !more;
                 let len = self.ap.storage.held.frames[i].len as usize;
                 let mut frame = [0u32; MTU.div_ceil(4)];
                 frame[..len.div_ceil(4)].copy_from_slice(&self.ap.storage.held.frames[i].frame[..len.div_ceil(4)]);
@@ -1778,36 +1849,46 @@ impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
         #[cfg(feature = "wpa2")]
         self.check_sa_queries(now).await;
         for slot in 0..MAX_STATIONS {
-            let Some(station) = self.ap.storage.stations.0[slot].filter(|s| s.phase == Phase::Associated) else {
-                continue;
-            };
-            if let Some(leaving) = station.leaving {
-                if now >= leaving.deadline {
-                    info!("station {:02x} did not hear its deauthentication in time", station.addr);
-                    self.remove_station(slot, None).await;
-                }
-                continue;
+            match self.station_due(slot, now) {
+                Some(Due::Removal(reason)) => self.remove_station(slot, reason).await,
+                #[cfg(feature = "wpa2")]
+                Some(Due::HandshakeMessage) => self.send_handshake_message(slot).await,
+                Some(Due::Poll) => self.poll_station(slot).await,
+                None => {}
             }
-            #[cfg(feature = "wpa2")]
-            if station.retry_at.is_some_and(|at| now >= at) {
-                self.send_handshake_message(slot).await;
-                continue;
+        }
+    }
+
+    /// What the associated station of `slot` is due at `now`, if anything.
+    fn station_due(&self, slot: usize, now: Instant) -> Option<Due> {
+        let station = self.ap.storage.stations.0[slot]
+            .as_ref()
+            .filter(|s| s.phase == Phase::Associated)?;
+        if let Some(leaving) = station.leaving {
+            if now < leaving.deadline {
+                return None;
             }
-            match station.poll_deadline {
-                Some(deadline) if now >= deadline => {
-                    info!("station {:02x} did not answer its poll, letting it go", station.addr);
-                    self.remove_station(slot, Some(REASON_INACTIVITY)).await;
-                }
-                None if station.authorized && now >= station.last_seen + INACTIVITY => {
-                    debug!(
-                        "station {:02x} not heard from for {} s, polling it",
-                        station.addr,
-                        INACTIVITY.as_secs()
-                    );
-                    self.poll_station(slot).await;
-                }
-                _ => {}
+            info!("station {:02x} did not hear its deauthentication in time", station.addr);
+            return Some(Due::Removal(None));
+        }
+        #[cfg(feature = "wpa2")]
+        if station.retry_at.is_some_and(|at| now >= at) {
+            return Some(Due::HandshakeMessage);
+        }
+        match station.poll_deadline {
+            Some(deadline) if now >= deadline => {
+                info!("station {:02x} did not answer its poll, letting it go", station.addr);
+                Some(Due::Removal(Some(REASON_INACTIVITY)))
             }
+            None if station.authorized && now >= station.last_seen + INACTIVITY => {
+                debug!(
+                    "station {:02x} not heard from for {} s, polling it",
+                    station.addr,
+                    INACTIVITY.as_secs()
+                );
+                Some(Due::Poll)
+            }
+            _ => None,
         }
     }
 
@@ -1966,15 +2047,19 @@ impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
     /// Starts the 4-way handshake with the station of `slot`, just added to the RPU (hostapd's
     /// `wpa_auth_sm_event(WPA_ASSOC)`).
     async fn start_handshake(&mut self, slot: usize) {
-        let (Some(security), Some(station)) = (
-            self.ap.settings.map(|settings| settings.security),
-            self.ap.storage.stations.0[slot],
-        ) else {
-            return;
+        self.ap.storage.handshakes[slot] = self.new_handshake(slot);
+        self.send_handshake_message(slot).await;
+    }
+
+    /// The authenticator of the station of `slot`, with its ANonce.
+    fn new_handshake(&mut self, slot: usize) -> Option<Authenticator> {
+        let (Some(settings), Some(station)) = (&self.ap.settings, &self.ap.storage.stations.0[slot]) else {
+            return None;
         };
+        let security = &settings.security;
         let (Some(seed), Some(offer), Some((sta_rsne, suite))) = (security.seed(), security.offer(), station.rsne)
         else {
-            return;
+            return None;
         };
         // The PMK: the SAE exchange's with SAE, which message 1 names, else the pre-shared key.
         #[cfg(feature = "wpa3")]
@@ -1984,26 +2069,23 @@ impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
         };
         #[cfg(not(feature = "wpa3"))]
         let (pmk, pmkid) = (security.psk(), None);
-        let Some(pmk) = pmk else {
-            return;
-        };
-        self.ap.nonces += 1;
+        let pmk = pmk?;
         let aa = self.ap.mac_addr;
-        let anonce = authenticator::anonce(&seed, &aa, &station.addr, self.ap.nonces);
+        let anonce = authenticator::anonce(&seed, &aa, &station.addr, self.ap.nonces + 1);
         let ap_rsne = Rsne::access_point(offer);
         debug!("4-way handshake with {:02x}: {}", station.addr, suite);
         let handshake = Authenticator::new(pmk, aa, station.addr, ap_rsne, sta_rsne, suite, anonce)
             .with_rsnxe(security.rsnxe(), station.rsnxe)
             .with_pmkid(pmkid);
-        self.ap.storage.handshakes[slot] = Some(handshake);
-        self.send_handshake_message(slot).await;
+        self.ap.nonces += 1;
+        Some(handshake)
     }
 
     /// Sends the handshake message the station of `slot` is due, the first time or again, or
     /// lets the station go after [`authenticator::TRIES`] unanswered ones (reason 15, or 16 for a
     /// group key handshake).
     async fn send_handshake_message(&mut self, slot: usize) {
-        let (Some(gtk), Some(station)) = (self.ap.gtk, self.ap.storage.stations.0[slot]) else {
+        let (Some(gtk), Some(addr)) = (self.ap.gtk, self.ap.storage.stations.0[slot].as_ref().map(|s| s.addr)) else {
             return;
         };
         let Some(handshake) = self.ap.storage.handshakes[slot].as_mut() else {
@@ -2013,13 +2095,13 @@ impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
         let mut out = [0; authenticator::MESSAGE_MAX];
         let Some(len) = handshake.next_message(&gtk, &mut out) else {
             if group {
-                info!("station {:02x} did not take the new group key", station.addr);
+                info!("station {:02x} did not take the new group key", addr);
                 self.remove_station(slot, Some(REASON_GROUP_KEY_UPDATE_TIMEOUT)).await;
             } else {
-                info!("station {:02x} did not complete the 4-way handshake", station.addr);
+                info!("station {:02x} did not complete the 4-way handshake", addr);
                 // Maybe the PMK it named is not the one it has.
                 #[cfg(feature = "wpa3")]
-                self.ap.storage.pmksa_cache.remove(&station.addr);
+                self.ap.storage.pmksa_cache.remove(&addr);
                 self.remove_station(slot, Some(REASON_4WAY_HANDSHAKE_TIMEOUT)).await;
             }
             return;
@@ -2027,7 +2109,7 @@ impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
         if let Some(station) = self.ap.storage.stations.get(slot) {
             station.retry_at = Some(Instant::now() + HANDSHAKE_RETRY);
         }
-        self.send_eapol_to(&station.addr, &out[..len]).await;
+        self.send_eapol_to(&addr, &out[..len]).await;
     }
 
     /// Takes an EAPOL frame from the station `from` (hostapd's `wpa_receive`).
@@ -2091,7 +2173,7 @@ impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
     /// for reception until it is in use, and to each station with its keys in a group key
     /// handshake.
     async fn start_rekey(&mut self) {
-        let (Some(seed), Some(_)) = (self.ap.settings.and_then(|s| s.security.seed()), self.ap.gtk) else {
+        let (Some(seed), Some(_)) = (self.ap.settings.as_ref().and_then(|s| s.security.seed()), self.ap.gtk) else {
             return;
         };
         self.ap.gtks += 1;
@@ -2103,7 +2185,7 @@ impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
             next.gtk.index, next.igtk.index
         );
         for slot in 0..MAX_STATIONS {
-            if self.ap.storage.stations.0[slot].is_some_and(|s| s.authorized) {
+            if self.ap.storage.stations.0[slot].as_ref().is_some_and(|s| s.authorized) {
                 self.start_group_handshake(slot, next).await;
             }
         }

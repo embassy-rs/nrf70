@@ -8,8 +8,10 @@
 //! queues, interrupt and sleep) and `command.rs` the commands it takes; `boot.rs` turns the chip
 //! on and off; `data.rs` carries the frames; `station.rs` joins networks, with `wpa2.rs` and
 //! `supplicant.rs` for WPA2 and `wpa3.rs`, `sae.rs` and `pmksa.rs` for WPA3; `ap.rs` runs the
-//! access point, with `authenticator.rs` and `ap/wpa3.rs`. This file has the runner's loop: the
-//! requests from [`Control`] and the dispatch of the RPU's events.
+//! access point, with `authenticator.rs` and `ap/wpa3.rs`. Both sides share `ieee80211.rs` (element
+//! IDs, status and reason codes), `rsn.rs` (RSN elements and suites), `eapol.rs` (EAPOL-Key frames)
+//! and `crypto.rs` (the key derivations). This file has the runner's loop: the requests from
+//! [`Control`] and the dispatch of the RPU's events.
 
 #![no_std]
 #![deny(unused_must_use)]
@@ -477,7 +479,7 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
             // The interrupt comes last: its events are read at each turn of the loop anyway, and
             // a busy receiver must not keep a request or a frame to send waiting.
             match select3(shared.requests.receive(), tx, irq).await {
-                Either3::First(request) => self.handle_request(request).await,
+                Either3::First(request) => self.handle_request(&request).await,
                 Either3::Second(frame) => {
                     let len = frame.len();
                     slice8_mut(&mut tx_frame)[..len].copy_from_slice(frame);
@@ -521,7 +523,7 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
     }
 
     /// What a request gets while the chip is off.
-    async fn handle_request_off(&mut self, request: Request) {
+    async fn handle_request_off(&mut self, request: &Request) {
         match request {
             Request::Scan => {
                 warn!("scan refused: the chip is off");
@@ -533,7 +535,7 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
             Request::LinkStatus => {
                 let _ = self.shared.link_status.try_send(None);
             }
-            Request::SetPowerSave(enabled) => self.power_save = enabled,
+            Request::SetPowerSave(enabled) => self.power_save = *enabled,
             Request::PowerSave => {
                 let _ = self.shared.power_save.try_send(None);
             }
@@ -555,7 +557,7 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
         }
     }
 
-    async fn handle_request(&mut self, request: Request) {
+    async fn handle_request(&mut self, request: &Request) {
         if !self.powered {
             return self.handle_request_off(request).await;
         }
@@ -572,8 +574,8 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
                 self.trigger_scan().await;
             }
             Request::SetPowerSave(enabled) => {
-                self.power_save = enabled;
-                self.set_power_save(enabled).await;
+                self.power_save = *enabled;
+                self.set_power_save(*enabled).await;
             }
             Request::PowerOff => {
                 self.power_off().await;
@@ -610,7 +612,7 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
                     let _ = self.shared.connect_result.try_send(Err(ConnectError::Busy));
                     return;
                 }
-                self.join(ssid, &credentials).await;
+                self.join(*ssid, credentials).await;
             }
         }
     }
