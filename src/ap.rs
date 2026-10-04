@@ -1000,61 +1000,17 @@ impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
         if !self.set_interface_type(c::iftype::IFTYPE_AP).await {
             return Err(ApError::Refused);
         }
-        for (subtype, prefix) in SUBSCRIBED {
-            let mut cmd: c::umac_cmd_mgmt_frame_reg = unsafe { zeroed() };
-            cmd.info.frame_type = subtype as u16;
-            cmd.info.frame_match.frame_match_len = prefix.len() as _;
-            cmd.info.frame_match.frame_match[..prefix.len()].copy_from_slice(prefix);
-            self.send_cmd(&mut cmd).await;
-        }
-
-        let freq_params = freq_params(settings.frequency);
-        let mut cmd: c::umac_cmd_set_wiphy = unsafe { zeroed() };
-        cmd.valid_fields = c::CMD_SET_WIPHY_FREQ_PARAMS_VALID;
-        cmd.info.freq_params = freq_params;
-        self.send_cmd(&mut cmd).await;
-
-        let mut cmd: c::umac_cmd_start_ap = unsafe { zeroed() };
-        cmd.valid_fields = c::CMD_BEACON_INFO_BEACON_INTERVAL_VALID
-            | c::CMD_BEACON_INFO_VERSIONS_VALID
-            | c::CMD_BEACON_INFO_CIPHER_SUITE_GROUP_VALID;
-        let info = &mut cmd.info;
-        info.beacon_interval = BEACON_INTERVAL;
-        info.dtim_period = DTIM_PERIOD;
-        info.auth_type = c::auth_type::AUTHTYPE_OPEN_SYSTEM as _;
-        let beacon = &mut info.beacon_data;
-        beacon.head_len = settings.beacon_head(&self.ap.mac_addr, &mut beacon.head) as u32;
-        beacon.tail_len = settings.beacon_tail(&mut beacon.tail) as u32;
-        info.ssid = settings.ssid.to_c();
-        info.connect_common_info.valid_fields = c::CONNECT_COMMON_INFO_WPA_VERSIONS_VALID;
-        #[cfg(feature = "wpa2")]
-        if settings.privacy() {
-            let common = &mut info.connect_common_info;
-            common.valid_fields |= c::CONNECT_COMMON_INFO_CIPHER_SUITES_PAIRWISE_VALID;
-            common.num_cipher_suites_pairwise = 1;
-            // A packed field: copied out, set, and copied back.
-            let mut suites = common.cipher_suites_pairwise;
-            suites[0] = supplicant::CIPHER_SUITE_CCMP;
-            common.cipher_suites_pairwise = suites;
-        }
-        info.freq_params = freq_params;
+        self.subscribe_frames().await;
+        self.set_channel(settings.frequency).await;
         self.carrier_on = false;
-        self.send_cmd(&mut cmd).await;
+        self.send_start_ap(&settings).await;
         if !self.wait_until(CARRIER_TIMEOUT, |r| r.carrier_on).await {
             warn!("the access point did not start");
             self.set_interface_type(c::iftype::IFTYPE_STATION).await;
             return Err(ApError::Refused);
         }
 
-        let mut cmd: c::umac_cmd_set_bss = unsafe { zeroed() };
-        cmd.valid_fields = c::CMD_SET_BSS_CTS_VALID
-            | c::CMD_SET_BSS_PREAMBLE_VALID
-            | c::CMD_SET_BSS_SLOT_VALID
-            | c::CMD_SET_BSS_HT_OPMODE_VALID
-            | c::CMD_SET_BSS_AP_ISOLATE_VALID;
-        cmd.bss_info.preamble = 1;
-        cmd.bss_info.slot = settings.band_2g() as u8;
-        self.send_cmd(&mut cmd).await;
+        self.set_bss(&settings).await;
         // With WPA2, the group keys the access point sends broadcasts with: the GTK, and the IGTK
         // that protects its broadcast management frames.
         #[cfg(feature = "wpa2")]
@@ -1088,6 +1044,68 @@ impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
             settings.channel
         );
         Ok(())
+    }
+
+    /// Has the RPU hand over the management frames the access point answers (hostapd's
+    /// `register_mgmt_frames_ap`).
+    async fn subscribe_frames(&mut self) {
+        for (subtype, prefix) in SUBSCRIBED {
+            let mut cmd: c::umac_cmd_mgmt_frame_reg = unsafe { zeroed() };
+            cmd.info.frame_type = subtype as u16;
+            cmd.info.frame_match.frame_match_len = prefix.len() as _;
+            cmd.info.frame_match.frame_match[..prefix.len()].copy_from_slice(prefix);
+            self.send_cmd(&mut cmd).await;
+        }
+    }
+
+    /// Tunes the radio to `frequency`.
+    async fn set_channel(&mut self, frequency: u32) {
+        let mut cmd: c::umac_cmd_set_wiphy = unsafe { zeroed() };
+        cmd.valid_fields = c::CMD_SET_WIPHY_FREQ_PARAMS_VALID;
+        cmd.info.freq_params = freq_params(frequency);
+        self.send_cmd(&mut cmd).await;
+    }
+
+    /// Starts beaconing (`UMAC_CMD_START_AP`): the RPU reports the carrier on once it does.
+    async fn send_start_ap(&mut self, settings: &Settings) {
+        let mut cmd: c::umac_cmd_start_ap = unsafe { zeroed() };
+        cmd.valid_fields = c::CMD_BEACON_INFO_BEACON_INTERVAL_VALID
+            | c::CMD_BEACON_INFO_VERSIONS_VALID
+            | c::CMD_BEACON_INFO_CIPHER_SUITE_GROUP_VALID;
+        let info = &mut cmd.info;
+        info.beacon_interval = BEACON_INTERVAL;
+        info.dtim_period = DTIM_PERIOD;
+        info.auth_type = c::auth_type::AUTHTYPE_OPEN_SYSTEM as _;
+        let beacon = &mut info.beacon_data;
+        beacon.head_len = settings.beacon_head(&self.ap.mac_addr, &mut beacon.head) as u32;
+        beacon.tail_len = settings.beacon_tail(&mut beacon.tail) as u32;
+        info.ssid = settings.ssid.to_c();
+        info.connect_common_info.valid_fields = c::CONNECT_COMMON_INFO_WPA_VERSIONS_VALID;
+        #[cfg(feature = "wpa2")]
+        if settings.privacy() {
+            let common = &mut info.connect_common_info;
+            common.valid_fields |= c::CONNECT_COMMON_INFO_CIPHER_SUITES_PAIRWISE_VALID;
+            common.num_cipher_suites_pairwise = 1;
+            // A packed field: copied out, set, and copied back.
+            let mut suites = common.cipher_suites_pairwise;
+            suites[0] = supplicant::CIPHER_SUITE_CCMP;
+            common.cipher_suites_pairwise = suites;
+        }
+        info.freq_params = freq_params(settings.frequency);
+        self.send_cmd(&mut cmd).await;
+    }
+
+    /// Sets the BSS parameters: short preamble, and the short slot time on 2.4 GHz.
+    async fn set_bss(&mut self, settings: &Settings) {
+        let mut cmd: c::umac_cmd_set_bss = unsafe { zeroed() };
+        cmd.valid_fields = c::CMD_SET_BSS_CTS_VALID
+            | c::CMD_SET_BSS_PREAMBLE_VALID
+            | c::CMD_SET_BSS_SLOT_VALID
+            | c::CMD_SET_BSS_HT_OPMODE_VALID
+            | c::CMD_SET_BSS_AP_ISOLATE_VALID;
+        cmd.bss_info.preamble = 1;
+        cmd.bss_info.slot = settings.band_2g() as u8;
+        self.send_cmd(&mut cmd).await;
     }
 
     /// Stops the access point (the SDK's `nrf_wifi_wpa_supp_deinit_ap`), saying goodbye to each
