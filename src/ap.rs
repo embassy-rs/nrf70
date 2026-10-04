@@ -1054,7 +1054,7 @@ impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
             cmd.info.frame_type = subtype as u16;
             cmd.info.frame_match.frame_match_len = prefix.len() as _;
             cmd.info.frame_match.frame_match[..prefix.len()].copy_from_slice(prefix);
-            self.send_cmd(&mut cmd).await;
+            self.rpu.send_cmd(&mut cmd).await;
         }
     }
 
@@ -1063,7 +1063,7 @@ impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
         let mut cmd: c::umac_cmd_set_wiphy = unsafe { zeroed() };
         cmd.valid_fields = c::CMD_SET_WIPHY_FREQ_PARAMS_VALID;
         cmd.info.freq_params = freq_params(frequency);
-        self.send_cmd(&mut cmd).await;
+        self.rpu.send_cmd(&mut cmd).await;
     }
 
     /// Starts beaconing (`UMAC_CMD_START_AP`): the RPU reports the carrier on once it does.
@@ -1092,7 +1092,7 @@ impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
             common.cipher_suites_pairwise = suites;
         }
         info.freq_params = freq_params(settings.frequency);
-        self.send_cmd(&mut cmd).await;
+        self.rpu.send_cmd(&mut cmd).await;
     }
 
     /// Sets the BSS parameters: short preamble, and the short slot time on 2.4 GHz.
@@ -1105,7 +1105,7 @@ impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
             | c::CMD_SET_BSS_AP_ISOLATE_VALID;
         cmd.bss_info.preamble = 1;
         cmd.bss_info.slot = settings.band_2g() as u8;
-        self.send_cmd(&mut cmd).await;
+        self.rpu.send_cmd(&mut cmd).await;
     }
 
     /// Stops the access point (the SDK's `nrf_wifi_wpa_supp_deinit_ap`), saying goodbye to each
@@ -1131,7 +1131,7 @@ impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
         // the RPU has stopped it, so that the station removals it reports meanwhile land here.
         self.ap.settings = None;
         let mut cmd: c::umac_cmd_stop_ap = unsafe { zeroed() };
-        self.send_cmd(&mut cmd).await;
+        self.rpu.send_cmd(&mut cmd).await;
         if !self.wait_until(CARRIER_TIMEOUT, |r| !r.carrier_on).await {
             warn!("the access point did not report its carrier off");
             self.carrier_on = false;
@@ -1168,7 +1168,7 @@ impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
         cmd.valid_fields = c::SET_INTERFACE_IFTYPE_VALID | c::SET_INTERFACE_USE_4ADDR_VALID;
         cmd.info.iftype = iftype as _;
         self.ap.set_interface = None;
-        self.send_cmd(&mut cmd).await;
+        self.rpu.send_cmd(&mut cmd).await;
         let answered = self.wait_until(EVENT_TIMEOUT, |r| r.ap.set_interface.is_some()).await;
         self.set_interface_state(true).await;
         match self.ap.set_interface {
@@ -1209,7 +1209,7 @@ impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
         }
         self.ap.cookie += 1;
         info.host_cookie = self.ap.cookie;
-        self.send_cmd(&mut cmd).await;
+        self.rpu.send_cmd(&mut cmd).await;
     }
 
     /// A management frame for the access point (`UMAC_EVENT_FRAME`): what hostapd's
@@ -1457,7 +1457,7 @@ impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
             info.ht_capability[..ht.len()].copy_from_slice(&ht);
         }
         info.mac_addr = station.addr;
-        self.send_cmd(&mut cmd).await;
+        self.rpu.send_cmd(&mut cmd).await;
         self.write_pending_entry(slot, &station.addr).await;
     }
 
@@ -1470,7 +1470,7 @@ impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
             mask: c::STA_FLAG_AUTHORIZED,
             set: c::STA_FLAG_AUTHORIZED,
         };
-        self.send_cmd(&mut cmd).await;
+        self.rpu.send_cmd(&mut cmd).await;
         if let Some(slot) = self.ap.storage.stations.find(addr) {
             self.ap.storage.stations.0[slot].as_mut().unwrap().authorized = true;
         }
@@ -1510,7 +1510,7 @@ impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
             let mut cmd: c::umac_cmd_del_sta = unsafe { zeroed() };
             cmd.valid_fields = c::CMD_DEL_STATION_MAC_ADDR_VALID;
             cmd.info.mac_addr = station.addr;
-            self.send_cmd(&mut cmd).await;
+            self.rpu.send_cmd(&mut cmd).await;
             self.write_pending_entry(slot, &[0; 6]).await;
         }
         // It may have been the last one a group key renewal waited for.
@@ -1633,7 +1633,7 @@ impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
     async fn write_pending_entry(&mut self, slot: usize, addr: &[u8; 6]) {
         let mut entry = [0u32; 3];
         slice8_mut(&mut entry)[..6].copy_from_slice(addr);
-        self.write(pending_entry_addr(slot), None, &entry).await;
+        self.rpu.write(pending_entry_addr(slot), None, &entry).await;
     }
 
     /// Updates the pending frame bits of station `slot` (the SDK's `update_pend_q_bmp`): its kept
@@ -1644,7 +1644,7 @@ impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
         if leaving.is_some_and(|leaving| !leaving.sent) {
             bits |= 1 << access_category(0);
         }
-        self.write32(pending_entry_addr(slot) + 8, None, bits).await;
+        self.rpu.write32(pending_entry_addr(slot) + 8, None, bits).await;
     }
 
     /// Takes a frame to send if it is for a station that sleeps, and says whether it did (the
