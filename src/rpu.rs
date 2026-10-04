@@ -7,7 +7,64 @@ use core::mem::{size_of, zeroed};
 use defmt::{debug, info, panic, trace, unwrap, warn};
 use embassy_time::{with_timeout, Duration, Instant, Timer};
 
-use crate::{c, rx_buf_addr, slice8, slice8_mut, sliceit, unsliceit, Bus, Command, Otp, RX_BUFS, RX_BUFS_PER_QUEUE};
+use crate::boot::Otp;
+use crate::command::Command;
+use crate::{c, slice8, slice8_mut, sliceit, unsliceit, Bus};
+
+// ========= Packet RAM
+
+// The packet RAM (0xB0000000 to 0xB0030FFF, of which 0xB0005000 on is for the host and the RPU)
+// holds the TX buffers, `MAX_TX_AGGREGATION` per TX token, each a header then the frame, and then
+// the RX buffers, `RX_BUFS_PER_QUEUE` per RX queue, each a 4-byte header then the frame. RX
+// buffers are numbered by descriptor ID across the queues: queue 0 has 0 to N-1, queue 1 N to 2N-1
+// and so on.
+
+/// TX tokens: how many TX commands may be in flight.
+pub(crate) const MAX_TX_TOKENS: usize = 10;
+
+/// Frames per TX command.
+pub(crate) const MAX_TX_AGGREGATION: usize = 6;
+
+const TX_MAX_DATA_SIZE: usize = 1600;
+
+pub(crate) const RX_MAX_DATA_SIZE: usize = 1600;
+
+pub(crate) const RX_BUFS_PER_QUEUE: usize = 16;
+
+const TX_BUFS: usize = MAX_TX_TOKENS * MAX_TX_AGGREGATION;
+
+const TX_BUF_SIZE: usize = c::TX_BUF_HEADROOM as usize + TX_MAX_DATA_SIZE;
+
+const TX_TOTAL_SIZE: usize = TX_BUFS * TX_BUF_SIZE;
+
+pub(crate) const RX_BUFS: usize = RX_BUFS_PER_QUEUE * c::MAX_NUM_OF_RX_QUEUES as usize;
+
+const RX_BUF_SIZE: usize = c::RX_BUF_HEADROOM as usize + RX_MAX_DATA_SIZE;
+
+const RX_TOTAL_SIZE: usize = RX_BUFS * RX_BUF_SIZE;
+
+const _: () = {
+    use core::assert;
+    assert!(MAX_TX_TOKENS >= 1, "At least one TX token is required");
+    assert!(MAX_TX_AGGREGATION <= 16, "Max TX aggregation is 16");
+    assert!(RX_BUFS_PER_QUEUE >= 1, "At least one RX buffer per queue is required");
+    assert!(
+        (TX_TOTAL_SIZE + RX_TOTAL_SIZE) as u32 <= c::RPU_PKTRAM_SIZE,
+        "Packet RAM overflow"
+    );
+};
+
+/// The packet RAM address of buffer `slot` of TX token `token`.
+pub(crate) fn tx_buf_addr(token: usize, slot: usize) -> u32 {
+    c::RPU_MEM_PKT_BASE + ((token * MAX_TX_AGGREGATION + slot) * TX_BUF_SIZE) as u32
+}
+
+/// The packet RAM address of RX buffer `desc_id`. The RX buffers follow the TX area.
+pub(crate) fn rx_buf_addr(desc_id: usize) -> u32 {
+    c::RPU_MEM_PKT_BASE + (TX_TOTAL_SIZE + RX_BUF_SIZE * desc_id) as u32
+}
+
+// ========= Bus access, events and commands
 
 /// In low power mode, how long after the last bus access the RPU may sleep again (NCS
 /// `NRF70_RPU_PS_IDLE_TIMEOUT_MS`).
@@ -744,5 +801,19 @@ impl<BUS: Bus> Rpu<BUS> {
         for data in buf {
             self.write32(data_reg, Some(processor), *data).await;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use core::assert_eq;
+
+    use super::*;
+    use regions::GRAM;
+
+    #[test]
+    fn gram_is_read_with_two_dummy_words() {
+        let (mem, offs) = regions::remap_global_addr_to_region_and_offset(c::RPU_MEM_LMAC_BOOT_SIG, None);
+        assert_eq!((mem.start, mem.latency, offs), (GRAM.start, 2, 0xD50));
     }
 }

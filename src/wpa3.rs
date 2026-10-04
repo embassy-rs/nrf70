@@ -20,8 +20,9 @@ use sha2::Sha256;
 
 use crate::pmksa::{self, Pmksa};
 use crate::sae::{self, Pt, Sae};
+use crate::station::{Bss, ConnState, Credentials, MLME_TIMEOUT};
 use crate::supplicant::Rsnxe;
-use crate::{c, Bss, Bus, ConnState, ConnectError, Control, Credentials, Runner, MLME_TIMEOUT};
+use crate::{c, Bus, ConnectError, Control, Runner};
 
 /// The longest password the driver takes for SAE.
 const PASSWORD_MAX: usize = 128;

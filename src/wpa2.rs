@@ -13,11 +13,11 @@ use embedded_hal::digital::{InputPin, OutputPin};
 use embedded_hal_async::digital::Wait;
 use rand_core::CryptoRng;
 
+use crate::data::{write_ethernet, RxFrame};
+use crate::rpu::MAX_TX_TOKENS;
+use crate::station::{Bss, ConnState, Credentials};
 use crate::supplicant::{self, Gtk, Igtk, Outcome, Rsne, Rsnxe, Supplicant};
-use crate::{
-    c, find_ie, slice8_mut, write_ethernet, Bss, Bus, ConnState, ConnectError, Control, Credentials, Runner, RxFrame,
-    MAX_TX_TOKENS,
-};
+use crate::{c, find_ie, slice8_mut, Bus, ConnectError, Control, Runner};
 
 /// How long the last message of a handshake gets to leave before its keys go in anyway.
 const KEY_INSTALL_TIMEOUT: Duration = Duration::from_millis(200);
@@ -191,8 +191,8 @@ pub(crate) fn ap_rsnxe(ies: &[u8], beacon_ies: &[u8]) -> Option<Rsnxe> {
         .and_then(Rsnxe::from_body)
 }
 
-/// The runner's side of WPA2. The first items are what `lib.rs` calls, each with an empty
-/// counterpart there for a build without the feature.
+/// The runner's side of WPA2. The first items are what the rest of the runner calls, each
+/// with an empty counterpart in `lib.rs` for a build without the feature.
 impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
     /// One TX token stays free for the supplicant, whose answers must not wait for traffic.
     pub(super) const EAPOL_TX_TOKENS: u32 = 1;

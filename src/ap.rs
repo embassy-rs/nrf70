@@ -17,6 +17,10 @@ use embassy_time::{Duration, Instant};
 use embedded_hal::digital::{InputPin, OutputPin};
 use embedded_hal_async::digital::Wait;
 
+use crate::control::Request;
+use crate::data::{tx_priority, write_ethernet};
+use crate::rpu::MAX_TX_TOKENS;
+use crate::station::{ConnState, Ssid};
 #[cfg(feature = "wpa2")]
 use crate::{
     authenticator::{self, Authenticator, GroupKeys},
@@ -24,8 +28,7 @@ use crate::{
     wpa2::DefaultKey,
 };
 use crate::{
-    c, find_ie, slice8, slice8_mut, tx_priority, unsliceit, Bus, ConnState, Control, Request, Runner, Ssid,
-    CAPABILITY_PRIVACY, EVENT_TIMEOUT, IE_SSID, MTU,
+    c, find_ie, slice8, slice8_mut, unsliceit, Bus, Control, Runner, CAPABILITY_PRIVACY, EVENT_TIMEOUT, IE_SSID, MTU,
 };
 
 /// How many stations the access point takes (the SDK's `CONFIG_WIFI_MGMT_AP_MAX_NUM_STA`).
@@ -907,7 +910,7 @@ pub(crate) struct State<'a> {
     /// Identifies each management frame sent, for the RPU's TX status.
     cookie: u64,
     /// The station each TX token carries frames to, to note it seen when they are acknowledged.
-    token_stations: [Option<u8>; crate::MAX_TX_TOKENS],
+    token_stations: [Option<u8>; MAX_TX_TOKENS],
 }
 
 impl<'a> State<'a> {
@@ -931,7 +934,7 @@ impl<'a> State<'a> {
             sae_attempts: 0,
             set_interface: None,
             cookie: 0,
-            token_stations: [None; crate::MAX_TX_TOKENS],
+            token_stations: [None; MAX_TX_TOKENS],
         }
     }
 }
@@ -964,8 +967,8 @@ impl Control<'_> {
     }
 }
 
-/// The runner's side of AP mode. The first items are what `lib.rs` calls, each with an empty
-/// counterpart there for a build without the feature.
+/// The runner's side of AP mode. The first items are what the rest of the runner calls, each
+/// with an empty counterpart in `lib.rs` for a build without the feature.
 impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
     pub(super) fn ap_running(&self) -> bool {
         self.ap.running
@@ -1873,7 +1876,7 @@ impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
         let to = station.addr;
         let mut frame = [0u32; 4];
         let bssid = self.ap.mac_addr;
-        let Some(len) = crate::write_ethernet(slice8_mut(&mut frame), &to, &bssid, ETHERTYPE_POLL, &[]) else {
+        let Some(len) = write_ethernet(slice8_mut(&mut frame), &to, &bssid, ETHERTYPE_POLL, &[]) else {
             return;
         };
         if !self.hold_for(slot, &frame, len).await && self.send_frame(&frame, len).await.is_none() {
@@ -2298,8 +2301,7 @@ impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
     async fn send_eapol_to(&mut self, to: &[u8; 6], eapol: &[u8]) {
         let mut frame = [0u32; (14 + authenticator::MESSAGE_MAX).div_ceil(4)];
         let bssid = self.ap.mac_addr;
-        let Some(len) = crate::write_ethernet(slice8_mut(&mut frame), to, &bssid, supplicant::ETHERTYPE_EAPOL, eapol)
-        else {
+        let Some(len) = write_ethernet(slice8_mut(&mut frame), to, &bssid, supplicant::ETHERTYPE_EAPOL, eapol) else {
             return;
         };
         let held = match self.ap.storage.stations.find(to) {
