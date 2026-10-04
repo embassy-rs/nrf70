@@ -254,6 +254,49 @@ fn bss_rank(bss: &Bss) -> i32 {
     bss.signal_dbm + if bss.frequency >= 5000 { BAND_5GHZ_BONUS_DB } else { 0 }
 }
 
+/// The network the station joins or is on.
+pub(crate) struct State {
+    pub(crate) conn: ConnState,
+    ssid: Ssid,
+    /// What the network is joined with, until the connection ends.
+    pub(crate) credentials: Credentials,
+    /// The access point being joined, or joined.
+    pub(crate) bss: Option<Bss>,
+    /// The connect scan found the SSID on an access point that does not offer the security asked
+    /// for.
+    security_mismatch: bool,
+    /// The access points of the network not tried yet.
+    candidates: Candidates,
+    /// When the current connection step times out.
+    pub(crate) deadline: Option<Instant>,
+    /// Where the last scan of every channel found the network that was joined then.
+    known: Option<KnownNetwork>,
+    /// The connect scan in progress covers the channels of `known` only.
+    known_scan: bool,
+    /// The RPU added the AP as a peer (`UMAC_EVENT_NEW_STATION`). TX needs it.
+    peer_known: bool,
+    /// [`Control::link_status`](crate::Control::link_status) is waiting for the RPU's answer.
+    pub(crate) link_status_requested: bool,
+}
+
+impl State {
+    pub(crate) const fn new() -> Self {
+        Self {
+            conn: ConnState::Idle,
+            ssid: Ssid { len: 0, bytes: [0; 32] },
+            credentials: Credentials::Open,
+            bss: None,
+            security_mismatch: false,
+            candidates: Candidates::new(),
+            deadline: None,
+            known: None,
+            known_scan: false,
+            peer_known: false,
+            link_status_requested: false,
+        }
+    }
+}
+
 /// Progress of joining a network (NCS leaves this to wpa_supplicant's SME).
 #[derive(Clone, Copy, PartialEq, Eq, Debug, defmt::Format)]
 pub(crate) enum ConnState {
@@ -276,18 +319,18 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
     /// channels where the network was last time, if this is the one joined then, or of every
     /// channel.
     pub(crate) async fn join(&mut self, ssid: Ssid, credentials: &Credentials) {
-        if self.conn == ConnState::Connected {
+        if self.sta.conn == ConnState::Connected {
             self.leave().await;
         }
-        self.conn_ssid = ssid;
-        self.conn_credentials = *credentials;
-        self.conn_bss = None;
-        self.conn_candidates = Candidates::new();
-        self.conn_security_mismatch = false;
-        match self.known {
+        self.sta.ssid = ssid;
+        self.sta.credentials = *credentials;
+        self.sta.bss = None;
+        self.sta.candidates = Candidates::new();
+        self.sta.security_mismatch = false;
+        match self.sta.known {
             Some(known) if known.ssid.as_bytes() == ssid.as_bytes() && known.count > 0 => {
                 debug!("scanning the {} channels the network was on", known.count);
-                self.known_scan = true;
+                self.sta.known_scan = true;
                 self.set_conn(ConnState::Scanning, KNOWN_SCAN_TIMEOUT);
                 self.trigger_connect_scan(Some(&known)).await;
             }
@@ -297,20 +340,20 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
 
     pub(crate) fn set_conn(&mut self, state: ConnState, timeout: Duration) {
         debug!("connection: {}", state);
-        self.conn = state;
-        self.conn_deadline = Some(Instant::now() + timeout);
+        self.sta.conn = state;
+        self.sta.deadline = Some(Instant::now() + timeout);
     }
 
     /// Resets the connection state and reports the link down.
     fn reset_conn(&mut self) {
-        self.conn = ConnState::Idle;
-        self.conn_deadline = None;
-        self.peer_known = false;
+        self.sta.conn = ConnState::Idle;
+        self.sta.deadline = None;
+        self.sta.peer_known = false;
         self.carrier_on = false;
-        self.conn_credentials = Credentials::Open;
+        self.sta.credentials = Credentials::Open;
         self.forget_keys();
-        if self.link_status_requested {
-            self.link_status_requested = false;
+        if self.sta.link_status_requested {
+            self.sta.link_status_requested = false;
             let _ = self.shared.link_status.try_send(None);
         }
         self.set_link(false);
@@ -328,42 +371,41 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
                 | ConnectError::Timeout
                 | ConnectError::Disconnected
         ) && matches!(
-            self.conn,
+            self.sta.conn,
             ConnState::Authenticating | ConnState::Associating | ConnState::Associated
         );
         if matches!(
-            self.conn,
+            self.sta.conn,
             ConnState::Associating | ConnState::Associated | ConnState::Handshake | ConnState::Authorizing
         ) {
             self.deauthenticate().await;
         }
         // A PMK cached from an earlier SAE exchange that the access point does not take: SAE again.
-        if let Some(bss) = self.pmksa_failed(&error) {
-            self.peer_known = false;
+        // Else, if the access point refused the station or did not answer, the next one.
+        let retry = match self.pmksa_failed(&error) {
+            Some(bss) => Some(bss),
+            None if refused => self
+                .sta
+                .candidates
+                .take_best()
+                .inspect(|_| info!("trying the next access point of the network")),
+            None => None,
+        };
+        if let Some(bss) = retry {
+            self.sta.peer_known = false;
             self.carrier_on = false;
             self.forget_keys();
-            self.authenticate(bss).await;
-            return;
-        }
-        if refused {
-            if let Some(bss) = self.conn_candidates.take_best() {
-                info!("trying the next access point of the network");
-                self.peer_known = false;
-                self.carrier_on = false;
-                self.forget_keys();
-                self.authenticate(bss).await;
-                return;
-            }
+            return self.authenticate(bss).await;
         }
         // The next try looks at every channel again.
-        self.known = None;
+        self.sta.known = None;
         self.reset_conn();
         let _ = self.shared.connect_result.try_send(Err(error));
     }
 
     /// The RPU or the AP ended the association.
     pub(crate) async fn connection_lost(&mut self) {
-        match self.conn {
+        match self.sta.conn {
             ConnState::Idle => {}
             // Nothing is associated yet: the end of the association that a new authentication with
             // the same access point follows (SAE after a cached PMK that did not serve), which the
@@ -383,7 +425,7 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
     /// Whether an event about `bssid` concerns the access point being joined. One left for the
     /// next access point of the network still reports its end, after the next one is in hand.
     fn is_conn_bss(&self, bssid: Option<[u8; 6]>) -> bool {
-        let current = match (self.conn_bss, bssid) {
+        let current = match (self.sta.bss, bssid) {
             (Some(bss), Some(bssid)) => bss.bssid == bssid,
             // Nothing being joined.
             (None, _) => false,
@@ -403,12 +445,12 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
     }
 
     pub(crate) async fn check_conn_timeout(&mut self) {
-        if self.conn_deadline.is_some_and(|deadline| Instant::now() >= deadline) {
-            if self.conn == ConnState::Scanning && self.known_scan {
+        if self.sta.deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+            if self.sta.conn == ConnState::Scanning && self.sta.known_scan {
                 debug!("no answer on the channels the network was on: scanning every channel");
                 return self.connect_scan_all().await;
             }
-            let error = match (self.conn, self.conn_bss) {
+            let error = match (self.sta.conn, self.sta.bss) {
                 (ConnState::Scanning, None) => self.not_found(),
                 (ConnState::Handshake, _) => ConnectError::HandshakeFailed,
                 _ => ConnectError::Timeout,
@@ -419,7 +461,7 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
 
     /// Why the connect scan kept no access point.
     fn not_found(&self) -> ConnectError {
-        if self.conn_security_mismatch {
+        if self.sta.security_mismatch {
             ConnectError::SecurityMismatch
         } else {
             ConnectError::NotFound
@@ -432,7 +474,7 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
         let mut cmd: c::umac_cmd_scan = unsafe { zeroed() };
         cmd.info.scan_reason = c::scan_reason::SCAN_CONNECT as _;
         cmd.info.scan_params.num_scan_ssids = 1;
-        cmd.info.scan_params.scan_ssids[0] = self.conn_ssid.to_c();
+        cmd.info.scan_params.scan_ssids[0] = self.sta.ssid.to_c();
         match known {
             Some(known) => {
                 cmd.info.scan_params.num_scan_channels = known.count as _;
@@ -445,11 +487,11 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
 
     /// Starts the connect scan of every channel, which also notes where the network is.
     async fn connect_scan_all(&mut self) {
-        self.known_scan = false;
-        self.known = Some(KnownNetwork::new(self.conn_ssid));
-        self.conn_bss = None;
-        self.conn_candidates = Candidates::new();
-        self.conn_security_mismatch = false;
+        self.sta.known_scan = false;
+        self.sta.known = Some(KnownNetwork::new(self.sta.ssid));
+        self.sta.bss = None;
+        self.sta.candidates = Candidates::new();
+        self.sta.security_mismatch = false;
         self.set_conn(ConnState::Scanning, SCAN_TIMEOUT);
         self.trigger_connect_scan(None).await;
     }
@@ -457,7 +499,7 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
     /// Keeps the best access points of the target SSID, and authenticates with the best one after
     /// the last result (NCS `nrf_wifi_wpa_supp_event_proc_scan_res`).
     pub(crate) async fn handle_scan_result(&mut self, body: &[u8]) {
-        if self.conn != ConnState::Scanning {
+        if self.sta.conn != ConnState::Scanning {
             return;
         }
         let (event, tail) = unsliceit2::<c::umac_event_new_scan_results>(body);
@@ -474,7 +516,7 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
         };
         let ies = tail.get(..ies_len).unwrap_or(&[]);
         let beacon_ies = tail.get(ies_len..ies_len + beacon_ies_len).unwrap_or(&[]);
-        let target = self.conn_ssid.as_bytes();
+        let target = self.sta.ssid.as_bytes();
         let matches = find_ie(ies, IE_SSID) == Some(target) || find_ie(beacon_ies, IE_SSID) == Some(target);
 
         if matches {
@@ -506,7 +548,7 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
                 #[cfg(feature = "wpa2")]
                 rsnxe: wpa2::ap_rsnxe(ies, beacon_ies),
             };
-            let suitable = match self.conn_credentials {
+            let suitable = match self.sta.credentials {
                 Credentials::Open => bss.capability & CAPABILITY_PRIVACY == 0,
                 #[cfg(feature = "wpa2")]
                 Credentials::Wpa2(_) => bss.rsne.is_some_and(|rsne| rsne.negotiate(false).is_some()),
@@ -518,20 +560,20 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
                 bss.bssid, bss.frequency, bss.signal_dbm, suitable
             );
             if !suitable {
-                self.conn_security_mismatch = true;
+                self.sta.security_mismatch = true;
             } else {
-                if let (false, Some(known)) = (self.known_scan, self.known.as_mut()) {
+                if let (false, Some(known)) = (self.sta.known_scan, self.sta.known.as_mut()) {
                     known.note(&bss);
                 }
-                self.conn_candidates.add(bss);
+                self.sta.candidates.add(bss);
             }
         }
 
         // The last result has a zero sequence number.
         if event.umac_hdr.seq == 0 {
-            match self.conn_candidates.take_best() {
+            match self.sta.candidates.take_best() {
                 Some(bss) => self.authenticate(bss).await,
-                None if self.known_scan => {
+                None if self.sta.known_scan => {
                     debug!("the network is not where it was: scanning every channel");
                     self.connect_scan_all().await;
                 }
@@ -548,7 +590,7 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
             bss.bssid, bss.frequency, bss.signal_dbm
         );
         let mut cmd = self.auth_cmd(&bss);
-        self.conn_bss = Some(bss);
+        self.sta.bss = Some(bss);
         // With WPA3, SAE in place of open system authentication.
         self.sae_start(&bss, &mut cmd);
         self.set_conn(ConnState::Authenticating, MLME_TIMEOUT);
@@ -561,7 +603,7 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
         cmd.valid_fields = c::CMD_AUTHENTICATE_FREQ_VALID | c::CMD_AUTHENTICATE_SSID_VALID;
         cmd.info.frequency = bss.frequency;
         cmd.info.auth_type = c::auth_type::AUTHTYPE_OPEN_SYSTEM as _;
-        cmd.info.ssid = self.conn_ssid.to_c();
+        cmd.info.ssid = self.sta.ssid.to_c();
         cmd.info.bssid = bss.bssid;
         cmd.info.signal = bss.signal_dbm;
         cmd.info.capability = bss.capability;
@@ -572,7 +614,7 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
 
     /// Associates with the authenticated AP (NCS `nrf_wifi_wpa_supp_associate`).
     pub(crate) async fn associate(&mut self) {
-        let Some(bss) = self.conn_bss else {
+        let Some(bss) = self.sta.bss else {
             return;
         };
         let mut cmd: c::umac_cmd_assoc = unsafe { zeroed() };
@@ -582,7 +624,7 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
             | c::CONNECT_COMMON_INFO_FREQ_VALID
             | c::CONNECT_COMMON_INFO_USE_MFP_VALID;
         info.mac_addr = bss.bssid;
-        info.ssid = self.conn_ssid.to_c();
+        info.ssid = self.sta.ssid.to_c();
         info.frequency = bss.frequency;
         info.use_mfp = 0;
         info.flags = c::CMD_CONNECT_COMMON_INFO_USE_RRM;
@@ -598,7 +640,7 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
     /// Completes the connection once the RPU has added the AP as a peer and turned the carrier
     /// on, which it reports in no fixed order after the association.
     pub(crate) async fn check_associated(&mut self) {
-        if self.conn != ConnState::Associated || !self.peer_known || !self.carrier_on {
+        if self.sta.conn != ConnState::Associated || !self.sta.peer_known || !self.carrier_on {
             return;
         }
         if self.handshake_expected() {
@@ -620,7 +662,7 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
     /// its retry, 10 s later. The RPU answers commands in order, so once it has answered the
     /// query the port is open.
     pub(crate) async fn open_port(&mut self) {
-        let Some(bss) = self.conn_bss else {
+        let Some(bss) = self.sta.bss else {
             return;
         };
         self.authorize().await;
@@ -637,8 +679,8 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
 
     /// Reports the link up: the port is open.
     pub(crate) fn connected(&mut self) {
-        self.conn = ConnState::Connected;
-        self.conn_deadline = None;
+        self.sta.conn = ConnState::Connected;
+        self.sta.deadline = None;
         self.set_link(true);
         info!("connected");
         let _ = self.shared.connect_result.try_send(Ok(()));
@@ -646,7 +688,7 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
 
     /// Opens the port to the AP (NCS `nrf_wifi_wpa_set_supp_port`).
     async fn authorize(&mut self) {
-        let Some(bss) = self.conn_bss else {
+        let Some(bss) = self.sta.bss else {
             return;
         };
         let mut cmd: c::umac_cmd_chg_sta = unsafe { zeroed() };
@@ -661,7 +703,7 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
 
     /// Deauthenticates from the AP, reason 3 "leaving" (NCS `nrf_wifi_wpa_supp_deauthenticate`).
     pub(crate) async fn deauthenticate(&mut self) {
-        let Some(bss) = self.conn_bss else {
+        let Some(bss) = self.sta.bss else {
             return;
         };
         let mut cmd: c::umac_cmd_disconn = unsafe { zeroed() };
@@ -674,7 +716,9 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
     /// The answer to the authentication (`UMAC_EVENT_AUTHENTICATE`): an SAE frame, or the status
     /// of an open system authentication, after which the station associates.
     pub(crate) async fn auth_event(&mut self, event: &c::umac_event_mlme) {
-        if self.conn != ConnState::Authenticating || !self.is_conn_bss(mlme_bssid(event)) || self.sae_frame(event).await
+        if self.sta.conn != ConnState::Authenticating
+            || !self.is_conn_bss(mlme_bssid(event))
+            || self.sae_frame(event).await
         {
             return;
         }
@@ -688,7 +732,7 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
 
     /// The answer to the association (`UMAC_EVENT_ASSOCIATE`).
     pub(crate) async fn assoc_event(&mut self, event: &c::umac_event_mlme) {
-        if self.conn != ConnState::Associating || !self.is_conn_bss(mlme_bssid(event)) {
+        if self.sta.conn != ConnState::Associating || !self.is_conn_bss(mlme_bssid(event)) {
             return;
         }
         // Association response: header, then capabilities and status.
@@ -707,7 +751,7 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
     pub(crate) async fn peer_added(&mut self, peer: [u8; 6]) {
         debug!("AP {:02x} added as peer", peer);
         if self.is_conn_bss(Some(peer)) {
-            self.peer_known = true;
+            self.sta.peer_known = true;
             self.check_associated().await;
         }
     }
@@ -716,7 +760,7 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
     pub(crate) async fn peer_removed(&mut self, peer: [u8; 6]) {
         debug!("AP {:02x} removed as peer", peer);
         if self.is_conn_bss(Some(peer)) {
-            self.peer_known = false;
+            self.sta.peer_known = false;
             self.connection_lost().await;
         }
     }
@@ -734,12 +778,12 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
     /// The RPU's station entry of the AP (`UMAC_EVENT_GET_STATION`): the answer to the query that
     /// follows the opening of the port, or to [`Control::link_status`](crate::Control::link_status).
     pub(crate) fn station_info(&mut self, event: &c::umac_event_new_station) {
-        if self.conn == ConnState::Authorizing {
+        if self.sta.conn == ConnState::Authorizing {
             self.connected();
-        } else if self.link_status_requested {
-            self.link_status_requested = false;
+        } else if self.sta.link_status_requested {
+            self.sta.link_status_requested = false;
             let info = event.sta_info;
-            let status = self.conn_bss.map(|bss| LinkStatus::from_station(&bss, &info));
+            let status = self.sta.bss.map(|bss| LinkStatus::from_station(&bss, &info));
             let _ = self.shared.link_status.try_send(status);
         }
     }

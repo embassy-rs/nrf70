@@ -215,7 +215,7 @@ impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
     /// exchange with `bss`, `cmd` stays an open system authentication, and the association names
     /// its PMKID (wpa_supplicant's `sae_pmksa_caching`).
     pub(super) fn sae_start(&mut self, bss: &Bss, cmd: &mut c::umac_cmd_auth) {
-        let Credentials::Wpa3(wpa3) = self.conn_credentials else {
+        let Credentials::Wpa3(wpa3) = self.sta.credentials else {
             return;
         };
         let h2e = bss.rsnxe.is_some_and(|rsnxe| rsnxe.offers_sae_h2e());
@@ -249,7 +249,7 @@ impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
     /// Puts our commit, with the password identifier if there is one and the anti-clogging token
     /// if the access point asked for one, in the authenticate command `cmd`.
     fn sae_commit(&mut self, cmd: &mut c::umac_cmd_auth) {
-        let (Some(sae), Credentials::Wpa3(wpa3)) = (&self.wpa3.sae, &self.conn_credentials) else {
+        let (Some(sae), Credentials::Wpa3(wpa3)) = (&self.wpa3.sae, &self.sta.credentials) else {
             return;
         };
         let token = &self.wpa3.token[..self.wpa3.token_len];
@@ -261,7 +261,7 @@ impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
     /// Takes an authentication event of an SAE exchange: the access point's commit or confirm.
     /// Returns whether it was one.
     pub(super) async fn sae_frame(&mut self, event: &c::umac_event_mlme) -> bool {
-        if !matches!(self.conn_credentials, Credentials::Wpa3(_)) {
+        if !matches!(self.sta.credentials, Credentials::Wpa3(_)) {
             return false;
         }
         if event.flags & c::EVENT_MLME_TIMED_OUT != 0 {
@@ -330,7 +330,7 @@ impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
         data[0..2].copy_from_slice(&2u16.to_le_bytes());
         data[2..4].copy_from_slice(&STATUS_SUCCESS.to_le_bytes());
         sae.write_confirm(&mut data[4..]);
-        let Some(bss) = self.conn_bss else {
+        let Some(bss) = self.sta.bss else {
             return;
         };
         let mut cmd = self.auth_cmd(&bss);
@@ -351,7 +351,7 @@ impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
             Some(token) if !self.wpa3.h2e => Some(token),
             _ => None,
         };
-        let (Some(token), Some(bss)) = (token.filter(|token| token.len() <= TOKEN_MAX), self.conn_bss) else {
+        let (Some(token), Some(bss)) = (token.filter(|token| token.len() <= TOKEN_MAX), self.sta.bss) else {
             self.connect_failed(ConnectError::AuthenticationRejected(
                 STATUS_ANTI_CLOGGING_TOKEN_REQUIRED,
             ))
@@ -378,7 +378,7 @@ impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
                 debug!("SAE: done");
                 let pmksa = sae.pmksa();
                 self.wpa3.pmk = Some(pmksa.pmk);
-                if let (Some(bss), Credentials::Wpa3(wpa3)) = (self.conn_bss, self.conn_credentials) {
+                if let (Some(bss), Credentials::Wpa3(wpa3)) = (self.sta.bss, self.sta.credentials) {
                     self.wpa3.cache.insert(&bss.bssid, wpa3.network, pmksa, Instant::now());
                 }
                 self.associate().await;
@@ -403,7 +403,7 @@ impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
                 | ConnectError::Disconnected
                 | ConnectError::HandshakeFailed
         );
-        let bss = self.conn_bss.filter(|_| retry && self.wpa3.pmkid.is_some())?;
+        let bss = self.sta.bss.filter(|_| retry && self.wpa3.pmkid.is_some())?;
         info!("the access point did not take the PMK of the last SAE exchange: SAE again");
         self.wpa3.cache.remove(&bss.bssid);
         self.wpa3.pmkid = None;
@@ -412,7 +412,7 @@ impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
 
     /// The RSNXE the association request carries for WPA3: with hash to element.
     pub(super) fn sae_rsnxe(&self) -> Option<Rsnxe> {
-        (matches!(self.conn_credentials, Credentials::Wpa3(_)) && self.wpa3.h2e).then(Rsnxe::sae_h2e)
+        (matches!(self.sta.credentials, Credentials::Wpa3(_)) && self.wpa3.h2e).then(Rsnxe::sae_h2e)
     }
 }
 

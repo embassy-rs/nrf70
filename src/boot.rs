@@ -361,7 +361,7 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
 
     /// Puts the chip in its shutdown state (NCS `rpu_pwroff`), after leaving the network.
     pub(crate) async fn power_off(&mut self) {
-        match self.conn {
+        match self.sta.conn {
             ConnState::Idle => {}
             ConnState::Connected => self.leave().await,
             _ => self.connect_failed(ConnectError::PoweredOff).await,

@@ -209,7 +209,7 @@ impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
     /// request carries the RSN element the supplicant will repeat in the handshake, and the RPU
     /// keeps the port closed until the keys are in.
     pub(super) fn secure_association(&mut self, bss: &Bss, info: &mut c::connect_common_info) {
-        self.wpa2.supplicant = match (self.conn_credentials, bss.rsne) {
+        self.wpa2.supplicant = match (self.sta.credentials, bss.rsne) {
             (Credentials::Wpa2(wpa2), Some(ap_rsne)) => {
                 Supplicant::new(wpa2.psk, bss.bssid, self.wpa2.mac_addr, ap_rsne, wpa2.nonce_seed, false)
             }
@@ -321,12 +321,12 @@ impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
     /// Takes an EAPOL frame from `src`, the AP of the association: message 1 of the first handshake
     /// waits, the rest goes to [`Self::answer_eapol`].
     async fn handle_eapol(&mut self, src: &[u8; 6], eapol: &[u8]) {
-        let (Some(bss), true) = (self.conn_bss, self.wpa2.supplicant.is_some()) else {
+        let (Some(bss), true) = (self.sta.bss, self.wpa2.supplicant.is_some()) else {
             debug!("EAPOL frame ignored: no WPA2 association");
             return;
         };
         if !matches!(
-            self.conn,
+            self.sta.conn,
             ConnState::Handshake | ConnState::Authorizing | ConnState::Connected
         ) || *src != bss.bssid
         {
@@ -335,7 +335,7 @@ impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
         }
         // Message 1 of the first handshake waits a moment, in case a newer one follows (see
         // MESSAGE_1_HOLD).
-        if self.conn == ConnState::Handshake && is_message_1(eapol) && eapol.len() <= HELD_MESSAGE_1_MAX {
+        if self.sta.conn == ConnState::Handshake && is_message_1(eapol) && eapol.len() <= HELD_MESSAGE_1_MAX {
             let answer_at =
                 (self.wpa2.held_message_1.as_ref()).map_or(Instant::now() + MESSAGE_1_HOLD, |held| held.answer_at);
             let mut held = HeldMessage1 {
@@ -388,7 +388,7 @@ impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
             }
             Outcome::Abort => {
                 warn!("the AP's handshake contradicts what it announced, leaving");
-                if self.conn == ConnState::Connected {
+                if self.sta.conn == ConnState::Connected {
                     self.leave().await;
                 } else {
                     self.connect_failed(ConnectError::HandshakeFailed).await;
@@ -399,7 +399,7 @@ impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
 
     /// Sends an EAPOL frame to the AP. Returns its TX token, or `None` if none was free.
     async fn send_eapol(&mut self, eapol: &[u8]) -> Option<usize> {
-        let bss = self.conn_bss?;
+        let bss = self.sta.bss?;
         let mut frame = [0u32; (14 + REPLY_MAX).div_ceil(4)];
         let len = write_ethernet(
             slice8_mut(&mut frame),
@@ -419,7 +419,7 @@ impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
     /// `wpa_supplicant_install_ptk` and `wpa_supplicant_install_gtk`), and opens the port if it
     /// was the first one.
     async fn install_pending_keys(&mut self) {
-        let (Some(keys), Some(bss)) = (self.wpa2.pending_keys.take(), self.conn_bss) else {
+        let (Some(keys), Some(bss)) = (self.wpa2.pending_keys.take(), self.sta.bss) else {
             return;
         };
         if let Some(tk) = keys.tk {
@@ -438,7 +438,7 @@ impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
                 .await;
             debug!("management group key {} installed", igtk.index);
         }
-        if self.conn == ConnState::Handshake {
+        if self.sta.conn == ConnState::Handshake {
             self.open_port().await;
         }
     }

@@ -945,7 +945,7 @@ impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
     /// Starts the access point (hostapd's setup through the SDK's `nrf_wifi_wpa_supp_init_ap`,
     /// `register_mgmt_frames_ap` and `nrf_wifi_wpa_supp_start_ap`).
     pub(super) async fn start_ap(&mut self, settings: &Settings) -> Result<(), ApError> {
-        let connecting = !matches!(self.conn, ConnState::Idle | ConnState::Connected);
+        let connecting = !matches!(self.sta.conn, ConnState::Idle | ConnState::Connected);
         let scanning = self
             .scan_deadline
             .is_some_and(|deadline| embassy_time::Instant::now() < deadline);
@@ -955,7 +955,7 @@ impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
         if self.ap.running {
             self.stop_ap().await;
         }
-        if self.conn == ConnState::Connected {
+        if self.sta.conn == ConnState::Connected {
             self.leave().await;
         }
         if !self.set_interface_type(c::iftype::IFTYPE_AP).await {
@@ -1501,7 +1501,8 @@ impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
     /// is a `reason` (hostapd's `ap_sta_deauthenticate` and `ap_free_sta`). An associated station
     /// is let go first, and removed once it has heard why (see [`Self::let_go`]).
     async fn remove_station(&mut self, slot: usize, reason: Option<u16>) {
-        let Some((addr, phase, leaving)) = (self.ap.storage.stations.0[slot].as_ref())
+        let Some((addr, phase, leaving)) = self.ap.storage.stations.0[slot]
+            .as_ref()
             .map(|station| (station.addr, station.phase, station.leaving.is_some()))
         else {
             return;
@@ -1767,8 +1768,9 @@ impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
             return;
         }
         for slot in 0..MAX_STATIONS {
-            while let Some((asleep, service_period)) =
-                (self.ap.storage.stations.0[slot].as_ref()).map(|station| (station.asleep, station.service_period))
+            while let Some((asleep, service_period)) = self.ap.storage.stations.0[slot]
+                .as_ref()
+                .map(|station| (station.asleep, station.service_period))
             {
                 if asleep && service_period == 0 {
                     break;

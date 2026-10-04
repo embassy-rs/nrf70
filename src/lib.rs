@@ -29,7 +29,7 @@ use embassy_time::{with_deadline, with_timeout, Duration, Instant};
 use embedded_hal::digital::{InputPin, OutputPin};
 use embedded_hal_async::digital::Wait;
 use rpu::{Rpu, MAX_TX_TOKENS};
-use station::{Bss, Candidates, ConnState, Credentials, KnownNetwork, Ssid};
+use station::ConnState;
 
 #[allow(unused)]
 #[allow(non_camel_case_types)]
@@ -183,27 +183,17 @@ where
         powered: false,
         power_save: false,
         scan_deadline: None,
-        conn: ConnState::Idle,
-        conn_ssid: Ssid::default(),
-        conn_credentials: Credentials::Open,
-        conn_bss: None,
-        conn_security_mismatch: false,
-        conn_candidates: Candidates::new(),
-        conn_deadline: None,
-        known: None,
-        known_scan: false,
+        sta: station::State::new(),
         #[cfg(feature = "wpa2")]
         wpa2: wpa2::State::new(),
         #[cfg(feature = "wpa3")]
         wpa3: wpa3::State::new(&mut state.pmksa_cache),
-        peer_known: false,
         carrier_on: false,
         events: &mut state.events,
         init_done: false,
         interface_state_set: false,
         link_up: false,
         tx_tokens_busy: 0,
-        link_status_requested: false,
         #[cfg(feature = "ap")]
         ap: ap::State::new(&mut state.ap_storage),
     };
@@ -283,30 +273,14 @@ pub struct Runner<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> {
     /// Set while a display scan is running, so a lost one does not block the next.
     scan_deadline: Option<Instant>,
 
-    conn: ConnState,
-    conn_ssid: Ssid,
-    /// What the network is joined with, until the connection ends.
-    conn_credentials: Credentials,
-    conn_bss: Option<Bss>,
-    /// The connect scan found the SSID on an access point that does not offer the security asked
-    /// for.
-    conn_security_mismatch: bool,
-    /// The access points of the network not tried yet.
-    conn_candidates: Candidates,
-    /// When the current connection step times out.
-    conn_deadline: Option<Instant>,
-    /// Where the last scan of every channel found the network that was joined then.
-    known: Option<KnownNetwork>,
-    /// The connect scan in progress covers the channels of `known` only.
-    known_scan: bool,
+    /// The network joined or being joined.
+    sta: station::State,
     /// The key handshakes of a WPA2 network.
     #[cfg(feature = "wpa2")]
     wpa2: wpa2::State,
     /// The SAE exchange of a WPA3 network, and the PMKs of earlier ones.
     #[cfg(feature = "wpa3")]
     wpa3: wpa3::State<'a>,
-    /// The RPU added the AP as a peer (`UMAC_EVENT_NEW_STATION`). TX needs it.
-    peer_known: bool,
     /// The RPU reported the carrier on (`CMD_CARRIER_ON`).
     carrier_on: bool,
     /// The buffer events are read into, from [`State`]. An empty slice while it is in use.
@@ -319,8 +293,6 @@ pub struct Runner<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> {
     link_up: bool,
     /// TX tokens handed to the RPU and not yet reported done, one bit each.
     tx_tokens_busy: u16,
-    /// [`Control::link_status`] is waiting for the RPU's answer.
-    link_status_requested: bool,
     /// The access point.
     #[cfg(feature = "ap")]
     ap: ap::State<'a>,
@@ -329,13 +301,13 @@ pub struct Runner<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> {
 /// What the runner asks of `wpa3.rs`, in a build without the `wpa3` feature: nothing.
 #[cfg(not(feature = "wpa3"))]
 impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
-    fn sae_start(&mut self, _bss: &Bss, _cmd: &mut c::umac_cmd_auth) {}
+    fn sae_start(&mut self, _bss: &station::Bss, _cmd: &mut c::umac_cmd_auth) {}
 
     async fn sae_frame(&mut self, _event: &c::umac_event_mlme) -> bool {
         false
     }
 
-    fn pmksa_failed(&mut self, _error: &ConnectError) -> Option<Bss> {
+    fn pmksa_failed(&mut self, _error: &ConnectError) -> Option<station::Bss> {
         None
     }
 }
@@ -347,7 +319,7 @@ impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
 
     fn set_station_address(&mut self, _mac_addr: [u8; 6]) {}
 
-    fn secure_association(&mut self, _bss: &Bss, _info: &mut c::connect_common_info) {}
+    fn secure_association(&mut self, _bss: &station::Bss, _info: &mut c::connect_common_info) {}
 
     fn handshake_expected(&self) -> bool {
         false
@@ -445,7 +417,7 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
             let wake_at = [
                 (self.powered && !self.config.low_power).then_some(poll_at),
                 (self.config.low_power && self.rpu.awake).then_some(self.rpu.idle_at),
-                self.conn_deadline,
+                self.sta.deadline,
                 self.handshake_deadline(),
                 self.ap_deadline(),
             ]
@@ -562,7 +534,7 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
             return self.handle_request_off(request).await;
         }
         let scan_running = self.scan_deadline.is_some_and(|deadline| Instant::now() < deadline);
-        let connecting = !matches!(self.conn, ConnState::Idle | ConnState::Connected);
+        let connecting = !matches!(self.sta.conn, ConnState::Idle | ConnState::Connected);
         match request {
             Request::Scan => {
                 if scan_running || connecting || self.ap_running() {
@@ -598,10 +570,10 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
                 self.stop_ap().await;
                 let _ = self.shared.ap_result.try_send(Ok(()));
             }
-            Request::LinkStatus => match self.conn_bss {
-                Some(bss) if self.conn == ConnState::Connected => {
+            Request::LinkStatus => match self.sta.bss {
+                Some(bss) if self.sta.conn == ConnState::Connected => {
                     self.get_station(bss).await;
-                    self.link_status_requested = true;
+                    self.sta.link_status_requested = true;
                 }
                 _ => {
                     let _ = self.shared.link_status.try_send(None);
@@ -697,14 +669,14 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
             Ok(UMAC_EVENT_TRIGGER_SCAN_START) => debug!("scan started"),
             Ok(UMAC_EVENT_SCAN_DONE) => {
                 // Scans hand their results over only when asked for them.
-                if self.conn == ConnState::Scanning {
+                if self.sta.conn == ConnState::Scanning {
                     self.get_scan_results(c::scan_reason::SCAN_CONNECT).await;
                 } else if self.scan_deadline.is_some() {
                     self.get_scan_results(c::scan_reason::SCAN_DISPLAY).await;
                 }
             }
             Ok(UMAC_EVENT_SCAN_ABORTED) => {
-                if self.conn == ConnState::Scanning {
+                if self.sta.conn == ConnState::Scanning {
                     self.connect_failed(ConnectError::NotFound).await;
                 } else {
                     self.scan_deadline = None;
