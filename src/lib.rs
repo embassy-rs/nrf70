@@ -943,6 +943,11 @@ const SR2_RPU_WAKEUP_REQ: u8 = 0x01;
 
 const MAX_EVENT_POOL_LEN: usize = 1000;
 
+/// What is read of an event before its length is known: the data events (an RX event with one
+/// frame takes 49 bytes, a TX done one about 40), which are most of them, in one read. NCS reads
+/// `RPU_EVENT_COMMON_SIZE_MAX` (128 bytes).
+const EVENT_HEAD: usize = 64;
+
 /// Largest command the RPU takes in one buffer; longer ones are sent in fragments.
 const MAX_CMD_SIZE: usize = c::MAX_UMAC_CMD_SIZE as usize;
 
@@ -1730,35 +1735,33 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
         }
     }
 
-    /// Handles the events the RPU has queued and acknowledges its interrupt (NCS
-    /// `hal_rpu_irq_process`). Returns how many events there were.
+    /// Handles the events the RPU has queued (NCS `hal_rpu_irq_process`). Returns how many events
+    /// there were.
     ///
-    /// An event queued between the last look at the queue and the acknowledgement loses its
-    /// interrupt, so the queue is read again after each acknowledgement.
+    /// The interrupt is acknowledged before the queue is read: an event queued after the
+    /// acknowledgement raises it again, and one queued before is read here. (Acknowledged after
+    /// the queue had been read empty, as NCS does, an event queued in between lost its interrupt,
+    /// and the queue had to be read once more.) The watchdog, the other source of the interrupt,
+    /// is checked only when the interrupt came with nothing queued: each status read is a bus
+    /// transaction, and there are thousands of interrupts a second while data flows.
     async fn service_events(&mut self, buf: &mut [u32]) -> usize {
-        let mut events = 0;
-        let mut acknowledged_idle = false;
-        loop {
-            while let Some(len) = self.rpu_event_next(buf).await {
-                events += 1;
-                if len > 0 {
-                    self.handle_event(slice8(buf), len).await;
-                }
-            }
-            if self.rpu_irq_watchdog_check().await {
-                debug!("RPU watchdog interrupt");
-                self.rpu_irq_watchdog_ack().await;
-            }
-            if self.irq_pending_ack {
-                self.irq_pending_ack = false;
-            } else if !acknowledged_idle && self.host_irq.is_high().unwrap_or(false) {
-                // An interrupt with nothing to read: acknowledged once, or it would stay high.
-                acknowledged_idle = true;
-            } else {
-                return events;
-            }
+        let irq = self.host_irq.is_high().unwrap_or(false);
+        if irq {
             self.rpu_irq_ack().await;
         }
+        let mut events = 0;
+        while let Some(len) = self.rpu_event_next(buf).await {
+            events += 1;
+            if len > 0 {
+                self.handle_event(slice8(buf), len).await;
+            }
+        }
+        self.irq_pending_ack = false;
+        if irq && events == 0 && self.rpu_irq_watchdog_check().await {
+            debug!("RPU watchdog interrupt");
+            self.rpu_irq_watchdog_ack().await;
+        }
+        events
     }
 
     /// What a request gets while the chip is off.
@@ -2726,8 +2729,7 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
     /// than one event buffer continues, without a header, in the buffers queued after it. Returns
     /// the event length, or `None` if it did not fit in `buf` and was dropped.
     async fn rpu_event_read(&mut self, event_address: u32, buf: &mut [u32]) -> Option<usize> {
-        const COMMON: usize = c::RPU_EVENT_COMMON_SIZE_MAX as usize;
-        self.read(event_address, None, &mut buf[..COMMON / 4]).await;
+        self.read(event_address, None, &mut buf[..EVENT_HEAD / 4]).await;
 
         // Get the header from the front of the event data
         let message_header: &c::host_rpu_msg_hdr = unsliceit(slice8(buf));
@@ -2736,9 +2738,10 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
         let fits = len <= buf.len() * 4;
 
         let first = len.min(MAX_EVENT_POOL_LEN);
-        if first > COMMON && fits {
-            // This is a longer than usual event. We gotta read it again
-            self.read(event_address, None, &mut buf[..first.div_ceil(4)]).await;
+        if first > EVENT_HEAD && fits {
+            // The rest of a longer event's first buffer.
+            let rest = &mut buf[EVENT_HEAD / 4..first.div_ceil(4)];
+            self.read(event_address + EVENT_HEAD as u32, None, rest).await;
         }
         // Hand each buffer back to the RPU only once it has been read.
         if resubmit {
@@ -3038,17 +3041,18 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
 
     async fn init_rx(&mut self) {
         for desc_id in 0..RX_BUFS {
+            // The first word of a buffer names it. NCS writes it at each post; the RPU leaves it
+            // alone (no buffer of 14,000 frames had it changed), so it is written once.
+            self.write32(rx_buf_addr(desc_id), None, desc_id as u32).await;
             self.rx_buf_post(desc_id).await;
         }
     }
 
-    /// Hands RX buffer `desc_id` to the RPU (NCS `wifi_nrf_fmac_rx_cmd_send`).
+    /// Hands RX buffer `desc_id` to the RPU (NCS `wifi_nrf_fmac_rx_cmd_send`). Its command is written
+    /// each time: read back directly, the slot of a command the RPU took holds 0xAAAAAAAA.
     async fn rx_buf_post(&mut self, desc_id: usize) {
         let queue_id = desc_id / RX_BUFS_PER_QUEUE;
         let rpu_addr = rx_buf_addr(desc_id);
-
-        // write rx buffer header
-        self.write32(rpu_addr, None, desc_id as u32).await;
 
         // Create host_rpu_rx_buf_info (it's just one word of the address). The RPU takes packet
         // RAM addresses as offsets, as NCS posts them.
