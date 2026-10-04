@@ -2007,7 +2007,7 @@ impl Control<'_> {
         };
         let mut seed = [0; 32];
         rng.fill_bytes(&mut seed);
-        let wpa3 = crate::wpa3::Wpa3::new(ssid, password, seed).ok_or(ApError::InvalidPassphrase)?;
+        let wpa3 = crate::wpa3::Wpa3::new(ssid, password, None, seed).ok_or(ApError::InvalidPassphrase)?;
         let settings = Settings {
             security: Security::Wpa3 { wpa3, psk },
             ..settings

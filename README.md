@@ -67,6 +67,10 @@ Working:
   nRF5340 at 128 MHz with hash to element: rejoining hostapd after a power cycle took 0.51 s
   instead of 0.93 s. Both fallbacks were checked by spoiling the cached PMKID, then the cached
   PMK.
+  `Control::join_wpa3_with_identifier` joins with the password that an SAE password identifier
+  names on the access point, which may have several (hostapd's `sae_password=<password>|id=<id>`);
+  one that knows no password under it refuses the commit with status 123. Checked against hostapd
+  with two passwords, one under an identifier.
 - Access point mode with `Control::start_ap_open`, with the `ap` cargo feature: an open network on
   a 2.4 GHz channel (1 to 13) or a 5 GHz one that needs no radar detection (36 to 48, 149 to
   177), for up to four stations. The firmware sends the beacons; the driver answers probe,
@@ -109,6 +113,7 @@ Working:
   authentication, and skips SAE; message 1 names it too. Let go, the laptop was back with its keys
   0.1 s after its deauthentication; to an access point that had lost it (restarted), its
   association got status 53, and it went through SAE 0.46 s later.
+  A commit that names a password identifier gets status 123: the access point has one password.
   The access point's EAPOL frames go through the frames kept for sleeping stations: sent right
   away, the group key handshakes of a dozing laptop got lost.
   The chip sends group frames right away, and a dozing station misses them: 13 broadcasts out of
@@ -157,9 +162,8 @@ Working:
 Not yet:
 
 - Beyond WPA2-Personal and WPA3-Personal with CCMP (see above): TKIP as pairwise cipher (WPA
-  networks without WPA2), SAE on other groups than 19 and SAE-EXT-KEY, and SAE password
-  identifiers. An access point that requires one of them is reported as
-  `ConnectError::SecurityMismatch`.
+  networks without WPA2), and SAE on other groups than 19 and SAE-EXT-KEY. An access point that
+  requires one of them is reported as `ConnectError::SecurityMismatch`.
 - Target wake time, and the current drawn in power save and low power mode, which is not
   measured yet.
 - In AP mode: U-APSD (not announced). The nRF70 has 20 MHz channels only. Delivery to sleeping

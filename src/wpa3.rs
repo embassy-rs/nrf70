@@ -26,6 +26,9 @@ use crate::{c, Bss, Bus, ConnState, ConnectError, Control, Credentials, Runner, 
 /// The longest password the driver takes for SAE.
 const PASSWORD_MAX: usize = 128;
 
+/// The longest password identifier the driver takes.
+const IDENTIFIER_MAX: usize = 32;
+
 /// The longest anti-clogging token the driver keeps.
 const TOKEN_MAX: usize = 64;
 
@@ -44,17 +47,24 @@ const STATUS_ANTI_CLOGGING_TOKEN_REQUIRED: u16 = 76;
 const STATUS_SAE_HASH_TO_ELEMENT: u16 = 126;
 /// "Challenge failure": for SAE, the access point found our confirm wrong, the passwords differ.
 const STATUS_CHALLENGE_FAILURE: u16 = 15;
+/// The access point knows no password under the identifier of our commit.
+const STATUS_UNKNOWN_PASSWORD_IDENTIFIER: u16 = 123;
 
 /// The element that carries an anti-clogging token with hash to element: Element ID Extension
 /// (255), then extension 93.
 const IE_EXTENSION: u8 = 255;
 const IE_EXT_ANTI_CLOGGING_TOKEN: u8 = 93;
+/// The Password Identifier element: Element ID Extension, then extension 33.
+pub(crate) const IE_EXT_PASSWORD_IDENTIFIER: u8 = 33;
 
 /// What joining a WPA3-Personal network needs.
 #[derive(Clone, Copy)]
 pub(crate) struct Wpa3 {
     password: [u8; PASSWORD_MAX],
     password_len: u8,
+    /// The password identifier, which tells the access point which of its passwords is ours.
+    identifier: [u8; IDENTIFIER_MAX],
+    identifier_len: u8,
     /// The base of the PWE for hash to element, derived at the join.
     pub(crate) pt: Pt,
     /// What the SAE scalars and the supplicant's nonces are drawn from.
@@ -64,26 +74,36 @@ pub(crate) struct Wpa3 {
 }
 
 impl Wpa3 {
-    /// What `password` gives on the network `ssid`, with `seed` to draw the SAE scalars and the
-    /// nonces from. `None` if the password is empty or longer than the driver keeps. Deriving the
-    /// PT for hash to element takes a moment (22 ms on an nRF5340 at 128 MHz).
-    pub(crate) fn new(ssid: &[u8], password: &[u8], seed: [u8; 32]) -> Option<Self> {
-        if password.is_empty() || password.len() > PASSWORD_MAX {
+    /// What `password`, under `identifier` if given, gives on the network `ssid`, with `seed` to
+    /// draw the SAE scalars and the nonces from. `None` if the password is empty or longer than
+    /// the driver keeps, or the identifier is. Deriving the PT for hash to element takes a moment
+    /// (22 ms on an nRF5340 at 128 MHz).
+    pub(crate) fn new(ssid: &[u8], password: &[u8], identifier: Option<&[u8]>, seed: [u8; 32]) -> Option<Self> {
+        let identifier = identifier.unwrap_or(&[]);
+        if password.is_empty() || password.len() > PASSWORD_MAX || identifier.len() > IDENTIFIER_MAX {
             return None;
         }
         let mut wpa3 = Self {
             password: [0; PASSWORD_MAX],
             password_len: password.len() as u8,
-            pt: Pt::derive(ssid, password, None),
+            identifier: [0; IDENTIFIER_MAX],
+            identifier_len: identifier.len() as u8,
+            pt: Pt::derive(ssid, password, Some(identifier).filter(|id| !id.is_empty())),
             seed,
-            network: pmksa::network_id(ssid, password),
+            network: pmksa::network_id(ssid, password, identifier),
         };
         wpa3.password[..password.len()].copy_from_slice(password);
+        wpa3.identifier[..identifier.len()].copy_from_slice(identifier);
         Some(wpa3)
     }
 
     pub(crate) fn password(&self) -> &[u8] {
         &self.password[..self.password_len as usize]
+    }
+
+    /// The password identifier, empty if there is none.
+    pub(crate) fn identifier(&self) -> &[u8] {
+        &self.identifier[..self.identifier_len as usize]
     }
 }
 
@@ -143,10 +163,38 @@ impl Control<'_> {
         password: &[u8],
         rng: &mut (impl CryptoRng + ?Sized),
     ) -> Result<(), ConnectError> {
+        self.join_sae(ssid, password, None, rng).await
+    }
+
+    /// Joins the WPA3-Personal network `ssid` as [`Control::join_wpa3`] does, with the password
+    /// that `identifier` names there: an access point may have several passwords, one per
+    /// identifier (hostapd's `sae_password=<password>|id=<identifier>`). The identifier goes in
+    /// the SAE commit, in the clear. An access point that knows no password under it refuses the
+    /// commit with `ConnectError::AuthenticationRejected(123)`. Up to 32 bytes.
+    pub async fn join_wpa3_with_identifier(
+        &mut self,
+        ssid: &[u8],
+        password: &[u8],
+        identifier: &[u8],
+        rng: &mut (impl CryptoRng + ?Sized),
+    ) -> Result<(), ConnectError> {
+        if identifier.is_empty() {
+            return Err(ConnectError::InvalidPassphrase);
+        }
+        self.join_sae(ssid, password, Some(identifier), rng).await
+    }
+
+    async fn join_sae(
+        &mut self,
+        ssid: &[u8],
+        password: &[u8],
+        identifier: Option<&[u8]>,
+        rng: &mut (impl CryptoRng + ?Sized),
+    ) -> Result<(), ConnectError> {
         let mut seed = [0; 32];
         rng.fill_bytes(&mut seed);
         let start = Instant::now();
-        let wpa3 = Wpa3::new(ssid, password, seed).ok_or(ConnectError::InvalidPassphrase)?;
+        let wpa3 = Wpa3::new(ssid, password, identifier, seed).ok_or(ConnectError::InvalidPassphrase)?;
         debug!("SAE: PT derived in {} ms", start.elapsed().as_millis());
         self.join(ssid, Credentials::Wpa3(wpa3)).await
     }
@@ -200,7 +248,7 @@ impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
         let pwe = if h2e {
             Some(wpa3.pt.pwe(&self.wpa2_mac_addr(), &bss.bssid))
         } else {
-            sae::pwe_hunting_and_pecking(wpa3.password(), &self.wpa2_mac_addr(), &bss.bssid)
+            sae::pwe_hunting_and_pecking(wpa3.password(), wpa3.identifier(), &self.wpa2_mac_addr(), &bss.bssid)
         };
         self.wpa3.attempts += 1;
         let (rand, mask) = scalars(&wpa3.seed, self.wpa3.attempts);
@@ -214,33 +262,15 @@ impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
         self.sae_commit(cmd);
     }
 
-    /// Puts our commit, with the anti-clogging token if the access point asked for one, in the
-    /// authenticate command `cmd`.
+    /// Puts our commit, with the password identifier if there is one and the anti-clogging token
+    /// if the access point asked for one, in the authenticate command `cmd`.
     fn sae_commit(&mut self, cmd: &mut c::umac_cmd_auth) {
-        let Some(sae) = &self.wpa3.sae else {
+        let (Some(sae), Credentials::Wpa3(wpa3)) = (&self.wpa3.sae, &self.conn_credentials) else {
             return;
-        };
-        let status = if self.wpa3.h2e {
-            STATUS_SAE_HASH_TO_ELEMENT
-        } else {
-            STATUS_SUCCESS
         };
         let token = &self.wpa3.token[..self.wpa3.token_len];
         let mut data = [0; c::MAX_SAE_DATA_LENGTH as usize];
-        data[0..2].copy_from_slice(&1u16.to_le_bytes());
-        data[2..4].copy_from_slice(&status.to_le_bytes());
-        let mut len = 4;
-        if self.wpa3.h2e {
-            // With hash to element, the token goes in a container element after the commit.
-            len += sae.write_commit(&[], &mut data[4..]);
-            if !token.is_empty() {
-                data[len..len + 3].copy_from_slice(&[IE_EXTENSION, 1 + token.len() as u8, IE_EXT_ANTI_CLOGGING_TOKEN]);
-                data[len + 3..len + 3 + token.len()].copy_from_slice(token);
-                len += 3 + token.len();
-            }
-        } else {
-            len += sae.write_commit(token, &mut data[4..]);
-        }
+        let len = commit_data(sae, self.wpa3.h2e, token, wpa3.identifier(), &mut data);
         sae_data(cmd, &data[..len]);
     }
 
@@ -285,6 +315,11 @@ impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
             (2, STATUS_CHALLENGE_FAILURE) => {
                 warn!("SAE: the access point refused our confirm: the password is wrong");
                 self.connect_failed(ConnectError::HandshakeFailed).await;
+            }
+            (1, STATUS_UNKNOWN_PASSWORD_IDENTIFIER) => {
+                warn!("SAE: the access point knows no password under our identifier");
+                self.connect_failed(ConnectError::AuthenticationRejected(STATUS_UNKNOWN_PASSWORD_IDENTIFIER))
+                    .await;
             }
             (_, status) => {
                 warn!(
@@ -398,6 +433,33 @@ impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
     pub(super) fn sae_rsnxe(&self) -> Option<Rsnxe> {
         (matches!(self.conn_credentials, Credentials::Wpa3(_)) && self.wpa3.h2e).then(Rsnxe::sae_h2e)
     }
+}
+
+/// Writes the body of our commit from its transaction sequence number on into `data`, and returns
+/// its length. With hunting and pecking, the anti-clogging token goes between the group and the
+/// scalar; with hash to element, in a container element at the end. The password identifier's
+/// element comes before that container (hostapd's `sae_write_commit`).
+pub(crate) fn commit_data(sae: &Sae, h2e: bool, token: &[u8], identifier: &[u8], data: &mut [u8]) -> usize {
+    let status = if h2e {
+        STATUS_SAE_HASH_TO_ELEMENT
+    } else {
+        STATUS_SUCCESS
+    };
+    data[0..2].copy_from_slice(&1u16.to_le_bytes());
+    data[2..4].copy_from_slice(&status.to_le_bytes());
+    let mut len = 4 + sae.write_commit(if h2e { &[] } else { token }, &mut data[4..]);
+    let mut element = |extension: u8, body: &[u8]| {
+        data[len..len + 3].copy_from_slice(&[IE_EXTENSION, 1 + body.len() as u8, extension]);
+        data[len + 3..len + 3 + body.len()].copy_from_slice(body);
+        len += 3 + body.len();
+    };
+    if !identifier.is_empty() {
+        element(IE_EXT_PASSWORD_IDENTIFIER, identifier);
+    }
+    if h2e && !token.is_empty() {
+        element(IE_EXT_ANTI_CLOGGING_TOKEN, token);
+    }
+    len
 }
 
 /// Makes `cmd` an SAE authentication with `data`: the frame's body from its transaction sequence

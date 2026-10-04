@@ -77,9 +77,9 @@ impl<const N: usize> Cache<N> {
 }
 
 /// What tells networks apart in the station's cache: the first 8 bytes of HMAC-SHA256(password,
-/// SSID). A PMK found under another password would only fail the 4-way handshake.
-pub(crate) fn network_id(ssid: &[u8], password: &[u8]) -> u64 {
-    let mac = crate::sae::hmac_sha256(password, &[ssid]);
+/// SSID length || SSID || password identifier). A PMK found under another password would only fail the 4-way handshake.
+pub(crate) fn network_id(ssid: &[u8], password: &[u8], identifier: &[u8]) -> u64 {
+    let mac = crate::sae::hmac_sha256(password, &[&[ssid.len() as u8], ssid, identifier]);
     u64::from_le_bytes(mac[..8].try_into().unwrap())
 }
 
@@ -125,10 +125,11 @@ mod tests {
     }
 
     #[test]
-    fn networks_differ_by_ssid_and_password() {
-        let id = network_id(b"nrf70", b"password");
-        assert_eq!(id, network_id(b"nrf70", b"password"));
-        assert!(id != network_id(b"nrf70", b"passwort"));
-        assert!(id != network_id(b"nrf71", b"password"));
+    fn networks_differ_by_ssid_password_and_identifier() {
+        let id = network_id(b"nrf70", b"password", b"");
+        assert_eq!(id, network_id(b"nrf70", b"password", b""));
+        assert!(id != network_id(b"nrf70", b"passwort", b""));
+        assert!(id != network_id(b"nrf71", b"password", b""));
+        assert!(id != network_id(b"nrf70", b"password", b"id"));
     }
 }

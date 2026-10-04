@@ -22,6 +22,7 @@ pub(super) const AUTH_ALGORITHM_SAE: u16 = 3;
 const STATUS_CHALLENGE_FAILURE: u16 = 15;
 const STATUS_ANTI_CLOGGING_TOKEN_REQUIRED: u16 = 76;
 const STATUS_UNSUPPORTED_GROUP: u16 = 77;
+const STATUS_UNKNOWN_PASSWORD_IDENTIFIER: u16 = 123;
 const STATUS_SAE_HASH_TO_ELEMENT: u16 = 126;
 
 /// How many exchanges with other stations may be under way before a commit needs an anti-clogging
@@ -33,6 +34,8 @@ const TOKEN_LEN: usize = 32;
 /// (255), then extension 93.
 const IE_EXTENSION: u8 = 255;
 const IE_EXT_ANTI_CLOGGING_TOKEN: u8 = 93;
+/// The element of a password identifier, which the access point has none of.
+const IE_EXT_PASSWORD_IDENTIFIER: u8 = 33;
 /// How many PMKs of earlier SAE exchanges the access point keeps, one per station address.
 const PMKSA_CACHE: usize = 2 * super::MAX_STATIONS;
 /// The access point's cache knows one network, its own, and is cleared when it starts.
@@ -73,12 +76,26 @@ fn commit_token(body: &[u8], h2e: bool) -> Option<&[u8]> {
     if !h2e {
         return (body.len() == sae::COMMIT_LEN + TOKEN_LEN).then(|| &body[2..2 + TOKEN_LEN]);
     }
-    let mut elements = body.get(sae::COMMIT_LEN..)?;
+    extension_element(body.get(sae::COMMIT_LEN..)?, IE_EXT_ANTI_CLOGGING_TOKEN)
+}
+
+/// Whether a station's commit names a password identifier, in its element after the commit (and
+/// after the anti-clogging token, with hunting and pecking, which puts it inside).
+fn names_identifier(body: &[u8]) -> bool {
+    [sae::COMMIT_LEN, sae::COMMIT_LEN + TOKEN_LEN].iter().any(|&at| {
+        body.get(at..)
+            .and_then(|elements| extension_element(elements, IE_EXT_PASSWORD_IDENTIFIER))
+            .is_some()
+    })
+}
+
+/// The body of the extension element `extension` among `elements`, after its extension ID.
+fn extension_element(mut elements: &[u8], extension: u8) -> Option<&[u8]> {
     while let [id, len, rest @ ..] = elements {
         let element = rest.get(..*len as usize)?;
-        if let [IE_EXT_ANTI_CLOGGING_TOKEN, token @ ..] = element {
-            if *id == IE_EXTENSION {
-                return Some(token);
+        if let [ext, body @ ..] = element {
+            if *id == IE_EXTENSION && *ext == extension {
+                return Some(body);
             }
         }
         elements = &rest[element.len()..];
@@ -130,6 +147,14 @@ impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
             STATUS_SAE_HASH_TO_ELEMENT => true,
             _ => return,
         };
+        // The access point has one password, without an identifier (hostapd's answer to an unknown
+        // one).
+        if names_identifier(body) {
+            debug!("SAE with {:02x}: commit with a password identifier refused", from);
+            return self
+                .ap_sae_reply(from, 1, STATUS_UNKNOWN_PASSWORD_IDENTIFIER, &[])
+                .await;
+        }
         // The commit without its token: with hunting and pecking, the token sits between the group
         // and the scalar.
         let token = commit_token(body, h2e);
@@ -184,7 +209,7 @@ impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
         let pwe = if h2e {
             Some(wpa3.pt.pwe(&bssid, from))
         } else {
-            sae::pwe_hunting_and_pecking(wpa3.password(), &bssid, from)
+            sae::pwe_hunting_and_pecking(wpa3.password(), &[], &bssid, from)
         };
         let Some(pwe) = pwe else {
             return self.ap_sae_reply(from, 1, STATUS_UNSPECIFIED, &[]).await;
@@ -317,5 +342,35 @@ mod tests {
         assert_eq!(found(&cache, &a, &[]), None);
         assert_eq!(found(&cache, &a, &[[9; 16]]), None);
         assert_eq!(found(&cache, &b, &[[1; 16]]), None);
+    }
+
+    #[test]
+    fn the_access_point_finds_what_a_station_commit_carries() {
+        let pwe = sae::pwe_hunting_and_pecking(b"password", &[], &[1; 6], &[2; 6]).unwrap();
+        let (rand, mask) = scalars(&[5; 32], 1);
+        let sae = Sae::new(pwe, rand, mask).unwrap();
+        let token = [9; TOKEN_LEN];
+        let mut data = [0; 256];
+        for h2e in [false, true] {
+            // The commit as the station sends it, from the group on: the token where it goes.
+            let len = crate::wpa3::commit_data(&sae, h2e, &token, b"", &mut data);
+            let body = &data[4..len];
+            assert!(!names_identifier(body));
+            assert_eq!(commit_token(body, h2e), Some(&token[..]));
+            // With a password identifier, after the commit (and the token with hunting and
+            // pecking), before the token's container with hash to element.
+            let len = crate::wpa3::commit_data(&sae, h2e, &token, b"nrf70", &mut data);
+            let body = &data[4..len];
+            assert!(names_identifier(body));
+            let at = if h2e {
+                sae::COMMIT_LEN
+            } else {
+                sae::COMMIT_LEN + TOKEN_LEN
+            };
+            assert_eq!(&body[at..at + 8], b"\xFF\x06\x21nrf70");
+            if h2e {
+                assert_eq!(commit_token(body, h2e), Some(&token[..]));
+            }
+        }
     }
 }

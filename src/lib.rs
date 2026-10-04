@@ -84,6 +84,8 @@ const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 const MAX_EVENT_LEN: usize = 4096;
 
 /// What a network is joined with.
+// The runner keeps one, for the network it is on: a WPA3 one is its password, identifier and PT.
+#[allow(clippy::large_enum_variant)]
 #[derive(Clone, Copy)]
 enum Credentials {
     /// Nothing: an open network.

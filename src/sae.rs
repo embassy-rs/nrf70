@@ -83,17 +83,22 @@ fn max_min(addr1: &[u8; 6], addr2: &[u8; 6]) -> [u8; 12] {
 }
 
 /// The PWE by hunting and pecking (IEEE 802.11-2020, 12.4.4.2.2): for counter = 1, 2, ...,
-/// pwd-seed = HMAC-SHA256(MAX(addr) || MIN(addr), password || counter), and the first
+/// pwd-seed = HMAC-SHA256(MAX(addr) || MIN(addr), password [|| identifier] || counter), and the first
 /// pwd-value = KDF-256(pwd-seed, "SAE Hunting and Pecking", p) that is the x of a point gives the
 /// PWE, with the y whose parity is that of pwd-seed. `None` if no counter up to 255 does, which has
 /// a probability of about 2^-255.
-pub(crate) fn pwe_hunting_and_pecking(password: &[u8], addr1: &[u8; 6], addr2: &[u8; 6]) -> Option<ProjectivePoint> {
+pub(crate) fn pwe_hunting_and_pecking(
+    password: &[u8],
+    identifier: &[u8],
+    addr1: &[u8; 6],
+    addr2: &[u8; 6],
+) -> Option<ProjectivePoint> {
     let key = max_min(addr1, addr2);
     let mut found = Choice::from(0);
     let mut pwe = AffinePoint::IDENTITY;
     let mut counter: u8 = 1;
     loop {
-        let pwd_seed = hmac_sha256(&key, &[password, &[counter]]);
+        let pwd_seed = hmac_sha256(&key, &[password, identifier, &[counter]]);
         let mut pwd_value = [0; LEN];
         kdf_sha256(&pwd_seed, b"SAE Hunting and Pecking", &PRIME, &mut pwd_value);
         // pwd-value < p, and x^3 + ax + b a quadratic residue: decompress answers both, and
@@ -357,7 +362,7 @@ mod tests {
 
     #[test]
     fn hunting_and_pecking_matches_the_standard_test_vectors() {
-        let pwe = pwe_hunting_and_pecking(PASSWORD, &ADDR1, &ADDR2).unwrap();
+        let pwe = pwe_hunting_and_pecking(PASSWORD, &[], &ADDR1, &ADDR2).unwrap();
         let rand = scalar("992465fd3daa3c60aa6565b7f62a2a7f2e12dd12f198faf4fbed89d7ff1ace94");
         let mask = scalar("9507a90f777a044d6a0830b91ea3d5dd70bece44e1acffb86983b5e1bf9fb322");
         let mut sae = Sae::new(pwe, rand, mask).unwrap();
@@ -407,7 +412,7 @@ mod tests {
     /// Two stations that share a password agree on the keys and accept each other's confirm.
     #[test]
     fn two_peers_agree() {
-        let pwe = pwe_hunting_and_pecking(b"correct horse", &ADDR1, &ADDR2).unwrap();
+        let pwe = pwe_hunting_and_pecking(b"correct horse", &[], &ADDR1, &ADDR2).unwrap();
         let random = |seed: u8| Sae::scalar_from(&[seed; 48]).unwrap();
         let mut a = Sae::new(pwe, random(1), random(2)).unwrap();
         let mut b = Sae::new(pwe, random(3), random(4)).unwrap();
@@ -426,7 +431,7 @@ mod tests {
         assert_eq!(b.check_confirm(&confirm_a), Ok(()));
 
         // Another password: the keys differ, and so does the confirm.
-        let other = pwe_hunting_and_pecking(b"wrong horse", &ADDR1, &ADDR2).unwrap();
+        let other = pwe_hunting_and_pecking(b"wrong horse", &[], &ADDR1, &ADDR2).unwrap();
         let mut c = Sae::new(other, random(5), random(6)).unwrap();
         let mut commit_c = [0; COMMIT_LEN];
         c.write_commit(&[], &mut commit_c);
@@ -440,7 +445,7 @@ mod tests {
 
     #[test]
     fn bad_commits_are_refused() {
-        let pwe = pwe_hunting_and_pecking(PASSWORD, &ADDR1, &ADDR2).unwrap();
+        let pwe = pwe_hunting_and_pecking(PASSWORD, &[], &ADDR1, &ADDR2).unwrap();
         let random = |seed: u8| Sae::scalar_from(&[seed; 48]).unwrap();
         let mut sae = Sae::new(pwe, random(1), random(2)).unwrap();
         let mut commit = [0; COMMIT_LEN];
