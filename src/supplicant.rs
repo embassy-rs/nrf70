@@ -584,6 +584,13 @@ pub(crate) const INFO_ERROR: u16 = 1 << 10;
 pub(crate) const INFO_REQUEST: u16 = 1 << 11;
 pub(crate) const INFO_ENCRYPTED_KEY_DATA: u16 = 1 << 12;
 
+/// Whether `frame`, from its 802.1X header on, is message 1 of a 4-way handshake: pairwise, asking
+/// for an answer, without a MIC.
+pub(crate) fn is_message_1(frame: &[u8]) -> bool {
+    KeyFrame::parse(frame)
+        .is_some_and(|key| key.info & (INFO_PAIRWISE | INFO_ACK | INFO_MIC) == INFO_PAIRWISE | INFO_ACK)
+}
+
 /// Longest reply: message 2, which carries the RSNE and the RSNXE.
 pub(crate) const REPLY_MAX: usize = KEY_FRAME_LEN + RSNE_MAX + RSNXE_MAX;
 
@@ -1964,6 +1971,22 @@ mod tests {
             core::panic!("no message 2");
         };
         assert!(ap.take_message_2(&reply[..len]).nonce != first);
+    }
+
+    #[test]
+    fn message_1_is_told_from_the_others() {
+        let mut ap = Ap::new();
+        let mut sta = supplicant(b"correct horse");
+        let mut reply = [0; REPLY_MAX];
+        let message_1 = ap.message_1();
+        assert!(is_message_1(&message_1));
+        let Outcome::Reply(len) = sta.handle(&message_1, &mut reply) else {
+            core::panic!("no message 2");
+        };
+        assert!(!is_message_1(&reply[..len]));
+        ap.take_message_2(&reply[..len]);
+        assert!(!is_message_1(&ap.message_3()));
+        assert!(!is_message_1(&message_1[..message_1.len() - 1]));
     }
 
     #[test]

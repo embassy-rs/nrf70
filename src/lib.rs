@@ -1462,9 +1462,9 @@ impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
 
     async fn frame_sent(&mut self, _token: usize) {}
 
-    async fn check_pending_keys(&mut self) {}
+    async fn check_handshake_timers(&mut self) {}
 
-    fn pending_keys_deadline(&self) -> Option<Instant> {
+    fn handshake_deadline(&self) -> Option<Instant> {
         None
     }
 
@@ -1669,7 +1669,7 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
                 poll_at = Instant::now() + IRQ_POLL_PERIOD;
             }
             self.check_conn_timeout().await;
-            self.check_pending_keys().await;
+            self.check_handshake_timers().await;
             self.ap_deliver().await;
             self.ap_check_timeouts().await;
             self.rpu_ps_sleep().await;
@@ -1683,7 +1683,7 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
                 (self.powered && !self.low_power).then_some(poll_at),
                 (self.low_power && self.rpu_awake).then_some(self.rpu_idle_at),
                 self.conn_deadline,
-                self.pending_keys_deadline(),
+                self.handshake_deadline(),
                 self.ap_deadline(),
             ]
             .into_iter()

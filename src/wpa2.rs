@@ -22,6 +22,24 @@ use crate::{
 /// How long the last message of a handshake gets to leave before its keys go in anyway.
 const KEY_INSTALL_TIMEOUT: Duration = Duration::from_millis(200);
 
+/// How long message 1 of the association's first 4-way handshake waits before it is answered. A
+/// newer message 1 meanwhile takes its place, and only that one is answered. An ISP router sends
+/// message 1 a second time 15 to 18 ms after the first, with another ANonce, and once the first one
+/// has been answered it takes no message 2 until its next try, 1 s later. wpa_supplicant, which
+/// handles only the last EAPOL frame that came before it processed the association, answered the
+/// second one only, 62 ms after the first on a laptop. hostapd sends message 1 again after 100 ms.
+const MESSAGE_1_HOLD: Duration = Duration::from_millis(40);
+
+/// Longest message 1 that waits: the EAPOL-Key frame, and key data up to a PMKID KDE.
+const HELD_MESSAGE_1_MAX: usize = supplicant::KEY_FRAME_LEN + 32;
+
+/// Message 1 waiting to be answered, from its 802.1X header on.
+struct HeldMessage1 {
+    len: u8,
+    frame: [u8; HELD_MESSAGE_1_MAX],
+    answer_at: Instant,
+}
+
 /// Longest EAPOL frame the supplicant is handed, as an Ethernet frame: the fixed part of an
 /// EAPOL-Key frame, and key data with a few elements and keys.
 const EAPOL_RX_MAX: usize = 14 + 99 + 400;
@@ -53,6 +71,8 @@ pub(crate) struct State {
     /// The key handshakes with the AP of a WPA2 network, from the association on.
     supplicant: Option<Supplicant>,
     pending_keys: Option<PendingKeys>,
+    /// Message 1 of the first handshake, waiting [`MESSAGE_1_HOLD`] to be answered.
+    held_message_1: Option<HeldMessage1>,
 }
 
 impl State {
@@ -61,6 +81,7 @@ impl State {
             mac_addr: [0; 6],
             supplicant: None,
             pending_keys: None,
+            held_message_1: None,
         }
     }
 }
@@ -247,7 +268,20 @@ impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
         }
     }
 
-    pub(super) async fn check_pending_keys(&mut self) {
+    /// Answers message 1 once it has waited, and installs the keys of a handshake whose last
+    /// message the RPU did not report sent.
+    pub(super) async fn check_handshake_timers(&mut self) {
+        let now = Instant::now();
+        if self
+            .wpa2
+            .held_message_1
+            .as_ref()
+            .is_some_and(|held| now >= held.answer_at)
+        {
+            if let Some(held) = self.wpa2.held_message_1.take() {
+                self.answer_eapol(&held.frame[..held.len as usize]).await;
+            }
+        }
         if self
             .wpa2
             .pending_keys
@@ -259,21 +293,24 @@ impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
         }
     }
 
-    /// When [`Self::check_pending_keys`] has to run at the latest.
-    pub(super) fn pending_keys_deadline(&self) -> Option<Instant> {
-        self.wpa2.pending_keys.as_ref().map(|keys| keys.deadline)
+    /// When [`Self::check_handshake_timers`] has to run at the latest.
+    pub(super) fn handshake_deadline(&self) -> Option<Instant> {
+        let held = self.wpa2.held_message_1.as_ref().map(|held| held.answer_at);
+        let keys = self.wpa2.pending_keys.as_ref().map(|keys| keys.deadline);
+        held.into_iter().chain(keys).min()
     }
 
     /// The association is over: its keys and its supplicant go with it.
     pub(super) fn forget_keys(&mut self) {
         self.wpa2.supplicant = None;
         self.wpa2.pending_keys = None;
+        self.wpa2.held_message_1 = None;
     }
 
-    /// Hands an EAPOL frame from the AP, as an Ethernet frame, to the supplicant, and does what
-    /// it says.
+    /// Takes an EAPOL frame from the AP of the association, as an Ethernet frame: message 1 of the
+    /// first handshake waits, the rest goes to [`Self::answer_eapol`].
     async fn handle_eapol(&mut self, frame: &[u8]) {
-        let (Some(bss), Some(supplicant)) = (self.conn_bss, self.wpa2.supplicant.as_mut()) else {
+        let (Some(bss), true) = (self.conn_bss, self.wpa2.supplicant.is_some()) else {
             debug!("EAPOL frame ignored: no WPA2 association");
             return;
         };
@@ -285,8 +322,34 @@ impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
             debug!("EAPOL frame ignored: not from the AP of an association");
             return;
         }
+        // Message 1 of the first handshake waits a moment, in case a newer one follows (see
+        // MESSAGE_1_HOLD).
+        let eapol = &frame[14..];
+        if self.conn == ConnState::Handshake && supplicant::is_message_1(eapol) && eapol.len() <= HELD_MESSAGE_1_MAX {
+            let answer_at =
+                (self.wpa2.held_message_1.as_ref()).map_or(Instant::now() + MESSAGE_1_HOLD, |held| held.answer_at);
+            let mut held = HeldMessage1 {
+                len: eapol.len() as u8,
+                frame: [0; HELD_MESSAGE_1_MAX],
+                answer_at,
+            };
+            held.frame[..eapol.len()].copy_from_slice(eapol);
+            if self.wpa2.held_message_1.replace(held).is_some() {
+                debug!("4-way handshake: a newer message 1 takes the place of the one waiting");
+            }
+            return;
+        }
+        self.answer_eapol(eapol).await;
+    }
+
+    /// Hands an EAPOL frame from the AP, from its 802.1X header on, to the supplicant, and does
+    /// what it says.
+    async fn answer_eapol(&mut self, eapol: &[u8]) {
+        let Some(supplicant) = self.wpa2.supplicant.as_mut() else {
+            return;
+        };
         let mut reply = [0; supplicant::REPLY_MAX];
-        match supplicant.handle(&frame[14..], &mut reply) {
+        match supplicant.handle(eapol, &mut reply) {
             Outcome::Ignored => {}
             Outcome::Reply(len) => {
                 self.send_eapol(&reply[..len]).await;

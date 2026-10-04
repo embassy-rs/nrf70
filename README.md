@@ -40,6 +40,12 @@ Working:
   nRF5340 at 64 MHz built for size, 0.5 s at 128 MHz built for speed. A wrong passphrase shows as
   `ConnectError::HandshakeFailed` after about 3 s. The group key handshake was checked on an
   nRF7002-DK too, against an access point that changes its group key every 30 s.
+  Message 1 of the first 4-way handshake waits 40 ms before it is answered, and a newer one
+  takes its place meanwhile, as with wpa_supplicant, which handles only the last one that came
+  before the association was processed. An ISP router sends message 1 again 16 ms after the first,
+  with another ANonce, and once the first one is answered takes no message 2 until its next try,
+  1 s later: there the handshake now ends 73 ms after the association instead of 1.07 s, and
+  elsewhere 40 ms later than before.
   Management frame protection (IEEE 802.11w) is used when the access point offers it, required
   or not, with BIP-CMAC-128: the driver then takes PSK-SHA256 key management if the access point
   offers it (AES-128-CMAC MICs, keys derived with SHA-256), and hands the chip the management
