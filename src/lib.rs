@@ -817,6 +817,43 @@ fn mlme_bssid(event: &c::umac_event_mlme) -> Option<[u8; 6]> {
 }
 
 /// Packet RAM address of RX buffer `desc_id`. The RX buffers follow the TX area.
+/// The packet RAM address of buffer `slot` of TX token `token`: each token has
+/// [`MAX_TX_AGGREGATION`] buffers.
+fn tx_buf_addr(token: usize, slot: usize) -> u32 {
+    c::RPU_MEM_PKT_BASE + ((token * MAX_TX_AGGREGATION + slot) * TX_BUF_SIZE) as u32
+}
+
+/// Shortest frame that shares a TX token with others. Large frames (a TCP sender's data) go in
+/// batches: one command and one TX done event for several frames took the DK's TCP sends from 13.3
+/// to 13.9 Mbit/s, and its runner from 44% of the CPU to 14 to 22%. Small ones (acknowledgements)
+/// go one by one: batched, they reached the sender in bursts, and transfers to the DK fell from
+/// 12.5 to 11.8 Mbit/s.
+const TX_BATCH_FRAME_MIN: usize = 256;
+
+/// Frames that go out under one TX token, written to its buffers, waiting for their command.
+struct TxBatch {
+    token: usize,
+    /// The Ethernet header (destination, source, ethertype) the frames share.
+    header: [u8; 14],
+    /// Their 802.1D priority.
+    priority: u32,
+    /// The lengths of the frames, in the order of the token's buffers.
+    lens: [u16; MAX_TX_AGGREGATION],
+    count: usize,
+}
+
+impl TxBatch {
+    /// Whether `frame` may join the batch: a large frame like the batch's, with the same Ethernet
+    /// header and priority, and a buffer left.
+    fn takes(&self, frame: &[u8]) -> bool {
+        self.count < MAX_TX_AGGREGATION
+            && self.lens[0] as usize >= TX_BATCH_FRAME_MIN
+            && frame.len() >= TX_BATCH_FRAME_MIN
+            && frame.get(..14) == Some(&self.header[..])
+            && tx_priority(frame) == self.priority
+    }
+}
+
 fn rx_buf_addr(desc_id: usize) -> u32 {
     c::RPU_MEM_PKT_BASE + (TX_TOTAL_SIZE + RX_BUF_SIZE * desc_id) as u32
 }
@@ -1726,9 +1763,7 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
                     let len = frame.len();
                     slice8_mut(&mut tx_frame)[..len].copy_from_slice(frame);
                     self.ch.tx_done();
-                    if !self.ap_hold(&mut tx_frame, len).await {
-                        self.send_frame(&tx_frame, len).await;
-                    }
+                    self.send_queued_frames(&mut tx_frame, len).await;
                 }
                 Either3::Third(_) => {}
             }
@@ -2488,67 +2523,121 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
 
     // ========= data path
 
-    /// Hands a frame from embassy-net to the RPU (NCS `nrf_wifi_fmac_start_xmit`, one frame per
-    /// token). The RPU builds the 802.11 header from the Ethernet one. Returns the token, or `None`
-    /// if the frame was not sent: it is shorter than an Ethernet header, or no token is free.
+    /// Hands a frame to the RPU, alone under a TX token (NCS `nrf_wifi_fmac_start_xmit`). The RPU
+    /// builds the 802.11 header from the Ethernet one. Returns the token, or `None` if the frame was
+    /// not sent: it is shorter than an Ethernet header, or no token is free.
+    #[cfg_attr(not(any(feature = "wpa2", feature = "ap")), allow(dead_code))]
     async fn send_frame(&mut self, frame: &[u32], len: usize) -> Option<usize> {
         self.send_frame_flags(frame, len, false, true).await
     }
 
     /// [`Self::send_frame`], with the power save bits of a frame for a station of the access
     /// point: `more_data` says more frames are kept for it, `eosp` ends its service period.
+    #[cfg_attr(not(any(feature = "wpa2", feature = "ap")), allow(dead_code))]
     async fn send_frame_flags(&mut self, frame: &[u32], len: usize, more_data: bool, eosp: bool) -> Option<usize> {
+        let batch = self.tx_batch_start(frame, len).await?;
+        let token = batch.token;
+        self.tx_batch_send(batch, more_data, eosp).await;
+        Some(token)
+    }
+
+    /// Sends a frame from embassy-net, `len` bytes of `tx_frame`, and with it the frames queued
+    /// behind it that share its Ethernet header, if they are large: up to [`MAX_TX_AGGREGATION`] go
+    /// under one TX token, with one command and one TX done event for all of them (NCS
+    /// `tx_cmd_prepare`).
+    async fn send_queued_frames(&mut self, tx_frame: &mut [u32; MTU.div_ceil(4)], len: usize) {
+        if self.ap_hold(tx_frame, len).await {
+            return;
+        }
+        let Some(mut batch) = self.tx_batch_start(tx_frame, len).await else {
+            return;
+        };
+        while let Some(frame) = self.ch.try_tx_buf().filter(|frame| batch.takes(frame)) {
+            let len = frame.len();
+            slice8_mut(tx_frame)[..len].copy_from_slice(frame);
+            self.ch.tx_done();
+            if !self.ap_hold(tx_frame, len).await {
+                self.tx_batch_add(&mut batch, tx_frame, len).await;
+            }
+        }
+        self.tx_batch_send(batch, false, true).await;
+    }
+
+    /// Starts a batch with `len` bytes of `frame`: takes a TX token and writes the frame to its
+    /// first buffer. `None` if the frame is shorter than an Ethernet header or no token is free.
+    async fn tx_batch_start(&mut self, frame: &[u32], len: usize) -> Option<TxBatch> {
         let bytes = &slice8(frame)[..len];
         let token = self.tx_tokens_busy.trailing_ones() as usize;
-        if len < 14 || token >= MAX_TX_TOKENS {
+        let header = bytes.get(..14)?.try_into().ok()?;
+        if token >= MAX_TX_TOKENS {
             return None;
         }
         self.tx_tokens_busy |= 1 << token;
         self.ap_frame_queued(token, &bytes[..6]);
+        let mut batch = TxBatch {
+            token,
+            header,
+            priority: tx_priority(bytes),
+            lens: [0; MAX_TX_AGGREGATION],
+            count: 0,
+        };
+        self.tx_batch_add(&mut batch, frame, len).await;
+        Some(batch)
+    }
 
-        let area = c::RPU_MEM_PKT_BASE + (token * MAX_TX_AGGREGATION * TX_BUF_SIZE) as u32;
-        self.write(area, None, &frame[..len.div_ceil(4)]).await;
+    /// Writes `len` bytes of `frame` to the next buffer of `batch`'s token. The caller made sure
+    /// that the batch [`takes`](TxBatch::takes) it.
+    async fn tx_batch_add(&mut self, batch: &mut TxBatch, frame: &[u32], len: usize) {
+        let addr = tx_buf_addr(batch.token, batch.count);
+        self.write(addr, None, &frame[..len.div_ceil(4)]).await;
+        batch.lens[batch.count] = len as u16;
+        batch.count += 1;
+    }
 
+    /// Hands `batch` to the RPU in one command, with the power save bits of [`Self::send_frame_flags`].
+    async fn tx_batch_send(&mut self, batch: TxBatch, more_data: bool, eosp: bool) {
         #[repr(C, packed)]
-        struct TxCommand {
+        struct Head {
             msg: c::host_rpu_msg,
             buff: c::tx_buff,
-            info: c::tx_buff_info,
         }
-        let mut cmd: TxCommand = unsafe { zeroed() };
-        cmd.msg.hdr.len = size_of::<TxCommand>() as u32;
-        cmd.msg.type_ = c::host_rpu_msg_type::HOST_RPU_MSG_TYPE_DATA as _;
-        cmd.buff.umac_head = c::umac_head {
+        const HEAD: usize = size_of::<Head>();
+        const INFO: usize = size_of::<c::tx_buff_info>();
+        let len = HEAD + batch.count * INFO;
+        let mut head: Head = unsafe { zeroed() };
+        head.msg.hdr.len = len as u32;
+        head.msg.type_ = c::host_rpu_msg_type::HOST_RPU_MSG_TYPE_DATA as _;
+        head.buff.umac_head = c::umac_head {
             cmd: c::umac_data_commands::CMD_TX_BUFF as u32,
-            len: (size_of::<c::tx_buff>() + size_of::<c::tx_buff_info>()) as u32,
+            len: (size_of::<c::tx_buff>() + batch.count * INFO) as u32,
         };
-        cmd.buff.tx_desc_num = token as u8;
-        let mut dest = [0; 6];
-        let mut src = [0; 6];
-        dest.copy_from_slice(&bytes[0..6]);
-        src.copy_from_slice(&bytes[6..12]);
-        cmd.buff.mac_hdr_info.dest = dest;
-        cmd.buff.mac_hdr_info.src = src;
-        cmd.buff.mac_hdr_info.etype = u16::from_be_bytes([bytes[12], bytes[13]]);
-        cmd.buff.mac_hdr_info.tx_flags = tx_priority(bytes);
-        cmd.buff.mac_hdr_info.more_data = more_data as u8;
-        cmd.buff.mac_hdr_info.eosp = eosp as u8;
-        cmd.buff.num_tx_pkts = 1;
-        cmd.info = c::tx_buff_info {
-            pkt_length: len as u16,
-            // The RPU takes packet RAM addresses as offsets.
-            ddr_ptr: area & c::RPU_ADDR_MASK_OFFSET,
-        };
+        head.buff.tx_desc_num = batch.token as u8;
+        let header = &mut head.buff.mac_hdr_info;
+        header.dest.copy_from_slice(&batch.header[0..6]);
+        header.src.copy_from_slice(&batch.header[6..12]);
+        header.etype = u16::from_be_bytes([batch.header[12], batch.header[13]]);
+        header.tx_flags = batch.priority;
+        header.more_data = more_data as u8;
+        header.eosp = eosp as u8;
+        head.buff.num_tx_pkts = batch.count as u8;
 
-        let mut words = [0u32; size_of::<TxCommand>().div_ceil(4)];
-        slice8_mut(&mut words)[..size_of::<TxCommand>()].copy_from_slice(sliceit(&cmd));
+        let mut words = [0u32; (HEAD + MAX_TX_AGGREGATION * INFO).div_ceil(4)];
+        let bytes = slice8_mut(&mut words);
+        bytes[..HEAD].copy_from_slice(sliceit(&head));
+        for (i, &pkt_length) in batch.lens[..batch.count].iter().enumerate() {
+            let info = c::tx_buff_info {
+                pkt_length,
+                // The RPU takes packet RAM addresses as offsets.
+                ddr_ptr: tx_buf_addr(batch.token, i) & c::RPU_ADDR_MASK_OFFSET,
+            };
+            bytes[HEAD + i * INFO..][..INFO].copy_from_slice(sliceit(&info));
+        }
         let info = self.rpu_info.as_ref().unwrap();
         let (cmd_base, busy_queue) = (info.tx_cmd_base, info.hpqm_info.cmd_busy_queue);
-        let cmd_addr = cmd_base + c::RPU_DATA_CMD_SIZE_MAX_TX * token as u32;
-        self.write(cmd_addr, None, &words).await;
+        let cmd_addr = cmd_base + c::RPU_DATA_CMD_SIZE_MAX_TX * batch.token as u32;
+        self.write(cmd_addr, None, &words[..len.div_ceil(4)]).await;
         self.rpu_hpq_enqueue(busy_queue, cmd_addr).await;
         self.rpu_msg_trigger().await;
-        Some(token)
     }
 
     /// Passes received data frames to embassy-net and gives their buffers back (NCS

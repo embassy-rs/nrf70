@@ -129,7 +129,7 @@ Working:
   The access point is an 802.11n one with WMM: 20 MHz, MCS 0 to 7 with the short guard interval,
   hostapd's default EDCA parameters. A laptop sends to it at MCS 6 or 7 and gets MCS 7 back; on
   channel 36 its uploads went from 9.8 to 10.9 Mbit/s, the downloads stay at 12.1 (the bus); with
-  fewer bus transactions per frame (see below), 12.0 and 12.6.
+  fewer bus transactions per frame and batched sends (see below), 11.7 and 15.6.
   A station not heard from for 5 minutes is polled with a frame it has to acknowledge (hostapd's
   `ap_max_inactivity`, which the SDK's driver cannot poll for and gives up on stations instead),
   through the frames kept for sleeping stations, and let go if it does not within 10 s.
@@ -161,8 +161,11 @@ Working:
   The data path keeps bus transactions few, each one costing about 16 µs on an nRF5340's SPIM at
   32 MHz: an event comes in one read of 64 bytes, the interrupt is acknowledged before the queue
   is read (one status read less per interrupt, and the watchdog checked only on an interrupt
-  without events), and an RX buffer's header is written once. On an nRF7002-DK, against a
-  laptop's access point on channel 149: 12.5 Mbit/s up and 13.3 Mbit/s down, from 9.6 and 11.5.
+  without events), and an RX buffer's header is written once. Large frames queued together (a TCP
+  sender's data) go up to six under one TX token, with one command and one TX done event;
+  acknowledgements go one by one, as batched they reached the sender in bursts. On an nRF7002-DK,
+  against a laptop's access point on channel 149: 12.5 Mbit/s to the DK and 13.7 Mbit/s from it,
+  from 9.6 and 11.5, with the runner taking 15 to 18% of the CPU while it sends instead of 44%.
 - SPI bus through any [`embedded-hal-async`](https://crates.io/crates/embedded-hal-async)
   `SpiDevice`.
 - Any other bus through the `Bus` trait. The `scan_qspi` example implements it on the nRF5340's
