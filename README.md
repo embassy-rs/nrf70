@@ -166,6 +166,9 @@ Working:
   acknowledgements go one by one, as batched they reached the sender in bursts. On an nRF7002-DK,
   against a laptop's access point on channel 149: 12.5 Mbit/s to the DK and 13.7 Mbit/s from it,
   from 9.6 and 11.5, with the runner taking 15 to 18% of the CPU while it sends instead of 44%.
+  The runner keeps out of its future what it does not need across a wait (a 4 KB event buffer
+  lives in `State`, commands and frames in the functions that send them): with every feature its
+  task takes 16 KB of RAM on the DK, from 34 KB.
 - SPI bus through any [`embedded-hal-async`](https://crates.io/crates/embedded-hal-async)
   `SpiDevice`.
 - Any other bus through the `Bus` trait. The `scan_qspi` example implements it on the nRF5340's
@@ -188,9 +191,9 @@ Not yet:
 ## Cargo features
 
 - `wpa2` (off by default): `Control::join_wpa2`, `Control::join_wpa2_psk` and `wpa2_psk`. It adds
-  about 30 KB of flash and 2 KB of RAM on an nRF5340, and the `aes`, `aes-kw`, `cmac`, `hmac`,
-  `pbkdf2`, `sha1`, `sha2` and `rand_core` crates. Without it the driver joins open networks
-  only, and depends on none of them.
+  about 31 KB of flash and 4 KB of RAM on an nRF5340 (`join_wpa2` against `join_open`, built for
+  size), and the `aes`, `aes-kw`, `cmac`, `hmac`, `pbkdf2`, `sha1`, `sha2` and `rand_core` crates.
+  Without it the driver joins open networks only, and depends on none of them.
 - `wpa3` (off by default, implies `wpa2`): `Control::join_wpa3`. It adds about 27 KB of flash and
   3 KB of RAM to a WPA2 application on an nRF5340, and the `p256` crate.
 - `ap` (off by default): `Control::start_ap_open` and `Control::stop_ap`, and with `wpa2`
