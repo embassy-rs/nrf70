@@ -10,7 +10,6 @@
 //! Nothing here touches the RPU: [`Sae`] writes and checks the bodies of the commit and confirm
 //! messages, so that it can be tested on its own.
 
-use hmac::{Hmac, KeyInit, Mac};
 use p256::elliptic_curve::array::Array;
 use p256::elliptic_curve::bigint::{ArrayEncoding, NonZero, U256};
 use p256::elliptic_curve::consts::U48;
@@ -21,11 +20,10 @@ use p256::elliptic_curve::subtle::{Choice, ConditionallySelectable, ConstantTime
 use p256::elliptic_curve::Curve;
 use p256::hash2curve::MapToCurve;
 use p256::{AffinePoint, FieldBytes, NistP256, ProjectivePoint, Scalar};
-use sha2::Sha256;
 
-use crate::supplicant::kdf_sha256;
+use crate::crypto::{hmac_sha256, kdf_sha256};
+use crate::pmksa::Pmksa;
 
-type HmacSha256 = Hmac<Sha256>;
 type FieldElement = <NistP256 as MapToCurve>::FieldElement;
 
 /// The finite cyclic group: 19, NIST P-256.
@@ -47,17 +45,6 @@ const PRIME: [u8; LEN] = [
 /// so that its duration says nothing about the password (wpa_supplicant's
 /// `dragonfly_min_pwe_loop_iter`).
 const HUNTING_AND_PECKING_ROUNDS: u8 = 40;
-
-pub(crate) fn hmac_sha256(key: &[u8], parts: &[&[u8]]) -> [u8; LEN] {
-    let mut mac = match HmacSha256::new_from_slice(key) {
-        Ok(mac) => mac,
-        Err(_) => defmt::unreachable!(),
-    };
-    for part in parts {
-        mac.update(part);
-    }
-    mac.finalize().into_bytes().into()
-}
 
 /// HKDF-Expand with SHA-256 (RFC 5869), as far as SAE needs it: up to 64 bytes.
 fn hkdf_expand(prk: &[u8; LEN], info: &[u8], out: &mut [u8]) {
@@ -324,14 +311,13 @@ impl Sae {
         }
     }
 
-    /// The PMK of the 4-way handshake that follows, once the exchange is through.
-    pub(crate) fn pmk(&self) -> [u8; LEN] {
-        self.pmk
-    }
-
-    /// Names the PMK, for PMK caching.
-    pub(crate) fn pmkid(&self) -> [u8; 16] {
-        self.pmkid
+    /// The PMK of the 4-way handshake that follows, once the exchange is through, and the PMKID
+    /// that names it for PMK caching.
+    pub(crate) fn pmksa(&self) -> Pmksa {
+        Pmksa {
+            pmk: self.pmk,
+            pmkid: self.pmkid,
+        }
     }
 }
 
@@ -340,16 +326,9 @@ mod tests {
     extern crate std;
 
     use core::assert_eq;
-    use std::vec::Vec;
 
     use super::*;
-
-    fn hex(s: &str) -> Vec<u8> {
-        let s: Vec<u8> = s.bytes().filter(|b| !b.is_ascii_whitespace()).collect();
-        s.chunks(2)
-            .map(|pair| u8::from_str_radix(core::str::from_utf8(pair).unwrap(), 16).unwrap())
-            .collect()
-    }
+    use crate::tests::hex;
 
     fn scalar(s: &str) -> Scalar {
         Scalar::from_repr(field_bytes(&hex(s))).unwrap()
@@ -386,10 +365,10 @@ mod tests {
             hex("1e733f6d9bd53256287304338831b09a39406d121017073a5c30db36f36cb81a")
         );
         assert_eq!(
-            sae.pmk().as_slice(),
+            sae.pmksa().pmk.as_slice(),
             hex("4e4dfab1a2dd8ac1a91790f953faaa452ae5c6873ab75b63605ba663f8a7fe59")
         );
-        assert_eq!(sae.pmkid().as_slice(), hex("8747a600eea3f9f22475df58ca1e5498"));
+        assert_eq!(sae.pmksa().pmkid.as_slice(), hex("8747a600eea3f9f22475df58ca1e5498"));
     }
 
     #[test]
@@ -421,8 +400,8 @@ mod tests {
         b.write_commit(&[], &mut commit_b);
         a.process_commit(&commit_b).unwrap();
         b.process_commit(&commit_a).unwrap();
-        assert_eq!(a.pmk(), b.pmk());
-        assert_eq!(a.pmkid(), b.pmkid());
+        assert_eq!(a.pmksa().pmk, b.pmksa().pmk);
+        assert_eq!(a.pmksa().pmkid, b.pmksa().pmkid);
 
         let (mut confirm_a, mut confirm_b) = ([0; CONFIRM_LEN], [0; CONFIRM_LEN]);
         a.write_confirm(&mut confirm_a);

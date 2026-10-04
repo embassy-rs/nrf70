@@ -21,11 +21,14 @@ use crate::control::Request;
 use crate::data::{tx_priority, write_ethernet};
 use crate::ieee80211::*;
 use crate::rpu::MAX_TX_TOKENS;
+#[cfg(feature = "wpa3")]
+use crate::rsn::Akm;
 use crate::station::{ConnState, Ssid};
 #[cfg(feature = "wpa2")]
 use crate::{
     authenticator::{self, Authenticator, GroupKeys},
-    supplicant::{self, Offer, Rsne, Rsnxe, Suite},
+    eapol::ETHERTYPE_EAPOL,
+    rsn::{Offer, Rsne, Rsnxe, Suite, CIPHER_SUITE_BIP_CMAC_128, CIPHER_SUITE_CCMP},
     wpa2::DefaultKey,
 };
 use crate::{c, slice8, slice8_mut, unsliceit, Bus, Control, Runner, EVENT_TIMEOUT, MTU};
@@ -1035,7 +1038,7 @@ impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
             common.num_cipher_suites_pairwise = 1;
             // A packed field: copied out, set, and copied back.
             let mut suites = common.cipher_suites_pairwise;
-            suites[0] = supplicant::CIPHER_SUITE_CCMP;
+            suites[0] = CIPHER_SUITE_CCMP;
             common.cipher_suites_pairwise = suites;
         }
         info.freq_params = freq_params(settings.frequency);
@@ -1260,8 +1263,7 @@ impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
                 // authentication, a cached one that the request names (hostapd's `check_assoc_ies`).
                 #[cfg(feature = "wpa3")]
                 let request = request.and_then(|request| {
-                    let Some((rsne, suite)) = request.rsne.filter(|(_, suite)| suite.akm == supplicant::Akm::Sae)
-                    else {
+                    let Some((rsne, suite)) = request.rsne.filter(|(_, suite)| suite.akm == Akm::Sae) else {
                         return Ok(request);
                     };
                     let station = self.ap.storage.stations.get(slot).unwrap();
@@ -1977,7 +1979,7 @@ impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
         // The PMK: the SAE exchange's with SAE, which message 1 names, else the pre-shared key.
         #[cfg(feature = "wpa3")]
         let (pmk, pmkid) = match station.pmksa {
-            Some(pmksa) if suite.akm == supplicant::Akm::Sae => (Some(pmksa.pmk), Some(pmksa.pmkid)),
+            Some(pmksa) if suite.akm == Akm::Sae => (Some(pmksa.pmk), Some(pmksa.pmkid)),
             _ => (security.psk(), None),
         };
         #[cfg(not(feature = "wpa3"))]
@@ -2056,8 +2058,7 @@ impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
                     station.retry_at = None;
                 }
                 // The pairwise key, then the port (hostapd's PTKINITDONE).
-                self.add_key(Some(from), supplicant::CIPHER_SUITE_CCMP, 0, &tk, &[0; 6])
-                    .await;
+                self.add_key(Some(from), CIPHER_SUITE_CCMP, 0, &tk, &[0; 6]).await;
                 self.set_default_key(0, DefaultKey::Unicast).await;
                 self.authorize_station(&from).await;
                 info!("station {:02x} has its keys", from);
@@ -2146,16 +2147,10 @@ impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
     /// and the IGTK for BIP-CMAC-128.
     async fn install_group_keys(&mut self, keys: &GroupKeys) {
         let (gtk, igtk) = (keys.gtk, keys.igtk);
-        self.add_key(None, supplicant::CIPHER_SUITE_CCMP, gtk.index, &gtk.key, &[0; 6])
+        self.add_key(None, CIPHER_SUITE_CCMP, gtk.index, &gtk.key, &[0; 6])
             .await;
-        self.add_key(
-            None,
-            supplicant::CIPHER_SUITE_BIP_CMAC_128,
-            igtk.index,
-            &igtk.key,
-            &[0; 6],
-        )
-        .await;
+        self.add_key(None, CIPHER_SUITE_BIP_CMAC_128, igtk.index, &igtk.key, &[0; 6])
+            .await;
     }
 
     /// Starts an SA Query of the association of the station of `slot`, if none is under way: a
@@ -2245,7 +2240,7 @@ impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
     async fn send_eapol_to(&mut self, to: &[u8; 6], eapol: &[u8]) {
         let mut frame = [0u32; (14 + authenticator::MESSAGE_MAX).div_ceil(4)];
         let bssid = self.ap.mac_addr;
-        let Some(len) = write_ethernet(slice8_mut(&mut frame), to, &bssid, supplicant::ETHERTYPE_EAPOL, eapol) else {
+        let Some(len) = write_ethernet(slice8_mut(&mut frame), to, &bssid, ETHERTYPE_EAPOL, eapol) else {
             return;
         };
         let held = match self.ap.storage.stations.find(to) {
@@ -2296,6 +2291,7 @@ mod tests {
     use std::vec::Vec;
 
     use super::*;
+    use crate::tests::hex;
 
     const BSSID: [u8; 6] = [0xF4, 0xCE, 0x36, 0x00, 0x8B, 0x19];
     const STA: [u8; 6] = [0x98, 0x43, 0xFA, 0x23, 0x26, 0x25];
@@ -2313,14 +2309,6 @@ mod tests {
             "2a0100 3204 3048606c {HT_CAPABILITIES_IE} {} {WMM_IE}",
             ht_operation_ie(channel)
         ))
-    }
-
-    fn hex(s: &str) -> Vec<u8> {
-        let s: std::string::String = s.split_whitespace().collect();
-        (0..s.len())
-            .step_by(2)
-            .map(|i| u8::from_str_radix(&s[i..i + 2], 16).unwrap())
-            .collect()
     }
 
     #[test]

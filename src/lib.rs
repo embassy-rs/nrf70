@@ -47,11 +47,17 @@ mod boot;
 mod bus;
 mod command;
 mod control;
+#[cfg(feature = "wpa2")]
+mod crypto;
 mod data;
+#[cfg(feature = "wpa2")]
+mod eapol;
 mod ieee80211;
 #[cfg(feature = "wpa3")]
 mod pmksa;
 mod rpu;
+#[cfg(feature = "wpa2")]
+mod rsn;
 #[cfg(feature = "wpa3")]
 mod sae;
 mod station;
@@ -852,10 +858,22 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
+    extern crate std;
+
     use core::assert;
+    use std::vec::Vec;
 
     use super::*;
+
+    /// The bytes of a hex string, which may have white space between them.
+    #[cfg_attr(not(any(feature = "wpa2", feature = "ap")), allow(dead_code))]
+    pub(crate) fn hex(s: &str) -> Vec<u8> {
+        let s: Vec<u8> = s.bytes().filter(|b| !b.is_ascii_whitespace()).collect();
+        s.chunks(2)
+            .map(|pair| u8::from_str_radix(core::str::from_utf8(pair).unwrap(), 16).unwrap())
+            .collect()
+    }
 
     // The host has no RTT: defmt output goes nowhere.
     #[defmt::global_logger]

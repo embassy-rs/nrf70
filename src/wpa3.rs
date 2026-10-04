@@ -14,19 +14,18 @@ use defmt::{debug, info, warn};
 use embassy_time::Instant;
 use embedded_hal::digital::{InputPin, OutputPin};
 use embedded_hal_async::digital::Wait;
-use hmac::{Hmac, KeyInit, Mac};
 use rand_core::CryptoRng;
-use sha2::Sha256;
 
+use crate::crypto::hmac_sha256;
 use crate::ieee80211::{
     AUTH_ALGORITHM_SAE, IE_EXTENSION, IE_EXT_ANTI_CLOGGING_TOKEN, IE_EXT_PASSWORD_IDENTIFIER,
     STATUS_ANTI_CLOGGING_TOKEN_REQUIRED, STATUS_CHALLENGE_FAILURE, STATUS_SAE_HASH_TO_ELEMENT, STATUS_SUCCESS,
     STATUS_UNKNOWN_PASSWORD_IDENTIFIER,
 };
-use crate::pmksa::{self, Pmksa};
+use crate::pmksa;
+use crate::rsn::Rsnxe;
 use crate::sae::{self, Pt, Sae};
 use crate::station::{Bss, ConnState, Credentials, MLME_TIMEOUT};
-use crate::supplicant::Rsnxe;
 use crate::{c, Bus, ConnectError, Control, Runner};
 
 /// The longest password the driver takes for SAE.
@@ -194,15 +193,13 @@ pub(crate) fn scalars(seed: &[u8; 32], attempt: u32) -> (p256::Scalar, p256::Sca
     let mut next = || loop {
         let mut wide = [0; 48];
         for (i, chunk) in wide.chunks_mut(32).enumerate() {
-            let mut mac = match Hmac::<Sha256>::new_from_slice(seed) {
-                Ok(mac) => mac,
-                Err(_) => defmt::unreachable!(),
-            };
-            mac.update(b"nrf70 SAE scalars");
-            mac.update(&attempt.to_le_bytes());
-            mac.update(&counter.to_le_bytes());
-            mac.update(&[i as u8]);
-            chunk.copy_from_slice(&mac.finalize().into_bytes()[..chunk.len()]);
+            let parts: [&[u8]; 4] = [
+                b"nrf70 SAE scalars",
+                &attempt.to_le_bytes(),
+                &counter.to_le_bytes(),
+                &[i as u8],
+            ];
+            chunk.copy_from_slice(&hmac_sha256(seed, &parts)[..chunk.len()]);
         }
         counter += 1;
         if let Some(scalar) = Sae::scalar_from(&wide) {
@@ -379,10 +376,7 @@ impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
         match sae.check_confirm(body) {
             Ok(()) => {
                 debug!("SAE: done");
-                let pmksa = Pmksa {
-                    pmk: sae.pmk(),
-                    pmkid: sae.pmkid(),
-                };
+                let pmksa = sae.pmksa();
                 self.wpa3.pmk = Some(pmksa.pmk);
                 if let (Some(bss), Credentials::Wpa3(wpa3)) = (self.conn_bss, self.conn_credentials) {
                     self.wpa3.cache.insert(&bss.bssid, wpa3.network, pmksa, Instant::now());

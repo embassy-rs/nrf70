@@ -15,7 +15,10 @@ use crate::ieee80211::{find_ie, CAPABILITY_PRIVACY, IE_SSID, REASON_LEAVING};
 use crate::wpa3;
 use crate::{c, unsliceit2, Bus, ConnectError, LinkStatus, Runner, EVENT_TIMEOUT, SCAN_TIMEOUT};
 #[cfg(feature = "wpa2")]
-use crate::{supplicant, wpa2};
+use crate::{
+    rsn::{Rsne, Rsnxe},
+    wpa2,
+};
 
 /// How many access points of a network a join tries in turn, best first.
 const CANDIDATES: usize = 4;
@@ -136,10 +139,10 @@ pub(crate) struct Bss {
     pub(crate) signal_dbm: i32,
     /// The RSN element it announces, if any.
     #[cfg(feature = "wpa2")]
-    pub(crate) rsne: Option<supplicant::Rsne>,
+    pub(crate) rsne: Option<Rsne>,
     /// The RSN Extension element it announces, if any.
     #[cfg(feature = "wpa2")]
-    pub(crate) rsnxe: Option<supplicant::Rsnxe>,
+    pub(crate) rsnxe: Option<Rsnxe>,
 }
 
 /// The access points of the network that a connect scan found, best first. A join tries the next

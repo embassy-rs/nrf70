@@ -13,11 +13,14 @@ use embedded_hal::digital::{InputPin, OutputPin};
 use embedded_hal_async::digital::Wait;
 use rand_core::CryptoRng;
 
+use crate::crypto::psk_from_passphrase;
 use crate::data::{write_ethernet, RxFrame};
+use crate::eapol::{is_message_1, Gtk, Igtk, ETHERTYPE_EAPOL, KEY_FRAME_LEN, REPLY_MAX};
 use crate::ieee80211::{find_ie, IE_RSN, IE_RSNXE};
 use crate::rpu::MAX_TX_TOKENS;
+use crate::rsn::{self, Rsne, Rsnxe, CIPHER_SUITE_BIP_CMAC_128, CIPHER_SUITE_CCMP, RSNE_MAX, RSNXE_MAX};
 use crate::station::{Bss, ConnState, Credentials};
-use crate::supplicant::{self, Gtk, Igtk, Outcome, Rsne, Rsnxe, Supplicant};
+use crate::supplicant::{Outcome, Supplicant};
 use crate::{c, slice8_mut, Bus, ConnectError, Control, Runner};
 
 /// How long the last message of a handshake gets to leave before its keys go in anyway.
@@ -32,7 +35,7 @@ const KEY_INSTALL_TIMEOUT: Duration = Duration::from_millis(200);
 const MESSAGE_1_HOLD: Duration = Duration::from_millis(40);
 
 /// Longest message 1 that waits: the EAPOL-Key frame, and key data up to a PMKID KDE.
-const HELD_MESSAGE_1_MAX: usize = supplicant::KEY_FRAME_LEN + 32;
+const HELD_MESSAGE_1_MAX: usize = KEY_FRAME_LEN + 32;
 
 /// Message 1 waiting to be answered, from its 802.1X header on.
 struct HeldMessage1 {
@@ -129,7 +132,7 @@ pub(crate) enum DefaultKey {
 /// with 4096 iterations, which is slow on purpose. `None` if the passphrase is not 8 to 63 bytes
 /// long. The key depends on nothing else, so it can be stored in place of the passphrase.
 pub fn wpa2_psk(ssid: &[u8], passphrase: &[u8]) -> Option<[u8; 32]> {
-    supplicant::psk_from_passphrase(passphrase, ssid)
+    psk_from_passphrase(passphrase, ssid)
 }
 
 impl Control<'_> {
@@ -226,13 +229,12 @@ impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
             if suite.mfp {
                 info.use_mfp = c::mfp::MFP_REQUIRED as _;
             }
-            let rsne = supplicant.rsne().as_bytes();
-            let rsnxe = self.association_rsnxe();
-            let more = rsnxe.as_ref().map_or(&[][..], Rsnxe::as_bytes);
+            let mut ies = [0; RSNE_MAX + RSNXE_MAX];
+            let len = rsn::write_elements(&mut ies, supplicant.rsne(), self.association_rsnxe().as_ref());
             info.valid_fields |= c::CONNECT_COMMON_INFO_WPA_IE_VALID;
             info.flags |= c::CONNECT_COMMON_INFO_SECURITY;
-            info.wpa_ie.ie_len = (rsne.len() + more.len()) as u16;
-            for (to, from) in info.wpa_ie.ie.iter_mut().zip(rsne.iter().chain(more)) {
+            info.wpa_ie.ie_len = len as u16;
+            for (to, from) in info.wpa_ie.ie.iter_mut().zip(&ies[..len]) {
                 *to = *from as _;
             }
         }
@@ -333,7 +335,7 @@ impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
         }
         // Message 1 of the first handshake waits a moment, in case a newer one follows (see
         // MESSAGE_1_HOLD).
-        if self.conn == ConnState::Handshake && supplicant::is_message_1(eapol) && eapol.len() <= HELD_MESSAGE_1_MAX {
+        if self.conn == ConnState::Handshake && is_message_1(eapol) && eapol.len() <= HELD_MESSAGE_1_MAX {
             let answer_at =
                 (self.wpa2.held_message_1.as_ref()).map_or(Instant::now() + MESSAGE_1_HOLD, |held| held.answer_at);
             let mut held = HeldMessage1 {
@@ -356,7 +358,7 @@ impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
         let Some(supplicant) = self.wpa2.supplicant.as_mut() else {
             return;
         };
-        let mut reply = [0; supplicant::REPLY_MAX];
+        let mut reply = [0; REPLY_MAX];
         match supplicant.handle(eapol, &mut reply) {
             Outcome::Ignored => {}
             Outcome::Reply(len) => {
@@ -398,12 +400,12 @@ impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
     /// Sends an EAPOL frame to the AP. Returns its TX token, or `None` if none was free.
     async fn send_eapol(&mut self, eapol: &[u8]) -> Option<usize> {
         let bss = self.conn_bss?;
-        let mut frame = [0u32; (14 + supplicant::REPLY_MAX).div_ceil(4)];
+        let mut frame = [0u32; (14 + REPLY_MAX).div_ceil(4)];
         let len = write_ethernet(
             slice8_mut(&mut frame),
             &bss.bssid,
             &self.wpa2.mac_addr,
-            supplicant::ETHERTYPE_EAPOL,
+            ETHERTYPE_EAPOL,
             eapol,
         )?;
         let token = self.send_frame(&frame, len).await;
@@ -422,8 +424,7 @@ impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
         };
         if let Some(tk) = keys.tk {
             // A new pairwise key starts counting packets from zero.
-            self.add_key(Some(bss.bssid), supplicant::CIPHER_SUITE_CCMP, 0, &tk, &[0; 6])
-                .await;
+            self.add_key(Some(bss.bssid), CIPHER_SUITE_CCMP, 0, &tk, &[0; 6]).await;
             self.set_default_key(0, DefaultKey::Unicast).await;
             debug!("pairwise key installed");
         }
@@ -433,14 +434,8 @@ impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
             debug!("group key {} installed", gtk.index);
         }
         if let Some(igtk) = keys.igtk {
-            self.add_key(
-                None,
-                supplicant::CIPHER_SUITE_BIP_CMAC_128,
-                igtk.index,
-                &igtk.key,
-                &igtk.ipn,
-            )
-            .await;
+            self.add_key(None, CIPHER_SUITE_BIP_CMAC_128, igtk.index, &igtk.key, &igtk.ipn)
+                .await;
             debug!("management group key {} installed", igtk.index);
         }
         if self.conn == ConnState::Handshake {

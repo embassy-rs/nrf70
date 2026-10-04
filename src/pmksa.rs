@@ -79,7 +79,7 @@ impl<const N: usize> Cache<N> {
 /// What tells networks apart in the station's cache: the first 8 bytes of HMAC-SHA256(password,
 /// SSID length || SSID || password identifier). A PMK found under another password would only fail the 4-way handshake.
 pub(crate) fn network_id(ssid: &[u8], password: &[u8], identifier: &[u8]) -> u64 {
-    let mac = crate::sae::hmac_sha256(password, &[&[ssid.len() as u8], ssid, identifier]);
+    let mac = crate::crypto::hmac_sha256(password, &[&[ssid.len() as u8], ssid, identifier]);
     u64::from_le_bytes(mac[..8].try_into().unwrap())
 }
 

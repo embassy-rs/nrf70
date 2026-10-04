@@ -6,11 +6,12 @@
 
 use defmt::debug;
 
-use crate::supplicant::{
-    prf, wrap_key_data, KeyData, KeyFrame, KeyHeader, Ptk, Rsne, Rsnxe, Suite, INFO_ACK, INFO_ENCRYPTED_KEY_DATA,
-    INFO_ERROR, INFO_INSTALL, INFO_MIC, INFO_PAIRWISE, INFO_REQUEST, INFO_SECURE, INFO_VERSION_MASK, KDE_GTK, KDE_IGTK,
-    KEY_FRAME_LEN, RSNE_MAX, RSNXE_MAX, TK_LEN,
+use crate::crypto::{prf, Ptk, TK_LEN};
+use crate::eapol::{
+    wrap_key_data, KeyData, KeyFrame, KeyHeader, INFO_ACK, INFO_ENCRYPTED_KEY_DATA, INFO_ERROR, INFO_INSTALL, INFO_MIC,
+    INFO_PAIRWISE, INFO_REQUEST, INFO_SECURE, INFO_VERSION_MASK, KDE_GTK, KDE_IGTK, KEY_FRAME_LEN,
 };
+use crate::rsn::{self, Rsne, Rsnxe, Suite, RSNE_MAX, RSNXE_MAX};
 
 /// How many times message 1, then message 3, goes out before the handshake fails (hostapd's
 /// `wpa_pairwise_update_count`).
@@ -275,11 +276,7 @@ impl Authenticator {
             (Stage::Message3, Some(ptk)) => {
                 // The access point's RSNE and RSNXE, then the group keys.
                 let mut data = [0; KEY_DATA_MAX];
-                let rsne = self.ap_rsne.as_bytes();
-                let rsnxe = self.ap_rsnxe.as_ref().map_or(&[][..], Rsnxe::as_bytes);
-                data[..rsne.len()].copy_from_slice(rsne);
-                data[rsne.len()..rsne.len() + rsnxe.len()].copy_from_slice(rsnxe);
-                let at = rsne.len() + rsnxe.len();
+                let at = rsn::write_elements(&mut data, &self.ap_rsne, self.ap_rsnxe.as_ref());
                 let len = at + self.write_group_keys(keys, &mut data[at..]);
                 let mut wrapped = [0; KEY_DATA_MAX];
                 let wrapped_len = wrap_key_data(&ptk.kek, &data[..len], &mut wrapped)?;
@@ -397,8 +394,10 @@ mod tests {
     use core::assert_eq;
 
     use super::*;
-    use crate::supplicant::{psk_from_passphrase, Outcome as StationOutcome, Supplicant, REPLY_MAX};
-    use crate::supplicant::{Offer, Rsnxe};
+    use crate::crypto::psk_from_passphrase;
+    use crate::eapol::REPLY_MAX;
+    use crate::rsn::{Akm, GroupCipher, Offer, Rsnxe};
+    use crate::supplicant::{Outcome as StationOutcome, Supplicant};
 
     const WPA2: Offer = Offer { psk: true, sae: false };
     const WPA3: Offer = Offer { psk: false, sae: true };
@@ -445,7 +444,7 @@ mod tests {
             panic!("no keys from message 3");
         };
         // The station chose PSK-SHA256 with management frame protection: it got the IGTK too.
-        assert_eq!(ap.suite.akm, crate::supplicant::Akm::PskSha256);
+        assert_eq!(ap.suite.akm, Akm::PskSha256);
         assert_eq!(station_gtk.index, 1);
         assert_eq!(station_gtk.key(), &gtk.gtk.key);
         assert_eq!(
@@ -537,7 +536,7 @@ mod tests {
             .with_rsnxe(rsnxe, rsnxe);
         let sta_rsne = *station.rsne();
         let suite = sta_rsne.check_station(WPA3).unwrap();
-        assert_eq!((suite.akm, suite.mfp), (crate::supplicant::Akm::Sae, true));
+        assert_eq!((suite.akm, suite.mfp), (Akm::Sae, true));
         let mut ap = Authenticator::new(pmk, AA, SPA, ap_rsne, sta_rsne, suite, anonce(&[3; 32], &AA, &SPA, 0))
             .with_rsnxe(rsnxe, rsnxe);
         let keys = GroupKeys::derive(&[3; 32], &AA, 0);
@@ -598,7 +597,7 @@ mod tests {
         assert!(sta_rsne.names_pmkid(&pmkid));
         assert!(!sta_rsne.names_pmkid(&[0; 16]));
         let suite = sta_rsne.check_station(WPA3).unwrap();
-        assert_eq!((suite.akm, suite.mfp), (crate::supplicant::Akm::Sae, true));
+        assert_eq!((suite.akm, suite.mfp), (Akm::Sae, true));
         // Message 2 repeats it.
         let mut ap = Authenticator::new(pmk, AA, SPA, ap_rsne, sta_rsne, suite, anonce(&[3; 32], &AA, &SPA, 0))
             .with_rsnxe(rsnxe, rsnxe)
@@ -689,10 +688,10 @@ mod tests {
             Ok(Suite {
                 akm,
                 mfp,
-                group: crate::supplicant::GroupCipher::Ccmp,
+                group: GroupCipher::Ccmp,
             })
         };
-        use crate::supplicant::Akm::{Psk, PskSha256};
+        use crate::rsn::Akm::{Psk, PskSha256};
         let psk_sha256 = [0x00, 0x0F, 0xAC, 6];
         assert_eq!(rsne(&body(ccmp, ccmp, psk, 0)).check_station(WPA2), suite(Psk, false));
         // Management frame protection when the station is capable of it, or requires it.
@@ -722,7 +721,7 @@ mod tests {
         assert_eq!(rsne(&[2, 0]).check_station(WPA2), Err(40));
 
         // WPA3: SAE only, and protection required.
-        use crate::supplicant::Akm::Sae;
+        use crate::rsn::Akm::Sae;
         assert_eq!(
             rsne(&body(ccmp, ccmp, sae, 0x0080)).check_station(WPA3),
             suite(Sae, true)

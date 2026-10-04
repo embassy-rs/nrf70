@@ -10,7 +10,7 @@ use embedded_hal_async::digital::Wait;
 use crate::rpu::{rx_buf_addr, tx_buf_addr, MAX_TX_AGGREGATION, MAX_TX_TOKENS, RX_BUFS, RX_MAX_DATA_SIZE};
 use crate::{c, slice8, slice8_mut, sliceit, unsliceit, unsliceit2, Bus, Runner, MTU};
 #[cfg(feature = "wpa2")]
-use crate::{supplicant, wpa2};
+use crate::{eapol::ETHERTYPE_EAPOL, wpa2};
 
 /// Frame control bits of an 802.11 header.
 const FC_TO_DS: u16 = 0x0100;
@@ -325,7 +325,7 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
         };
         self.ap_seen(&rx.src);
         #[cfg(feature = "wpa2")]
-        if rx.ethertype == supplicant::ETHERTYPE_EAPOL {
+        if rx.ethertype == ETHERTYPE_EAPOL {
             return wpa2::RxEapol::copy(&rx);
         }
         let Some(out) = self.ch.try_rx_buf() else {

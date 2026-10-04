@@ -17,8 +17,8 @@ use crate::ieee80211::{
     STATUS_UNKNOWN_PASSWORD_IDENTIFIER, STATUS_UNSUPPORTED_GROUP,
 };
 use crate::pmksa::Pmksa;
+use crate::rsn::Rsne;
 use crate::sae::{self, Refusal, Sae};
-use crate::supplicant::Rsne;
 use crate::wpa3::{scalars, Wpa3};
 use crate::{Bus, Runner};
 
@@ -58,7 +58,7 @@ pub(super) struct Exchange {
 /// The anti-clogging token of the station `from`: HMAC-SHA256(seed, label || address), which only
 /// a station that receives frames at that address learns (IEEE 802.11-2020, 12.4.6).
 fn anti_clogging_token(seed: &[u8; 32], from: &[u8; 6]) -> [u8; TOKEN_LEN] {
-    sae::hmac_sha256(seed, &[b"nrf70 SAE anti-clogging", from])
+    crate::crypto::hmac_sha256(seed, &[b"nrf70 SAE anti-clogging", from])
 }
 
 /// The anti-clogging token in a station's commit, if any: after the group with hunting and
@@ -249,10 +249,7 @@ impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
         exchange.confirmed = true;
         let mut confirm = [0; sae::CONFIRM_LEN];
         let len = exchange.sae.write_confirm(&mut confirm);
-        let pmksa = Pmksa {
-            pmk: exchange.sae.pmk(),
-            pmkid: exchange.sae.pmkid(),
-        };
+        let pmksa = exchange.sae.pmksa();
         if let Some(station) = self.ap.storage.stations.get(slot) {
             station.pmksa = Some(pmksa);
         }
@@ -300,7 +297,7 @@ mod tests {
         };
         // An association request's RSNE naming `pmkids`.
         let rsne = |pmkids: &[[u8; 16]]| {
-            let offer = crate::supplicant::Offer { psk: false, sae: true };
+            let offer = crate::rsn::Offer { psk: false, sae: true };
             let mut body = Rsne::access_point(offer).as_bytes()[2..].to_vec();
             body.extend_from_slice(&(pmkids.len() as u16).to_le_bytes());
             pmkids.iter().for_each(|pmkid| body.extend_from_slice(pmkid));
