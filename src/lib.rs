@@ -165,14 +165,16 @@ impl Ssid {
 pub enum ConnectError {
     /// The SSID is longer than 32 bytes.
     InvalidSsid,
-    /// The passphrase of a WPA2-Personal network is not 8 to 63 bytes long.
+    /// The passphrase of a WPA2-Personal network is not 8 to 63 bytes long, or the password of a
+    /// WPA3-Personal one is empty or longer than 128 bytes, or its identifier longer than 32.
     InvalidPassphrase,
     /// A scan or another connection is in progress.
     Busy,
     /// No access point with this SSID answered.
     NotFound,
     /// Access points with this SSID answered, but none offers the security asked for: an open
-    /// network for [`Control::join_open`], WPA2-Personal with CCMP for `Control::join_wpa2`.
+    /// network for [`Control::join_open`], WPA2-Personal with CCMP for `Control::join_wpa2`, SAE
+    /// for `Control::join_wpa3`.
     SecurityMismatch,
     /// The access point refused the authentication, with this IEEE 802.11 status code.
     AuthenticationRejected(u16),
@@ -292,7 +294,6 @@ where
         config,
         powered: false,
         power_save: false,
-        low_power: config.low_power,
         rpu_awake: true,
         rpu_idle_at: Instant::now(),
         scan_deadline: None,
@@ -319,18 +320,13 @@ where
     };
     runner.init().await;
 
-    let control = Control {
-        shared: &state.shared,
-        state_ch,
-    };
+    let control = Control { shared: &state.shared };
 
     (device, control, runner)
 }
 
 pub struct Control<'a> {
     shared: &'a Shared,
-    #[allow(unused)]
-    state_ch: ch::StateRunner<'a>,
 }
 
 impl<'a> Control<'a> {
@@ -971,8 +967,6 @@ fn parse_firmware(fw: &[u8]) -> Firmware<'_> {
 /// words (NCS `addrmask`). Writes set it in the SPI command already.
 const ADDR_INCREMENT: u32 = 0x80_0000;
 
-const SR0_WRITE_IN_PROGRESS: u8 = 0x01;
-
 const SR1_RPU_AWAKE: u8 = 0x02;
 const SR1_RPU_READY: u8 = 0x04;
 
@@ -1391,7 +1385,7 @@ enum ConnState {
     Associating,
     /// Associated: waiting for the RPU to add the AP as a peer and turn the carrier on.
     Associated,
-    /// WPA2 only: the 4-way handshake, until both keys are in.
+    /// WPA2 and WPA3: the 4-way handshake, until both keys are in.
     Handshake,
     /// The port is being opened: waiting for the RPU to have done it.
     Authorizing,
@@ -1425,7 +1419,6 @@ pub struct Runner<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> {
     /// 802.11 power save as last asked for, to restore it when the chip is turned on again.
     power_save: bool,
     /// [`Config::low_power`]: the RPU may sleep while the driver does not need the bus.
-    low_power: bool,
     /// The driver asks the RPU to stay awake (it does from the wake-up of the boot on).
     rpu_awake: bool,
     /// In low power mode, when the RPU may sleep again: some time after the last bus access.
@@ -1571,13 +1564,7 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
         self.raw_write32(PBUS, 0x8C20, 0x0100).await;
 
         info!("enable interrupt...");
-        // First enable the blockwise interrupt for the relevant block in the master register
-        let mut val = self.raw_read32(SYSBUS, 0x400).await;
-        val |= 1 << 17;
-        self.raw_write32(SYSBUS, 0x400, val).await;
-
-        // Now enable the relevant MCU interrupt line
-        self.raw_write32(SYSBUS, 0x494, 1 << 31).await;
+        self.rpu_irq_enable().await;
 
         // Based on 'nrf_wifi_fmac_fw_load'
         let fw = parse_firmware(FIRMWARE);
@@ -1630,9 +1617,6 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
 
         info!("Enabling interrupts...");
         self.rpu_irq_enable().await;
-
-        info!("Initializing TX...");
-        self.init_tx().await;
 
         info!("Initializing RX...");
         self.init_rx().await;
@@ -1703,7 +1687,7 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
             // HOST_IRQ is high while the RPU has events that were not acknowledged. In low power
             // mode the queue is read then only: a poll would wake the RPU up each time.
             let irq = self.powered && self.host_irq.is_high().unwrap_or(true);
-            if irq || (self.powered && !self.low_power && Instant::now() >= poll_at) {
+            if irq || (self.powered && !self.config.low_power && Instant::now() >= poll_at) {
                 let events = self.service_events(&mut buf).await;
                 if events > 0 && !irq {
                     debug!("{} events found without an interrupt", events);
@@ -1722,8 +1706,8 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
             let can_tx = self.link_up && self.tx_tokens_busy.count_ones() < data_tx_tokens && self.ap_has_room();
             // What the loop has to come back for without an interrupt.
             let wake_at = [
-                (self.powered && !self.low_power).then_some(poll_at),
-                (self.low_power && self.rpu_awake).then_some(self.rpu_idle_at),
+                (self.powered && !self.config.low_power).then_some(poll_at),
+                (self.config.low_power && self.rpu_awake).then_some(self.rpu_idle_at),
                 self.conn_deadline,
                 self.handshake_deadline(),
                 self.ap_deadline(),
@@ -2391,7 +2375,8 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
         }
     }
 
-    /// Open system authentication with `bss` (NCS `nrf_wifi_wpa_supp_authenticate`).
+    /// Authenticates with `bss` (NCS `nrf_wifi_wpa_supp_authenticate`): open system
+    /// authentication, or with WPA3 SAE, or an open system one for a cached PMK.
     async fn authenticate(&mut self, bss: Bss) {
         info!(
             "authenticating with {:02x} at {} MHz, {} dBm",
@@ -2779,22 +2764,8 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
         .await;
     }
 
-    #[allow(unused)]
-    async fn rpu_irq_disable(&mut self) {
-        let mut val = self.read32(c::RPU_REG_INT_FROM_RPU_CTRL, None).await;
-        val &= !(1 << c::RPU_REG_BIT_INT_FROM_RPU_CTRL);
-        self.write32(c::RPU_REG_INT_FROM_RPU_CTRL, None, val).await;
-
-        self.write32(
-            c::RPU_REG_INT_FROM_MCU_CTRL,
-            None,
-            !(1 << c::RPU_REG_BIT_INT_FROM_MCU_CTRL),
-        )
-        .await;
-    }
-
+    /// Acknowledges the RPU's interrupt: HOST_IRQ goes down until the RPU raises it again.
     async fn rpu_irq_ack(&mut self) {
-        // Guess: I think this clears the interrupt flag
         self.write32(c::RPU_REG_INT_FROM_MCU_ACK, None, 1 << c::RPU_REG_BIT_INT_FROM_MCU_ACK)
             .await;
     }
@@ -3126,8 +3097,6 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
         self.send_cmd(cmd).await;
     }
 
-    async fn init_tx(&mut self) {}
-
     async fn init_rx(&mut self) {
         for desc_id in 0..RX_BUFS {
             // The first word of a buffer names it. NCS writes it at each post; the RPU leaves it
@@ -3259,11 +3228,6 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
         }
     }
 
-    #[allow(unused)]
-    async fn rpu_wait_until_write_done(&mut self) {
-        while self.bus.read_sr0().await & SR0_WRITE_IN_PROGRESS != 0 {}
-    }
-
     async fn rpu_wait_until_awake(&mut self) {
         for _ in 0..10 {
             if self.bus.read_sr1().await & SR1_RPU_AWAKE != 0 {
@@ -3272,17 +3236,6 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
             Timer::after(Duration::from_millis(1)).await;
         }
         panic!("awakening never came")
-    }
-
-    #[allow(unused)]
-    async fn rpu_wait_until_ready(&mut self) {
-        for _ in 0..10 {
-            if self.bus.read_sr1().await == SR1_RPU_AWAKE | SR1_RPU_READY {
-                return;
-            }
-            Timer::after(Duration::from_millis(1)).await;
-        }
-        panic!("readyning never came")
     }
 
     async fn rpu_wait_until_wakeup_req(&mut self) {
@@ -3304,7 +3257,7 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
     /// Makes sure the RPU is awake before a bus access, in low power mode (NCS
     /// `hal_rpu_ps_wake`). Without it the wake-up request of the boot stays for good.
     async fn rpu_ps_wake(&mut self) {
-        if !self.low_power {
+        if !self.config.low_power {
             return;
         }
         if !self.rpu_awake {
@@ -3327,7 +3280,7 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
     /// Lets the RPU sleep once the bus has been idle for long enough, in low power mode (NCS
     /// `hal_rpu_ps_sleep`).
     async fn rpu_ps_sleep(&mut self) {
-        if self.low_power && self.rpu_awake && Instant::now() >= self.rpu_idle_at {
+        if self.config.low_power && self.rpu_awake && Instant::now() >= self.rpu_idle_at {
             self.bus.write_sr2(0).await;
             self.rpu_awake = false;
         }
