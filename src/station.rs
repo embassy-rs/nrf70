@@ -145,6 +145,59 @@ pub(crate) struct Bss {
     pub(crate) rsnxe: Option<Rsnxe>,
 }
 
+impl Bss {
+    /// The access point of a connect scan result, if it is one of the network `ssid`, in its
+    /// probe response or its beacon (NCS `nrf_wifi_wpa_supp_event_proc_scan_res`). `elements` is
+    /// what follows the event: the probe response's elements, then the beacon's.
+    fn from_scan_result(event: &c::umac_event_new_scan_results, elements: &[u8], ssid: &[u8]) -> Option<Self> {
+        let valid = event.valid_fields;
+        let has = |field: u32| valid & field != 0;
+        let ies_len = if has(c::EVENT_NEW_SCAN_RESULTS_IES_VALID) {
+            event.ies_len as usize
+        } else {
+            0
+        };
+        let beacon_ies_len = if has(c::EVENT_NEW_SCAN_RESULTS_BEACON_IES_VALID) {
+            event.beacon_ies_len as usize
+        } else {
+            0
+        };
+        let ies = elements.get(..ies_len).unwrap_or(&[]);
+        let beacon_ies = elements.get(ies_len..ies_len + beacon_ies_len).unwrap_or(&[]);
+        if find_ie(ies, IE_SSID) != Some(ssid) && find_ie(beacon_ies, IE_SSID) != Some(ssid) {
+            return None;
+        }
+        let signal = event.signal;
+        let signal_dbm = if signal.signal_type == c::SIGNAL_TYPE_MBM {
+            (unsafe { signal.signal.mbm_signal }) as i32 / 100
+        } else {
+            -100
+        };
+        let ies_tsf = if has(c::EVENT_NEW_SCAN_RESULTS_IES_TSF_VALID) {
+            event.ies_tsf
+        } else {
+            0
+        };
+        let beacon_tsf = if has(c::EVENT_NEW_SCAN_RESULTS_BEACON_IES_TSF_VALID) {
+            event.beacon_ies_tsf
+        } else {
+            0
+        };
+        Some(Self {
+            bssid: event.mac_addr,
+            frequency: event.frequency,
+            capability: event.capability,
+            beacon_interval: event.beacon_interval,
+            tsf: ies_tsf.max(beacon_tsf),
+            signal_dbm,
+            #[cfg(feature = "wpa2")]
+            rsne: wpa2::ap_rsne(ies, beacon_ies),
+            #[cfg(feature = "wpa2")]
+            rsnxe: wpa2::ap_rsnxe(ies, beacon_ies),
+        })
+    }
+}
+
 /// The access points of the network that a connect scan found, best first. A join tries the next
 /// one when one refuses the station: an access point that steers its stations to its other band
 /// does that.
@@ -503,72 +556,9 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
             return;
         }
         let (event, tail) = unsliceit2::<c::umac_event_new_scan_results>(body);
-        let valid = event.valid_fields;
-        let ies_len = if valid & c::EVENT_NEW_SCAN_RESULTS_IES_VALID != 0 {
-            event.ies_len as usize
-        } else {
-            0
-        };
-        let beacon_ies_len = if valid & c::EVENT_NEW_SCAN_RESULTS_BEACON_IES_VALID != 0 {
-            event.beacon_ies_len as usize
-        } else {
-            0
-        };
-        let ies = tail.get(..ies_len).unwrap_or(&[]);
-        let beacon_ies = tail.get(ies_len..ies_len + beacon_ies_len).unwrap_or(&[]);
-        let target = self.sta.ssid.as_bytes();
-        let matches = find_ie(ies, IE_SSID) == Some(target) || find_ie(beacon_ies, IE_SSID) == Some(target);
-
-        if matches {
-            let signal = event.signal;
-            let signal_dbm = if signal.signal_type == c::SIGNAL_TYPE_MBM {
-                (unsafe { signal.signal.mbm_signal }) as i32 / 100
-            } else {
-                -100
-            };
-            let ies_tsf = if valid & c::EVENT_NEW_SCAN_RESULTS_IES_TSF_VALID != 0 {
-                event.ies_tsf
-            } else {
-                0
-            };
-            let beacon_tsf = if valid & c::EVENT_NEW_SCAN_RESULTS_BEACON_IES_TSF_VALID != 0 {
-                event.beacon_ies_tsf
-            } else {
-                0
-            };
-            let bss = Bss {
-                bssid: event.mac_addr,
-                frequency: event.frequency,
-                capability: event.capability,
-                beacon_interval: event.beacon_interval,
-                tsf: ies_tsf.max(beacon_tsf),
-                signal_dbm,
-                #[cfg(feature = "wpa2")]
-                rsne: wpa2::ap_rsne(ies, beacon_ies),
-                #[cfg(feature = "wpa2")]
-                rsnxe: wpa2::ap_rsnxe(ies, beacon_ies),
-            };
-            let suitable = match self.sta.credentials {
-                Credentials::Open => bss.capability & CAPABILITY_PRIVACY == 0,
-                #[cfg(feature = "wpa2")]
-                Credentials::Wpa2(_) => bss.rsne.is_some_and(|rsne| rsne.negotiate(false).is_some()),
-                #[cfg(feature = "wpa3")]
-                Credentials::Wpa3(_) => bss.rsne.is_some_and(|rsne| rsne.negotiate(true).is_some()),
-            };
-            debug!(
-                "found {:02x} at {} MHz, {} dBm, suitable: {}",
-                bss.bssid, bss.frequency, bss.signal_dbm, suitable
-            );
-            if !suitable {
-                self.sta.security_mismatch = true;
-            } else {
-                if let (false, Some(known)) = (self.sta.known_scan, self.sta.known.as_mut()) {
-                    known.note(&bss);
-                }
-                self.sta.candidates.add(bss);
-            }
+        if let Some(bss) = Bss::from_scan_result(event, tail, self.sta.ssid.as_bytes()) {
+            self.note_candidate(bss);
         }
-
         // The last result has a zero sequence number.
         if event.umac_hdr.seq == 0 {
             match self.sta.candidates.take_best() {
@@ -580,6 +570,30 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
                 None => self.connect_failed(self.not_found()).await,
             }
         }
+    }
+
+    /// Keeps an access point of the network as a candidate if it offers the security of the
+    /// credentials, and notes its channel after a scan of every channel.
+    fn note_candidate(&mut self, bss: Bss) {
+        let suitable = match self.sta.credentials {
+            Credentials::Open => bss.capability & CAPABILITY_PRIVACY == 0,
+            #[cfg(feature = "wpa2")]
+            Credentials::Wpa2(_) => bss.rsne.is_some_and(|rsne| rsne.negotiate(false).is_some()),
+            #[cfg(feature = "wpa3")]
+            Credentials::Wpa3(_) => bss.rsne.is_some_and(|rsne| rsne.negotiate(true).is_some()),
+        };
+        debug!(
+            "found {:02x} at {} MHz, {} dBm, suitable: {}",
+            bss.bssid, bss.frequency, bss.signal_dbm, suitable
+        );
+        if !suitable {
+            self.sta.security_mismatch = true;
+            return;
+        }
+        if let (false, Some(known)) = (self.sta.known_scan, self.sta.known.as_mut()) {
+            known.note(&bss);
+        }
+        self.sta.candidates.add(bss);
     }
 
     /// Authenticates with `bss` (NCS `nrf_wifi_wpa_supp_authenticate`): open system
@@ -897,5 +911,29 @@ pub(crate) mod tests {
         assert_eq!(mlme_status(&event, 26), Some(17));
         event.flags = c::EVENT_MLME_TIMED_OUT;
         assert_eq!(mlme_status(&event, 26), None);
+    }
+
+    #[test]
+    fn a_scan_result_is_kept_when_its_probe_response_or_beacon_names_the_network() {
+        let mut event: c::umac_event_new_scan_results = unsafe { zeroed() };
+        event.valid_fields = c::EVENT_NEW_SCAN_RESULTS_IES_VALID
+            | c::EVENT_NEW_SCAN_RESULTS_BEACON_IES_VALID
+            | c::EVENT_NEW_SCAN_RESULTS_IES_TSF_VALID
+            | c::EVENT_NEW_SCAN_RESULTS_BEACON_IES_TSF_VALID;
+        event.frequency = 5745;
+        event.ies_tsf = 7;
+        event.beacon_ies_tsf = 9;
+        event.signal.signal_type = c::SIGNAL_TYPE_MBM;
+        event.signal.signal.mbm_signal = -4600i32 as u32;
+        // A probe response that names no SSID (a hidden network), then a beacon that does.
+        event.ies_len = 2;
+        event.beacon_ies_len = 5;
+        let elements = [0x00, 0x00, 0x00, 0x03, b'n', b'e', b't'];
+        let bss = Bss::from_scan_result(&event, &elements, b"net").unwrap();
+        assert_eq!((bss.frequency, bss.tsf, bss.signal_dbm), (5745, 9, -46));
+        assert!(Bss::from_scan_result(&event, &elements, b"other").is_none());
+        // Without its valid bit, the beacon does not count.
+        event.valid_fields &= !c::EVENT_NEW_SCAN_RESULTS_BEACON_IES_VALID;
+        assert!(Bss::from_scan_result(&event, &elements, b"net").is_none());
     }
 }
