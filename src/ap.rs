@@ -19,6 +19,7 @@ use embedded_hal_async::digital::Wait;
 
 use crate::control::Request;
 use crate::data::{tx_priority, write_ethernet};
+use crate::ieee80211::*;
 use crate::rpu::MAX_TX_TOKENS;
 use crate::station::{ConnState, Ssid};
 #[cfg(feature = "wpa2")]
@@ -27,9 +28,7 @@ use crate::{
     supplicant::{self, Offer, Rsne, Rsnxe, Suite},
     wpa2::DefaultKey,
 };
-use crate::{
-    c, find_ie, slice8, slice8_mut, unsliceit, Bus, Control, Runner, CAPABILITY_PRIVACY, EVENT_TIMEOUT, IE_SSID, MTU,
-};
+use crate::{c, slice8, slice8_mut, unsliceit, Bus, Control, Runner, EVENT_TIMEOUT, MTU};
 
 /// How many stations the access point takes (the SDK's `CONFIG_WIFI_MGMT_AP_MAX_NUM_STA`).
 pub(crate) const MAX_STATIONS: usize = 4;
@@ -94,19 +93,9 @@ const SA_QUERY_RESPONSE: u8 = 1;
 const SA_QUERY_TIMEOUT_TU: u32 = 1000;
 #[cfg(feature = "wpa2")]
 const SA_QUERY_RETRY: Duration = Duration::from_micros(201 * 1024);
-/// Timeout Interval element, of the association comeback time type.
-#[cfg(feature = "wpa2")]
-const IE_TIMEOUT_INTERVAL: u8 = 56;
+/// The association comeback time type of a Timeout Interval element.
 #[cfg(feature = "wpa2")]
 const TIMEOUT_ASSOC_COMEBACK: u8 = 3;
-
-const IE_RATES: u8 = 1;
-const IE_DS_PARAMS: u8 = 3;
-const IE_ERP: u8 = 42;
-const IE_HT_CAPABILITIES: u8 = 45;
-const IE_HT_OPERATION: u8 = 61;
-const IE_VENDOR: u8 = 221;
-const IE_EXT_RATES: u8 = 50;
 
 /// The access point's HT Capabilities (IEEE 802.11-2020, 9.4.2.55): 20 MHz only, short guard
 /// interval, SM power save disabled; A-MPDUs up to 64 KiB (what the RPU is set up to receive) with
@@ -134,37 +123,6 @@ const WMM_PARAMETERS: [u8; 24] = [
 ];
 /// What a station's WMM Information element starts with.
 const WMM_INFORMATION: [u8; 5] = [0x00, 0x50, 0xF2, 0x02, 0x00];
-
-/// Capability information bits.
-const CAPABILITY_ESS: u16 = 0x0001;
-const CAPABILITY_SHORT_PREAMBLE: u16 = 0x0020;
-const CAPABILITY_SHORT_SLOT: u16 = 0x0400;
-
-/// IEEE 802.11 status codes.
-const STATUS_SUCCESS: u16 = 0;
-const STATUS_UNSPECIFIED: u16 = 1;
-const STATUS_AUTH_ALGORITHM: u16 = 13;
-const STATUS_AUTH_SEQUENCE: u16 = 14;
-const STATUS_TOO_MANY_STATIONS: u16 = 17;
-const STATUS_RATES: u16 = 18;
-#[cfg(feature = "wpa2")]
-const STATUS_TRY_LATER: u16 = 30;
-#[cfg(feature = "wpa3")]
-const STATUS_INVALID_PMKID: u16 = 53;
-#[cfg(feature = "wpa2")]
-const STATUS_INVALID_ELEMENT: u16 = 40;
-
-/// IEEE 802.11 reason codes.
-const REASON_PREV_AUTH_NOT_VALID: u16 = 2;
-const REASON_INACTIVITY: u16 = 4;
-const REASON_LEAVING: u16 = 3;
-const REASON_CLASS2_FROM_UNAUTHENTICATED: u16 = 6;
-#[cfg(feature = "wpa2")]
-const REASON_4WAY_HANDSHAKE_TIMEOUT: u16 = 15;
-#[cfg(feature = "wpa2")]
-const REASON_IE_IN_4WAY_DIFFERS: u16 = 17;
-#[cfg(feature = "wpa2")]
-const REASON_GROUP_KEY_UPDATE_TIMEOUT: u16 = 16;
 
 /// Rates in 500 kb/s units, a basic rate with its top bit set: on 2.4 GHz the 802.11b ones are
 /// basic (hostapd's `hw_mode=g`) and the 802.11g ones go on in the extended element, on 5 GHz 6,
@@ -437,11 +395,11 @@ impl Settings {
             rates: [0; MAX_RATES],
             rates_len: 0,
             ht_capabilities: find_ie(ies, IE_HT_CAPABILITIES).and_then(|ht| ht.try_into().ok()),
-            wmm: vendor_ies(ies).any(|ie| ie.starts_with(&WMM_INFORMATION)),
+            wmm: elements(ies).any(|(id, body)| id == IE_VENDOR && body.starts_with(&WMM_INFORMATION)),
             #[cfg(feature = "wpa2")]
             rsne: None,
             #[cfg(feature = "wpa2")]
-            rsnxe: find_ie(ies, supplicant::IE_RSNXE).and_then(Rsnxe::from_body),
+            rsnxe: find_ie(ies, IE_RSNXE).and_then(Rsnxe::from_body),
         };
         let rates = find_ie(ies, IE_RATES).unwrap_or(&[]).iter();
         for rate in rates.chain(find_ie(ies, IE_EXT_RATES).unwrap_or(&[])) {
@@ -456,7 +414,7 @@ impl Settings {
         // A WPA2 station names what it chooses of what the access point offers.
         #[cfg(feature = "wpa2")]
         if self.privacy() {
-            let rsne = find_ie(ies, supplicant::IE_RSN)
+            let rsne = find_ie(ies, IE_RSN)
                 .and_then(Rsne::from_body)
                 .ok_or(STATUS_INVALID_ELEMENT)?;
             let suite = rsne.check_station(self.security.offer().unwrap_or(Offer { psk: true, sae: false }))?;
@@ -464,20 +422,6 @@ impl Settings {
         }
         Ok(request)
     }
-}
-
-/// The bodies of the vendor specific elements in `ies`.
-fn vendor_ies(mut ies: &[u8]) -> impl Iterator<Item = &[u8]> {
-    core::iter::from_fn(move || {
-        while let [id, len, rest @ ..] = ies {
-            let body = rest.get(..*len as usize)?;
-            ies = &rest[body.len()..];
-            if *id == IE_VENDOR {
-                return Some(body);
-            }
-        }
-        None
-    })
 }
 
 /// The centre frequency of a 20 MHz channel the access point can use, in MHz. 5 GHz channels that
@@ -1245,7 +1189,7 @@ impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
                 };
                 // WPA3: SAE, in place of open system authentication.
                 #[cfg(feature = "wpa3")]
-                if algorithm == wpa3::AUTH_ALGORITHM_SAE && matches!(settings.security, Security::Wpa3 { .. }) {
+                if algorithm == AUTH_ALGORITHM_SAE && matches!(settings.security, Security::Wpa3 { .. }) {
                     return self.ap_sae_frame(&mgmt).await;
                 }
                 let status = if algorithm != c::auth_type::AUTHTYPE_OPEN_SYSTEM as u16 {

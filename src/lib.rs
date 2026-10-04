@@ -48,6 +48,7 @@ mod bus;
 mod command;
 mod control;
 mod data;
+mod ieee80211;
 #[cfg(feature = "wpa3")]
 mod pmksa;
 mod rpu;
@@ -228,23 +229,6 @@ fn slice8_mut(x: &mut [u32]) -> &mut [u8] {
     let len = x.len() * 4;
     unsafe { slice::from_raw_parts_mut(x.as_mut_ptr() as _, len) }
 }
-
-/// The body of the first information element `id` in `ies`.
-fn find_ie(mut ies: &[u8], id: u8) -> Option<&[u8]> {
-    while let [ie_id, len, rest @ ..] = ies {
-        let body = rest.get(..*len as usize)?;
-        if *ie_id == id {
-            return Some(body);
-        }
-        ies = &rest[*len as usize..];
-    }
-    None
-}
-
-const IE_SSID: u8 = 0;
-
-/// Capability information bit of a BSS: data frames are encrypted.
-const CAPABILITY_PRIVACY: u16 = 0x0010;
 
 /// An event from the RPU, as far as the runner needs to tell them apart.
 enum Event<'b> {
@@ -869,7 +853,7 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
 
 #[cfg(test)]
 mod tests {
-    use core::{assert, assert_eq};
+    use core::assert;
 
     use super::*;
 
@@ -912,14 +896,5 @@ mod tests {
             parse_event(slice8(&buf)),
             Event::Data(body) if body[..4] == (c::umac_data_commands::CMD_RX_BUFF as u32).to_le_bytes()
         ));
-    }
-
-    #[test]
-    fn ies_are_searched_by_id() {
-        let ies = [0x01, 0x02, 0x82, 0x84, 0x00, 0x03, b'a', b'b', b'c'];
-        assert_eq!(find_ie(&ies, IE_SSID), Some(&b"abc"[..]));
-        assert_eq!(find_ie(&ies, 48), None);
-        // A truncated element ends the search.
-        assert_eq!(find_ie(&[0x00, 0x05, b'a'], IE_SSID), None);
     }
 }

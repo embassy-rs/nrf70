@@ -19,6 +19,8 @@ use hmac::{Hmac, KeyInit, Mac};
 use sha1::Sha1;
 use sha2::Sha256;
 
+use crate::ieee80211::{IE_RSN, IE_RSNXE};
+
 type HmacSha1 = Hmac<Sha1>;
 type HmacSha256 = Hmac<Sha256>;
 type CmacAes128 = Cmac<Aes128>;
@@ -26,10 +28,6 @@ type CmacAes128 = Cmac<Aes128>;
 /// Ethertype of EAPOL frames (IEEE 802.1X).
 pub(crate) const ETHERTYPE_EAPOL: u16 = 0x888E;
 
-/// Element ID of the RSN element (RSNE).
-pub(crate) const IE_RSN: u8 = 48;
-/// Element ID of the RSN Extension element (RSNXE).
-pub(crate) const IE_RSNXE: u8 = 244;
 /// RSNXE capability: SAE hash to element (IEEE 802.11-2020, 9.4.2.241).
 #[cfg(any(feature = "wpa3", test))]
 const RSNXE_SAE_H2E: u8 = 1 << 5;

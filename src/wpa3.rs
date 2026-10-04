@@ -18,6 +18,11 @@ use hmac::{Hmac, KeyInit, Mac};
 use rand_core::CryptoRng;
 use sha2::Sha256;
 
+use crate::ieee80211::{
+    AUTH_ALGORITHM_SAE, IE_EXTENSION, IE_EXT_ANTI_CLOGGING_TOKEN, IE_EXT_PASSWORD_IDENTIFIER,
+    STATUS_ANTI_CLOGGING_TOKEN_REQUIRED, STATUS_CHALLENGE_FAILURE, STATUS_SAE_HASH_TO_ELEMENT, STATUS_SUCCESS,
+    STATUS_UNKNOWN_PASSWORD_IDENTIFIER,
+};
 use crate::pmksa::{self, Pmksa};
 use crate::sae::{self, Pt, Sae};
 use crate::station::{Bss, ConnState, Credentials, MLME_TIMEOUT};
@@ -38,25 +43,6 @@ const PMKSA_CACHE: usize = 4;
 
 /// The PMKs of the access points joined.
 pub(crate) type PmksaCache = pmksa::Cache<PMKSA_CACHE>;
-
-/// Authentication algorithm number of SAE.
-const AUTH_ALGORITHM_SAE: u16 = 3;
-
-/// Status codes of SAE authentication frames (IEEE 802.11-2020, 9.4.1.9).
-const STATUS_SUCCESS: u16 = 0;
-const STATUS_ANTI_CLOGGING_TOKEN_REQUIRED: u16 = 76;
-const STATUS_SAE_HASH_TO_ELEMENT: u16 = 126;
-/// "Challenge failure": for SAE, the access point found our confirm wrong, the passwords differ.
-const STATUS_CHALLENGE_FAILURE: u16 = 15;
-/// The access point knows no password under the identifier of our commit.
-const STATUS_UNKNOWN_PASSWORD_IDENTIFIER: u16 = 123;
-
-/// The element that carries an anti-clogging token with hash to element: Element ID Extension
-/// (255), then extension 93.
-const IE_EXTENSION: u8 = 255;
-const IE_EXT_ANTI_CLOGGING_TOKEN: u8 = 93;
-/// The Password Identifier element: Element ID Extension, then extension 33.
-pub(crate) const IE_EXT_PASSWORD_IDENTIFIER: u8 = 33;
 
 /// What joining a WPA3-Personal network needs.
 #[derive(Clone, Copy)]

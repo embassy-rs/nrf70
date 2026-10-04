@@ -14,10 +14,11 @@ use embedded_hal_async::digital::Wait;
 use rand_core::CryptoRng;
 
 use crate::data::{write_ethernet, RxFrame};
+use crate::ieee80211::{find_ie, IE_RSN, IE_RSNXE};
 use crate::rpu::MAX_TX_TOKENS;
 use crate::station::{Bss, ConnState, Credentials};
 use crate::supplicant::{self, Gtk, Igtk, Outcome, Rsne, Rsnxe, Supplicant};
-use crate::{c, find_ie, slice8_mut, Bus, ConnectError, Control, Runner};
+use crate::{c, slice8_mut, Bus, ConnectError, Control, Runner};
 
 /// How long the last message of a handshake gets to leave before its keys go in anyway.
 const KEY_INSTALL_TIMEOUT: Duration = Duration::from_millis(200);
@@ -178,16 +179,16 @@ impl Control<'_> {
 /// The RSN element an access point announces: the one of its probe response, or else its
 /// beacon's. Message 3 of the 4-way handshake has to repeat it.
 pub(crate) fn ap_rsne(ies: &[u8], beacon_ies: &[u8]) -> Option<Rsne> {
-    find_ie(ies, supplicant::IE_RSN)
-        .or_else(|| find_ie(beacon_ies, supplicant::IE_RSN))
+    find_ie(ies, IE_RSN)
+        .or_else(|| find_ie(beacon_ies, IE_RSN))
         .and_then(Rsne::from_body)
 }
 
 /// The RSN Extension element an access point announces, if any: in its probe response, or else
 /// its beacon. Message 3 of the 4-way handshake has to repeat it.
 pub(crate) fn ap_rsnxe(ies: &[u8], beacon_ies: &[u8]) -> Option<Rsnxe> {
-    find_ie(ies, supplicant::IE_RSNXE)
-        .or_else(|| find_ie(beacon_ies, supplicant::IE_RSNXE))
+    find_ie(ies, IE_RSNXE)
+        .or_else(|| find_ie(beacon_ies, IE_RSNXE))
         .and_then(Rsnxe::from_body)
 }
 

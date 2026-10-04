@@ -10,12 +10,10 @@ use embedded_hal::digital::{InputPin, OutputPin};
 use embedded_hal_async::digital::Wait;
 
 use crate::command::Command;
+use crate::ieee80211::{find_ie, CAPABILITY_PRIVACY, IE_SSID, REASON_LEAVING};
 #[cfg(feature = "wpa3")]
 use crate::wpa3;
-use crate::{
-    c, find_ie, unsliceit2, Bus, ConnectError, LinkStatus, Runner, CAPABILITY_PRIVACY, EVENT_TIMEOUT, IE_SSID,
-    SCAN_TIMEOUT,
-};
+use crate::{c, unsliceit2, Bus, ConnectError, LinkStatus, Runner, EVENT_TIMEOUT, SCAN_TIMEOUT};
 #[cfg(feature = "wpa2")]
 use crate::{supplicant, wpa2};
 
@@ -665,7 +663,7 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
         };
         let mut cmd: c::umac_cmd_disconn = unsafe { zeroed() };
         cmd.valid_fields = c::CMD_MLME_MAC_ADDR_VALID;
-        cmd.info.reason_code = 3;
+        cmd.info.reason_code = REASON_LEAVING;
         cmd.info.mac_addr = bss.bssid;
         self.rpu.send_cmd(&mut cmd).await;
     }

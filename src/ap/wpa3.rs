@@ -11,31 +11,22 @@ use embedded_hal::digital::{InputPin, OutputPin};
 use embedded_hal_async::digital::Wait;
 
 use super::{Mgmt, Security, Writer, AUTH, STATUS_SUCCESS, STATUS_TOO_MANY_STATIONS, STATUS_UNSPECIFIED};
+use crate::ieee80211::{
+    find_extension, AUTH_ALGORITHM_SAE, IE_EXTENSION, IE_EXT_ANTI_CLOGGING_TOKEN, IE_EXT_PASSWORD_IDENTIFIER,
+    STATUS_ANTI_CLOGGING_TOKEN_REQUIRED, STATUS_CHALLENGE_FAILURE, STATUS_SAE_HASH_TO_ELEMENT,
+    STATUS_UNKNOWN_PASSWORD_IDENTIFIER, STATUS_UNSUPPORTED_GROUP,
+};
 use crate::pmksa::Pmksa;
 use crate::sae::{self, Refusal, Sae};
 use crate::supplicant::Rsne;
 use crate::wpa3::{scalars, Wpa3};
 use crate::{Bus, Runner};
 
-/// The authentication algorithm number of SAE.
-pub(super) const AUTH_ALGORITHM_SAE: u16 = 3;
-const STATUS_CHALLENGE_FAILURE: u16 = 15;
-const STATUS_ANTI_CLOGGING_TOKEN_REQUIRED: u16 = 76;
-const STATUS_UNSUPPORTED_GROUP: u16 = 77;
-const STATUS_UNKNOWN_PASSWORD_IDENTIFIER: u16 = 123;
-const STATUS_SAE_HASH_TO_ELEMENT: u16 = 126;
-
 /// How many exchanges with other stations may be under way before a commit needs an anti-clogging
 /// token: one, with four station places (hostapd's `sae_anti_clogging_threshold` is 5).
 const ANTI_CLOGGING_THRESHOLD: usize = 1;
 /// Length of the access point's anti-clogging tokens.
 const TOKEN_LEN: usize = 32;
-/// The element that carries an anti-clogging token with hash to element: Element ID Extension
-/// (255), then extension 93.
-const IE_EXTENSION: u8 = 255;
-const IE_EXT_ANTI_CLOGGING_TOKEN: u8 = 93;
-/// The element of a password identifier, which the access point has none of.
-const IE_EXT_PASSWORD_IDENTIFIER: u8 = 33;
 /// How many PMKs of earlier SAE exchanges the access point keeps, one per station address.
 const PMKSA_CACHE: usize = 2 * super::MAX_STATIONS;
 /// The access point's cache knows one network, its own, and is cleared when it starts.
@@ -76,7 +67,7 @@ fn commit_token(body: &[u8], h2e: bool) -> Option<&[u8]> {
     if !h2e {
         return (body.len() == sae::COMMIT_LEN + TOKEN_LEN).then(|| &body[2..2 + TOKEN_LEN]);
     }
-    extension_element(body.get(sae::COMMIT_LEN..)?, IE_EXT_ANTI_CLOGGING_TOKEN)
+    find_extension(body.get(sae::COMMIT_LEN..)?, IE_EXT_ANTI_CLOGGING_TOKEN)
 }
 
 /// Whether a station's commit names a password identifier, in its element after the commit (and
@@ -84,23 +75,9 @@ fn commit_token(body: &[u8], h2e: bool) -> Option<&[u8]> {
 fn names_identifier(body: &[u8]) -> bool {
     [sae::COMMIT_LEN, sae::COMMIT_LEN + TOKEN_LEN].iter().any(|&at| {
         body.get(at..)
-            .and_then(|elements| extension_element(elements, IE_EXT_PASSWORD_IDENTIFIER))
+            .and_then(|elements| find_extension(elements, IE_EXT_PASSWORD_IDENTIFIER))
             .is_some()
     })
-}
-
-/// The body of the extension element `extension` among `elements`, after its extension ID.
-fn extension_element(mut elements: &[u8], extension: u8) -> Option<&[u8]> {
-    while let [id, len, rest @ ..] = elements {
-        let element = rest.get(..*len as usize)?;
-        if let [ext, body @ ..] = element {
-            if *id == IE_EXTENSION && *ext == extension {
-                return Some(body);
-            }
-        }
-        elements = &rest[element.len()..];
-    }
-    None
 }
 
 /// An SAE authentication frame from the access point: `sequence` 1 for a commit, 2 for a
