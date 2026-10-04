@@ -195,6 +195,9 @@ pub enum ConnectError {
 pub struct State {
     shared: Shared,
     ch: ch::State<MTU, 4, 4>,
+    /// Where the runner reads the RPU's events. It lives here, once, rather than in the runner's
+    /// future, where each wait for an event had a buffer of its own.
+    events: [u32; MAX_EVENT_LEN / 4],
     #[cfg(feature = "ap")]
     ap_storage: ap::Storage,
     /// The PMKs of the WPA3 access points joined.
@@ -206,6 +209,7 @@ impl State {
     pub fn new() -> Self {
         Self {
             ch: ch::State::new(),
+            events: [0; MAX_EVENT_LEN / 4],
             #[cfg(feature = "ap")]
             ap_storage: ap::Storage::new(),
             #[cfg(feature = "wpa3")]
@@ -312,6 +316,9 @@ where
         wpa3: wpa3::State::new(&mut state.pmksa_cache),
         peer_known: false,
         carrier_on: false,
+        events: &mut state.events,
+        init_done: false,
+        interface_state_set: false,
         link_up: false,
         tx_tokens_busy: 0,
         link_status_requested: false,
@@ -1453,6 +1460,12 @@ pub struct Runner<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> {
     peer_known: bool,
     /// The RPU reported the carrier on (`CMD_CARRIER_ON`).
     carrier_on: bool,
+    /// The buffer events are read into, from [`State`]. An empty slice while it is in use.
+    events: &'a mut [u32],
+    /// The RPU reported its initialisation done (`EVENT_INIT_DONE`).
+    init_done: bool,
+    /// The RPU answered the last change of the interface's state (`UMAC_EVENT_IFFLAGS_STATUS`).
+    interface_state_set: bool,
     /// The link as reported to embassy-net.
     link_up: bool,
     /// TX tokens handed to the RPU and not yet reported done, one bit each.
@@ -1623,11 +1636,10 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
 
         info!("Initializing umac...");
         self.init_umac(&rf_params, &config).await;
-        self.wait_for_event(
-            "INIT_DONE",
-            |event| matches!(event, Event::Sys(id) if *id == c::sys_events::EVENT_INIT_DONE as u32),
-        )
-        .await;
+        self.init_done = false;
+        if !self.wait_until(EVENT_TIMEOUT, |r| r.init_done).await {
+            panic!("timed out waiting for INIT_DONE");
+        }
         info!("======== INIT DONE!! ==========");
 
         info!("Bringing the interface up...");
@@ -1678,7 +1690,6 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
     pub async fn run(&mut self) -> ! {
         info!("running...");
 
-        let mut buf = [0u32; MAX_EVENT_LEN / 4];
         let mut tx_frame = [0u32; MTU.div_ceil(4)];
 
         let mut poll_at = Instant::now();
@@ -1688,7 +1699,7 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
             // mode the queue is read then only: a poll would wake the RPU up each time.
             let irq = self.powered && self.host_irq.is_high().unwrap_or(true);
             if irq || (self.powered && !self.config.low_power && Instant::now() >= poll_at) {
-                let events = self.service_events(&mut buf).await;
+                let events = self.service_events().await;
                 if events > 0 && !irq {
                     debug!("{} events found without an interrupt", events);
                 }
@@ -1763,11 +1774,12 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
     /// and the queue had to be read once more.) The watchdog, the other source of the interrupt,
     /// is checked only when the interrupt came with nothing queued: each status read is a bus
     /// transaction, and there are thousands of interrupts a second while data flows.
-    async fn service_events(&mut self, buf: &mut [u32]) -> usize {
+    async fn service_events(&mut self) -> usize {
         let irq = self.host_irq.is_high().unwrap_or(false);
         if irq {
             self.rpu_irq_ack().await;
         }
+        let buf = self.take_event_buffer();
         let mut events = 0;
         while let Some(len) = self.rpu_event_next(buf).await {
             events += 1;
@@ -1775,6 +1787,7 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
                 self.handle_event(slice8(buf), len).await;
             }
         }
+        self.events = buf;
         self.irq_pending_ack = false;
         if irq && events == 0 && self.rpu_irq_watchdog_check().await {
             debug!("RPU watchdog interrupt");
@@ -1900,6 +1913,7 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
     async fn handle_event(&mut self, buf: &[u8], len: usize) {
         match parse_event(buf) {
             Event::Sys(id) => match c::sys_events::try_from(id) {
+                Ok(c::sys_events::EVENT_INIT_DONE) => self.init_done = true,
                 Ok(event) => debug!("sys event {}", event as u32),
                 Err(_) => warn!("unknown sys event type {:08x}", id),
             },
@@ -2102,6 +2116,7 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
             Ok(UMAC_EVENT_IFFLAGS_STATUS) => {
                 let status = unsliceit::<c::umac_event_vif_state>(body).status;
                 debug!("interface flags status {}", status);
+                self.interface_state_set = true;
             }
             Ok(UMAC_EVENT_CMD_STATUS) => {
                 let event: &c::umac_event_cmd_status = unsliceit(body);
@@ -2682,22 +2697,28 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
         }
     }
 
-    /// Waits for an event that `matches` accepts, handling the others as usual.
-    async fn wait_for_event(&mut self, what: &str, matches: impl Fn(&Event) -> bool) {
-        let mut buf = [0u32; MAX_EVENT_LEN / 4];
-        let found = with_timeout(EVENT_TIMEOUT, async {
-            loop {
-                let len = self.next_event(&mut buf).await;
-                if matches(&parse_event(slice8(&buf))) {
-                    return;
-                }
-                self.handle_event(slice8(&buf), len).await;
+    /// Handles events until `done` holds, or `timeout` passes. Returns whether `done` held.
+    async fn wait_until(&mut self, timeout: Duration, done: impl Fn(&Self) -> bool) -> bool {
+        let buf = self.take_event_buffer();
+        let held = with_timeout(timeout, async {
+            while !done(self) {
+                let len = self.next_event(buf).await;
+                self.handle_event(slice8(buf), len).await;
             }
         })
-        .await;
-        if found.is_err() {
-            panic!("timed out waiting for {}", what);
+        .await
+        .is_ok();
+        self.events = buf;
+        held
+    }
+
+    /// The event buffer, taken from the runner while events are read into it and handled.
+    fn take_event_buffer(&mut self) -> &'a mut [u32] {
+        let buf = core::mem::take(&mut self.events);
+        if buf.is_empty() {
+            panic!("the event buffer is in use");
         }
+        buf
     }
 
     /// Reads the next event into `buf` and returns its length, waiting for HOST_IRQ while the
@@ -3081,13 +3102,11 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
         let mut cmd: c::umac_cmd_chg_vif_state = unsafe { zeroed() };
         cmd.info.state = up as _;
         cmd.info.if_index = 0;
+        self.interface_state_set = false;
         self.send_cmd(&mut cmd).await;
-
-        self.wait_for_event(
-            "IFFLAGS_STATUS",
-            |event| matches!(event, Event::Umac(id, _) if *id == c::umac_events::UMAC_EVENT_IFFLAGS_STATUS as u32),
-        )
-        .await;
+        if !self.wait_until(EVENT_TIMEOUT, |r| r.interface_state_set).await {
+            panic!("timed out waiting for IFFLAGS_STATUS");
+        }
     }
 
     /// Starts a display scan (NCS `nrf_wifi_disp_scan_zep` without parameters). The zeroed

@@ -1908,19 +1908,6 @@ impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
             station.poll_deadline = None;
         }
     }
-
-    /// Handles events until `done` holds, or `timeout` passes. Returns whether `done` held.
-    async fn wait_until(&mut self, timeout: Duration, done: impl Fn(&Self) -> bool) -> bool {
-        let mut buf = [0u32; crate::MAX_EVENT_LEN / 4];
-        embassy_time::with_timeout(timeout, async {
-            while !done(self) {
-                let len = self.next_event(&mut buf).await;
-                self.handle_event(slice8(&buf), len).await;
-            }
-        })
-        .await
-        .is_ok()
-    }
 }
 
 /// How long a handshake message waits for its answer before it goes out again (hostapd's
