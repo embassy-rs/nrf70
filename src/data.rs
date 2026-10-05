@@ -4,6 +4,7 @@
 use core::mem::zeroed;
 
 use defmt::{debug, warn};
+use embassy_net_driver_channel::driver::PacketBuf;
 use embedded_hal::digital::{InputPin, OutputPin};
 use embedded_hal_async::digital::Wait;
 
@@ -186,10 +187,16 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
         let Some(mut batch) = self.tx_batch_start(tx_frame, len).await else {
             return;
         };
-        while let Some(frame) = self.ch.try_tx_buf().filter(|frame| batch.takes(frame)) {
+        while let Some(frame) = self.ch.try_tx() {
+            // One that does not fit starts the next batch.
+            if !batch.takes(&frame) {
+                self.tx_pending = Some(frame);
+                break;
+            }
+            // Dropping the packet gives its buffer back to the pool.
             let len = frame.len();
-            slice8_mut(tx_frame)[..len].copy_from_slice(frame);
-            self.ch.tx_done();
+            slice8_mut(tx_frame)[..len].copy_from_slice(&frame);
+            drop(frame);
             if !self.ap_hold(tx_frame, len).await {
                 self.tx_batch_add(&mut batch, tx_frame, len).await;
             }
@@ -328,12 +335,18 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
         if rx.ethertype == ETHERTYPE_EAPOL {
             return wpa2::RxEapol::copy(&rx);
         }
-        let Some(out) = self.ch.try_rx_buf() else {
-            debug!("RX frame dropped, embassy-net has no buffer free");
+        let Some(mut out) = PacketBuf::try_new() else {
+            debug!("RX frame dropped, the packet pool is empty");
             return None;
         };
-        match rx.write_ethernet(out) {
-            Some(n) => self.ch.rx_done(n),
+        out.set_len(out.capacity());
+        match rx.write_ethernet(&mut out) {
+            Some(n) => {
+                out.set_len(n);
+                if self.ch.try_rx(out).is_err() {
+                    debug!("RX frame dropped, embassy-net's receive queue is full");
+                }
+            }
             None => warn!("RX frame of {} bytes too long for embassy-net", len),
         }
         None

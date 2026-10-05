@@ -363,8 +363,6 @@ mod tests {
     use core::{assert, assert_eq};
     use std::vec::Vec;
 
-    use aes_kw::{KeyInit, KwAes128};
-
     use super::*;
     use crate::crypto::psk_from_passphrase;
     use crate::rsn::tests::{rsne, AP_RSNE, PSK, PSK_SHA256_MFP, SAE};
@@ -628,9 +626,9 @@ mod tests {
                 data.push(0xDD);
                 data.resize(data.len().next_multiple_of(8), 0);
             }
-            let kw = KwAes128::new_from_slice(&self.ptk.as_ref().unwrap().kek).unwrap();
             let mut wrapped = std::vec![0; data.len() + 8];
-            kw.wrap_key(&data, &mut wrapped).unwrap();
+            let len = aes_key_wrap(&self.ptk.as_ref().unwrap().kek, &data, &mut wrapped).unwrap();
+            wrapped.truncate(len);
             wrapped
         }
 

@@ -1980,19 +1980,14 @@ impl Control<'_> {
     /// [`Control::start_ap_open`].
     ///
     /// The 4-way handshake with each station runs in the driver, which needs random numbers for
-    /// its ANonces and the group key. They come from `rng`, as for [`Control::join_wpa2`]: 32
-    /// bytes, before starting. Deriving the key from the passphrase takes as long as for a join.
-    pub async fn start_ap_wpa2(
-        &mut self,
-        ssid: &[u8],
-        channel: u8,
-        passphrase: &[u8],
-        rng: &mut (impl rand_core::CryptoRng + ?Sized),
-    ) -> Result<(), ApError> {
+    /// its ANonces and the group key. They come from the random number generator the application
+    /// registered with `embassy-crypto`, as for [`Control::join_wpa2`]: 32 bytes, before starting.
+    /// Deriving the key from the passphrase takes as long as for a join.
+    pub async fn start_ap_wpa2(&mut self, ssid: &[u8], channel: u8, passphrase: &[u8]) -> Result<(), ApError> {
         let settings = Settings::new(ssid, channel)?;
         let psk = crate::wpa2_psk(ssid, passphrase).ok_or(ApError::InvalidPassphrase)?;
         let mut seed = [0; 32];
-        rng.fill_bytes(&mut seed);
+        embassy_crypto::rng_fill_bytes(&mut seed);
         let settings = Settings {
             security: Security::Wpa2 { psk, seed },
             ..settings
@@ -2006,31 +2001,19 @@ impl Control<'_> {
     /// Starts a WPA3-Personal access point named `ssid` on `channel`, with the password its
     /// stations join with: SAE on the P-256 curve, by hash to element or hunting and pecking as each
     /// station chooses, then the 4-way handshake, management frame protection required. Otherwise
-    /// as [`Control::start_ap_wpa2`], whose random numbers this takes from `rng` too.
+    /// as [`Control::start_ap_wpa2`], whose random numbers this takes from `embassy-crypto` too.
     ///
     /// Hunting and pecking takes 0.39 s for each station on an nRF5340 at 128 MHz, during which
     /// the runner does nothing else; hash to element takes a few milliseconds.
-    pub async fn start_ap_wpa3(
-        &mut self,
-        ssid: &[u8],
-        channel: u8,
-        password: &[u8],
-        rng: &mut (impl rand_core::CryptoRng + ?Sized),
-    ) -> Result<(), ApError> {
-        self.start_ap_sae(ssid, channel, password, false, rng).await
+    pub async fn start_ap_wpa3(&mut self, ssid: &[u8], channel: u8, password: &[u8]) -> Result<(), ApError> {
+        self.start_ap_sae(ssid, channel, password, false).await
     }
 
     /// Starts a WPA2/WPA3 transition access point: WPA3 stations join with SAE, as with
     /// [`Control::start_ap_wpa3`], and WPA2 ones with the same passphrase (PSK or PSK-SHA256),
     /// management frame protection for those that are capable of it.
-    pub async fn start_ap_wpa2_wpa3(
-        &mut self,
-        ssid: &[u8],
-        channel: u8,
-        passphrase: &[u8],
-        rng: &mut (impl rand_core::CryptoRng + ?Sized),
-    ) -> Result<(), ApError> {
-        self.start_ap_sae(ssid, channel, passphrase, true, rng).await
+    pub async fn start_ap_wpa2_wpa3(&mut self, ssid: &[u8], channel: u8, passphrase: &[u8]) -> Result<(), ApError> {
+        self.start_ap_sae(ssid, channel, passphrase, true).await
     }
 
     async fn start_ap_sae(
@@ -2039,7 +2022,6 @@ impl Control<'_> {
         channel: u8,
         password: &[u8],
         transition: bool,
-        rng: &mut (impl rand_core::CryptoRng + ?Sized),
     ) -> Result<(), ApError> {
         let settings = Settings::new(ssid, channel)?;
         let psk = match transition {
@@ -2047,7 +2029,7 @@ impl Control<'_> {
             false => None,
         };
         let mut seed = [0; 32];
-        rng.fill_bytes(&mut seed);
+        embassy_crypto::rng_fill_bytes(&mut seed);
         let wpa3 = crate::wpa3::Wpa3::new(ssid, password, None, seed).ok_or(ApError::InvalidPassphrase)?;
         let settings = Settings {
             security: Security::Wpa3 { wpa3, psk },

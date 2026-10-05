@@ -28,7 +28,7 @@ use control::{Request, ScanEvent, Shared};
 use defmt::{assert, panic, *};
 use embassy_futures::select::{select3, Either3};
 use embassy_net_driver_channel as ch;
-use embassy_net_driver_channel::driver::LinkState;
+use embassy_net_driver_channel::driver::{LinkState, PacketBuf};
 use embassy_time::{with_deadline, with_timeout, Duration, Instant};
 use embedded_hal::digital::{InputPin, OutputPin};
 use embedded_hal_async::digital::Wait;
@@ -101,7 +101,7 @@ const MAX_EVENT_LEN: usize = 4096;
 /// `static`, for example a `StaticCell`.
 pub struct State {
     shared: Shared,
-    ch: ch::State<MTU, 4, 4>,
+    ch: ch::State<4, 4>,
     /// Where the runner reads the RPU's events. It lives here, once, rather than in the runner's
     /// future, where each wait for an event had a buffer of its own.
     events: [u32; MAX_EVENT_LEN / 4],
@@ -134,7 +134,7 @@ impl Default for State {
 }
 
 /// The network device that embassy-net runs on.
-pub type NetDriver<'a> = ch::Device<'a, MTU>;
+pub type NetDriver<'a> = ch::Device<'a>;
 
 /// Board settings, which the nRF Connect SDK takes from the devicetree and Kconfig. [`Config::new`]
 /// makes them from the board's TX power ceilings, and the `with_` methods change the others:
@@ -248,7 +248,7 @@ where
     IN: InputPin + Wait,
     OUT: OutputPin,
 {
-    let (ch_runner, device) = ch::new(&mut state.ch, ch::driver::HardwareAddress::Ethernet([0; 6]));
+    let (ch_runner, device) = ch::new(&mut state.ch, ch::driver::HardwareAddress::Ethernet([0; 6]), MTU);
     let state_ch = ch_runner.state_runner();
 
     let runner = Runner {
@@ -274,6 +274,7 @@ where
         interface_state_set: false,
         link_up: false,
         tx_tokens_busy: 0,
+        tx_pending: None,
         #[cfg(feature = "ap")]
         ap: ap::State::new(&mut state.ap_storage),
     };
@@ -334,7 +335,7 @@ fn parse_event(buf: &[u8]) -> Event<'_> {
 /// The part of the driver that owns the chip: it carries the frames, and does what [`Control`]
 /// asks.
 pub struct Runner<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> {
-    ch: ch::Runner<'a, MTU>,
+    ch: ch::Runner<'a>,
     state_ch: ch::StateRunner<'a>,
     shared: &'a Shared,
 
@@ -373,6 +374,9 @@ pub struct Runner<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> {
     link_up: bool,
     /// TX tokens handed to the RPU and not yet reported done, one bit each.
     tx_tokens_busy: u16,
+    /// A frame from embassy-net that did not fit the last TX batch: it goes out first, once a TX
+    /// token is free.
+    tx_pending: Option<PacketBuf>,
     /// The access point.
     #[cfg(feature = "ap")]
     ap: ap::State<'a>,
@@ -498,7 +502,12 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
             let shared = self.shared;
             // With WPA2, one token stays free for the supplicant.
             let data_tx_tokens = MAX_TX_TOKENS as u32 - Self::EAPOL_TX_TOKENS;
-            let can_tx = self.link_up && self.tx_tokens_busy.count_ones() < data_tx_tokens && self.ap_has_room();
+            // Frames wait in the channel only while the link is up and every data token is
+            // busy. With the link down they are taken and dropped: they cannot be sent, and left
+            // there they would fill the channel, so that the stack's first frames after a join
+            // (its DHCP request) would find no room.
+            let link_up = self.link_up;
+            let take_tx = !link_up || (self.tx_tokens_busy.count_ones() < data_tx_tokens && self.ap_has_room());
             // What the loop has to come back for without an interrupt.
             let wake_at = [
                 (self.powered && !self.config.low_power).then_some(poll_at),
@@ -527,11 +536,14 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
                     None => irq.await,
                 }
             };
+            let tx_pending = &mut self.tx_pending;
             let tx = async {
-                if can_tx {
-                    ch.tx_buf().await
-                } else {
+                if !take_tx {
                     core::future::pending().await
+                } else if let Some(frame) = tx_pending.take() {
+                    frame
+                } else {
+                    ch.tx().await
                 }
             };
             // The interrupt comes last: its events are read at each turn of the loop anyway, and
@@ -539,10 +551,13 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
             match select3(shared.requests.receive(), tx, irq).await {
                 Either3::First(request) => self.handle_request(&request).await,
                 Either3::Second(frame) => {
-                    let len = frame.len();
-                    slice8_mut(&mut tx_frame)[..len].copy_from_slice(frame);
-                    self.ch.tx_done();
-                    self.send_queued_frames(&mut tx_frame, len).await;
+                    // Dropping the packet gives its buffer back to the pool.
+                    if link_up {
+                        let len = frame.len();
+                        slice8_mut(&mut tx_frame)[..len].copy_from_slice(&frame);
+                        drop(frame);
+                        self.send_queued_frames(&mut tx_frame, len).await;
+                    }
                 }
                 Either3::Third(_) => {}
             }
@@ -952,6 +967,9 @@ pub(crate) mod tests {
 
     use core::assert;
     use std::vec::Vec;
+
+    // The software HMAC, AES-128 and AES-128-CMAC that the tests run on.
+    use embassy_crypto_rustcrypto as _;
 
     use super::*;
 
