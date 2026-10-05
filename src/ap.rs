@@ -139,6 +139,7 @@ const MAX_RATES: usize = 16;
 
 /// Why an access point did not start.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, defmt::Format)]
+#[non_exhaustive]
 pub enum ApError {
     /// The SSID is empty or longer than 32 bytes.
     InvalidSsid,

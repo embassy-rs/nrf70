@@ -67,6 +67,7 @@ impl Shared {
 
 /// Why joining a network failed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, defmt::Format)]
+#[non_exhaustive]
 pub enum ConnectError {
     /// The SSID is longer than 32 bytes.
     InvalidSsid,
@@ -219,6 +220,7 @@ impl Scanner<'_> {
 
 /// Frequency band of a BSS.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, defmt::Format)]
+#[non_exhaustive]
 pub enum Band {
     /// 2.4 GHz.
     Band2_4GHz,
@@ -230,6 +232,7 @@ pub enum Band {
 
 /// Security of a BSS, as the RPU classifies it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, defmt::Format)]
+#[non_exhaustive]
 pub enum Security {
     /// No encryption.
     Open,
@@ -317,6 +320,7 @@ impl BssInfo {
 
 /// The link to the access point, as the RPU sees it: see [`Control::link_status`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq, defmt::Format)]
+#[non_exhaustive]
 pub struct LinkStatus {
     /// The access point.
     pub bssid: [u8; 6],
@@ -354,6 +358,7 @@ impl LinkStatus {
 
 /// The 802.11 power save settings of the RPU: see [`Control::power_save`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq, defmt::Format)]
+#[non_exhaustive]
 pub struct PowerSave {
     /// Whether power save is on.
     pub enabled: bool,

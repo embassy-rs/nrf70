@@ -130,8 +130,18 @@ impl Default for State {
 /// The network device that embassy-net runs on.
 pub type NetDriver<'a> = ch::Device<'a, MTU>;
 
-/// Board settings, which the nRF Connect SDK takes from the devicetree and Kconfig.
+/// Board settings, which the nRF Connect SDK takes from the devicetree and Kconfig. [`Config::new`]
+/// makes them from the board's TX power ceilings, and the `with_` methods change the others:
+///
+/// ```
+/// # const CEILING: nrf70::TxPowerCeiling = nrf70::TxPowerCeiling {
+/// #     dsss_2g: 21, mcs0_2g: 16, mcs7_2g: 16, mcs0_5g_low: 9, mcs7_5g_low: 9,
+/// #     mcs0_5g_mid: 11, mcs7_5g_mid: 11, mcs0_5g_high: 13, mcs7_5g_high: 13,
+/// # };
+/// const CONFIG: nrf70::Config = nrf70::Config::new(CEILING).with_low_power(true);
+/// ```
 #[derive(Clone, Copy, Debug, defmt::Format)]
+#[non_exhaustive]
 pub struct Config {
     /// The highest TX power the board may use. The RPU uses the lower of this and the chip's own
     /// limits.
@@ -147,7 +157,32 @@ pub struct Config {
     pub low_power: bool,
 }
 
-/// Highest TX power per band and modulation, in dBm (the devicetree's `wifi-max-tx-pwr-*`).
+impl Config {
+    /// The settings of a board with these TX power ceilings: the world regulatory domain, and low
+    /// power mode off.
+    pub const fn new(max_tx_power: TxPowerCeiling) -> Self {
+        Self {
+            max_tx_power,
+            country_code: *b"00",
+            low_power: false,
+        }
+    }
+
+    /// The same settings in the regulatory domain of `country_code`: see [`Config::country_code`].
+    pub const fn with_country_code(mut self, country_code: [u8; 2]) -> Self {
+        self.country_code = country_code;
+        self
+    }
+
+    /// The same settings with low power mode on or off: see [`Config::low_power`].
+    pub const fn with_low_power(mut self, low_power: bool) -> Self {
+        self.low_power = low_power;
+        self
+    }
+}
+
+/// Highest TX power per band and modulation, in dBm (the devicetree's `wifi-max-tx-pwr-*`). Its
+/// fields are the ceilings the chip's RF parameters have room for, so that it does not grow.
 #[derive(Clone, Copy, Debug, defmt::Format)]
 pub struct TxPowerCeiling {
     /// 2.4 GHz, DSSS (802.11b).

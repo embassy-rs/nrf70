@@ -49,21 +49,17 @@ bind_interrupts!(struct Irqs {
 
 /// The nRF7002-DK's TX power limits, from the nRF Connect SDK's devicetree for it
 /// (`wifi-max-tx-pwr-*`), and the world regulatory domain.
-const WIFI_CONFIG: nrf70::Config = nrf70::Config {
-    max_tx_power: nrf70::TxPowerCeiling {
-        dsss_2g: 21,
-        mcs0_2g: 16,
-        mcs7_2g: 16,
-        mcs0_5g_low: 9,
-        mcs7_5g_low: 9,
-        mcs0_5g_mid: 11,
-        mcs7_5g_mid: 11,
-        mcs0_5g_high: 13,
-        mcs7_5g_high: 13,
-    },
-    country_code: *b"00",
-    low_power: false,
-};
+const WIFI_CONFIG: nrf70::Config = nrf70::Config::new(nrf70::TxPowerCeiling {
+    dsss_2g: 21,
+    mcs0_2g: 16,
+    mcs7_2g: 16,
+    mcs0_5g_low: 9,
+    mcs7_5g_low: 9,
+    mcs0_5g_mid: 11,
+    mcs7_5g_mid: 11,
+    mcs0_5g_high: 13,
+    mcs7_5g_high: 13,
+});
 
 /// SCK = 96 MHz / (SCKFREQ + 1) with HFCLK192M undivided: 3 gives 24 MHz, the SDK's frequency for
 /// this board, and 2 gives 32 MHz, the nRF7002's maximum.
