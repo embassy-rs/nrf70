@@ -340,6 +340,45 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
     }
 }
 
+/// What the fuzz targets reach of the data path: see `fuzz.rs`.
+#[cfg(any(fuzzing, test))]
+pub(crate) mod fuzz {
+    use super::*;
+
+    /// A frame as the RPU hands it over: `data[0]` picks its type, `data[1]` is the length of the
+    /// 802.11 header the RPU reports, and the rest is the frame.
+    pub fn rx_frame(data: &[u8]) {
+        let [kind, header_len, frame @ ..] = data else {
+            return;
+        };
+        let pkt_type = match kind % 4 {
+            0 => c::PKT_TYPE_MPDU,
+            1 => c::PKT_TYPE_MSDU_WITH_MAC,
+            2 => c::PKT_TYPE_MSDU,
+            _ => u32::from(*kind),
+        };
+        let Some(rx) = RxFrame::parse(frame, pkt_type, usize::from(*header_len)) else {
+            return;
+        };
+        assert!(rx.payload.len() <= frame.len());
+        let mut out = [0; MTU];
+        match rx.write_ethernet(&mut out) {
+            Some(len) => {
+                assert_eq!(len, 14 + rx.payload.len());
+                assert_eq!(out[..6], rx.dst);
+                assert_eq!(out[6..12], rx.src);
+                assert_eq!(out[14..len], *rx.payload);
+                let _ = tx_priority(&out[..len]);
+            }
+            None => assert!(14 + rx.payload.len() > MTU),
+        }
+        #[cfg(feature = "wpa2")]
+        if rx.ethertype == ETHERTYPE_EAPOL {
+            let _ = wpa2::RxEapol::copy(&rx);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     extern crate std;

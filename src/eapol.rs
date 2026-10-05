@@ -334,3 +334,65 @@ pub(crate) fn unwrap_key_data<'a>(key: &KeyFrame, kek: &[u8; 16], buf: &'a mut [
     let kw = KwAes128::new_from_slice(kek).ok()?;
     kw.unwrap_key(key.key_data, buf).ok()
 }
+
+/// What the fuzz targets reach of the EAPOL-Key frames: see `fuzz.rs`.
+#[cfg(any(fuzzing, test))]
+pub(crate) mod fuzz {
+    use super::*;
+
+    /// An EAPOL frame, from its 802.1X header on.
+    pub fn key_frame(data: &[u8]) {
+        let _ = is_message_1(data);
+        if let Some(key) = KeyFrame::parse(data) {
+            assert!(key.pdu.len() >= KEY_FRAME_LEN && key.pdu.len() <= data.len());
+            assert!(KEY_FRAME_LEN + key.key_data.len() <= key.pdu.len());
+            let _ = key.mic_is_valid(&[0x42; 16]);
+            let mut buf = [0; KEY_DATA_MAX];
+            let _ = unwrap_key_data(&key, &[0x42; 16], &mut buf);
+        }
+        key_data(data);
+    }
+
+    /// Unwrapped key data: elements and KDEs.
+    pub fn key_data(data: &[u8]) {
+        let found = KeyData::parse(data);
+        for element in [found.rsne, found.rsnxe].into_iter().flatten() {
+            assert_eq!(element.len(), 2 + usize::from(element[1]));
+        }
+        for cipher in [GroupCipher::Ccmp, GroupCipher::Tkip] {
+            if let Some(gtk) = found.gtk([1; 6], cipher) {
+                assert_eq!(gtk.key().len(), cipher.key_len());
+            }
+        }
+        let _ = found.igtk();
+    }
+
+    /// Key data that the access point wraps into a frame comes back from the frame as it was,
+    /// padded: `data[0]` makes the keys, the rest is the key data.
+    #[cfg(feature = "ap")]
+    pub fn wrap(data: &[u8]) {
+        let [key, data @ ..] = data else {
+            return;
+        };
+        let kek = [*key; 16];
+        let mut wrapped = [0; KEY_DATA_MAX + 8];
+        let Some(len) = wrap_key_data(&kek, data, &mut wrapped) else {
+            assert!(data.len() + 1 > KEY_DATA_MAX);
+            return;
+        };
+        let header = KeyHeader {
+            info: INFO_VERSION_HMAC_SHA1_AES | INFO_ENCRYPTED_KEY_DATA,
+            key_len: 0,
+            replay_counter: 1,
+            nonce: [0; 32],
+            rsc: [0; 6],
+        };
+        let mut frame = [0; KEY_FRAME_LEN + KEY_DATA_MAX + 8];
+        let frame_len = header.write(&mut frame, &wrapped[..len], Some(&kek));
+        let key = KeyFrame::parse(&frame[..frame_len]).unwrap();
+        assert!(key.mic_is_valid(&kek));
+        let mut buf = [0; KEY_DATA_MAX];
+        let unwrapped = unwrap_key_data(&key, &kek, &mut buf).unwrap();
+        assert_eq!(unwrapped[..data.len()], *data);
+    }
+}

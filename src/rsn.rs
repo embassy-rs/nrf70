@@ -415,6 +415,45 @@ impl Rsnxe {
     }
 }
 
+/// What the fuzz targets reach of the RSN elements: see `fuzz.rs`.
+#[cfg(any(fuzzing, test))]
+pub(crate) mod fuzz {
+    use super::*;
+
+    /// The body of an RSNE or an RSNXE, as an access point's beacon or a station's association
+    /// request carries it, after a byte for the PMKID it is checked against.
+    pub fn rsn(data: &[u8]) {
+        let [pmkid, body @ ..] = data else {
+            return;
+        };
+        let pmkid = [*pmkid; 16];
+        if let Some(rsne) = Rsne::from_body(body) {
+            assert_eq!(rsne.as_bytes()[2..], *body);
+            for sae in [false, true] {
+                // What the station asks for in return gives the same suite, with a PMKID or not.
+                if let Some(suite) = rsne.negotiate(sae) {
+                    let ours = Rsne::for_suite(suite);
+                    assert_eq!(ours.negotiate(sae), Some(suite));
+                    #[cfg(feature = "wpa3")]
+                    assert_eq!(ours.with_pmkid(&pmkid).negotiate(sae), Some(suite));
+                }
+            }
+            #[cfg(feature = "ap")]
+            for (psk, sae) in [(true, false), (false, true), (true, true)] {
+                let _ = rsne.check_station(Offer { psk, sae });
+            }
+            #[cfg(all(feature = "ap", feature = "wpa3"))]
+            let _ = rsne.names_pmkid(&pmkid);
+        }
+        if let Some(rsnxe) = Rsnxe::from_body(body) {
+            assert_eq!(rsnxe.as_bytes()[2..], *body);
+            #[cfg(any(feature = "wpa3", test))]
+            let _ = rsnxe.offers_sae_h2e();
+        }
+        let _ = pmkid;
+    }
+}
+
 #[cfg(test)]
 pub(crate) mod tests {
     use core::{assert, assert_eq};

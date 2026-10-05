@@ -55,6 +55,10 @@ wpa3 = ["wpa2", "dep:p256"]
 # stations that sleep, as hostapd does in the nRF Connect SDK.
 ap = []
 
+# `cargo fuzz` builds with `--cfg fuzzing`, which adds the entry points of `src/fuzz.rs`.
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(fuzzing)"] }
+
 [dependencies]
 aes = { version = "0.9.0", default-features = false, optional = true }
 aes-kw = { version = "0.3.1", default-features = false, optional = true }

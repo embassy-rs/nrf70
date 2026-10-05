@@ -267,6 +267,24 @@ impl<BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'_, BUS, IN, OUT> {
     }
 }
 
+/// What the fuzz targets reach of the access point's SAE: see `fuzz.rs`.
+#[cfg(any(fuzzing, test))]
+pub(crate) mod fuzz {
+    use super::*;
+
+    /// The body of a station's SAE commit, after its status: where its anti-clogging token and its
+    /// password identifier are.
+    pub fn commit(body: &[u8]) {
+        for h2e in [false, true] {
+            if let Some(token) = commit_token(body, h2e) {
+                let start = token.as_ptr() as usize - body.as_ptr() as usize;
+                assert!(start + token.len() <= body.len());
+            }
+        }
+        let _ = names_identifier(body);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     extern crate std;

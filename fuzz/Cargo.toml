@@ -1,0 +1,93 @@
+[package]
+name = "nrf70-fuzz"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+nrf70 = { path = "..", features = ["ap", "wpa3"] }
+
+# Not a member of a workspace above.
+[workspace]
+members = ["."]
+
+[[bin]]
+name = "rx_frame"
+path = "fuzz_targets/rx_frame.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "elements"
+path = "fuzz_targets/elements.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "scan_result"
+path = "fuzz_targets/scan_result.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "rsn"
+path = "fuzz_targets/rsn.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "key_frame"
+path = "fuzz_targets/key_frame.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "key_data"
+path = "fuzz_targets/key_data.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "wrap"
+path = "fuzz_targets/wrap.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "management"
+path = "fuzz_targets/management.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "handshake"
+path = "fuzz_targets/handshake.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "sae"
+path = "fuzz_targets/sae.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "sae_password"
+path = "fuzz_targets/sae_password.rs"
+test = false
+doc = false
+bench = false

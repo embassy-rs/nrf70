@@ -321,6 +321,23 @@ impl Sae {
     }
 }
 
+/// What the fuzz targets need of SAE: see `fuzz.rs`.
+#[cfg(any(fuzzing, test))]
+pub(crate) mod fuzz {
+    use super::*;
+
+    /// A commit of `scalar` with the element that makes the shared secret of a peer with the PWE
+    /// `pwe` the identity: -scalar-op(scalar, PWE).
+    pub(crate) fn identity_commit(pwe: ProjectivePoint, scalar: Scalar) -> [u8; COMMIT_LEN] {
+        let element = AffinePoint::from(-(pwe * scalar));
+        let mut commit = [0; COMMIT_LEN];
+        commit[..2].copy_from_slice(&GROUP.to_le_bytes());
+        commit[2..2 + LEN].copy_from_slice(&scalar_bytes(&scalar));
+        commit[2 + LEN..].copy_from_slice(&element_bytes(&element));
+        commit
+    }
+}
+
 #[cfg(test)]
 mod tests {
     extern crate std;

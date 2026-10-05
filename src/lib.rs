@@ -55,6 +55,9 @@ mod crypto;
 mod data;
 #[cfg(feature = "wpa2")]
 mod eapol;
+#[cfg(any(fuzzing, test))]
+#[doc(hidden)]
+pub mod fuzz;
 mod ieee80211;
 #[cfg(feature = "wpa3")]
 mod pmksa;

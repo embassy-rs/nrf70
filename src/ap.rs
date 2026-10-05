@@ -2385,6 +2385,62 @@ fn freq_params(frequency: u32) -> c::freq_params {
     }
 }
 
+/// What the fuzz targets reach of the access point: see `fuzz.rs`.
+#[cfg(any(fuzzing, test))]
+pub(crate) mod fuzz {
+    extern crate std;
+
+    use super::*;
+
+    const BSSID: [u8; 6] = [0x02, 0x70, 0x02, 0, 0, 1];
+
+    /// The WPA3 settings of the access point, whose PT is derived once.
+    #[cfg(feature = "wpa3")]
+    fn sae_password() -> crate::wpa3::Wpa3 {
+        static WPA3: std::sync::OnceLock<crate::wpa3::Wpa3> = std::sync::OnceLock::new();
+        *WPA3.get_or_init(|| crate::wpa3::Wpa3::new(b"nrf70-ap", b"password", None, [3; 32]).unwrap())
+    }
+
+    /// A management frame to the access point "nrf70-ap", which `data[0]` makes an open, WPA2,
+    /// WPA3 or transition one, on 2.4 or 5 GHz. It answers probe requests, and association
+    /// requests with the response they get.
+    pub fn management(data: &[u8]) {
+        let [kind, frame @ ..] = data else {
+            return;
+        };
+        let channel = if kind & 0x10 != 0 { 36 } else { 6 };
+        let mut settings = Settings::new(b"nrf70-ap", channel).unwrap();
+        settings.security = match kind % 4 {
+            #[cfg(feature = "wpa2")]
+            1 => Security::Wpa2 {
+                psk: [1; 32],
+                seed: [2; 32],
+            },
+            #[cfg(feature = "wpa3")]
+            2 | 3 => Security::Wpa3 {
+                wpa3: sae_password(),
+                psk: (kind % 4 == 3).then_some([1; 32]),
+            },
+            _ => Security::Open,
+        };
+        let Some(mgmt) = Mgmt::parse(frame) else {
+            return;
+        };
+        // The buffers of the access point's handlers.
+        let mut out = [0u8; 400];
+        if settings.probed(mgmt.body) {
+            settings.probe_response(&BSSID, &mgmt.from, &mut out);
+        }
+        let reassoc = mgmt.subtype == REASSOC_REQ;
+        let body = mgmt.body.get(if reassoc { 6 } else { 0 }..).unwrap_or(&[]);
+        let request = settings.association_request(body);
+        let answer = request.as_ref().map(|request| (1, request)).map_err(|status| *status);
+        settings.association_response(&BSSID, &mgmt.from, reassoc, answer, &mut out);
+        #[cfg(feature = "wpa3")]
+        wpa3::fuzz::commit(mgmt.body.get(6..).unwrap_or(&[]));
+    }
+}
+
 #[cfg(test)]
 mod tests {
     extern crate std;

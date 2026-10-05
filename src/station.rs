@@ -803,6 +803,39 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
     }
 }
 
+/// What the fuzz targets reach of the station: see `fuzz.rs`.
+#[cfg(any(fuzzing, test))]
+pub(crate) mod fuzz {
+    use core::mem::size_of;
+
+    use super::*;
+
+    /// A connect scan result for the network "nrf70": the event, then the elements of the probe
+    /// response and of the beacon.
+    pub fn scan_result(data: &[u8]) {
+        let mut event: c::umac_event_new_scan_results = unsafe { zeroed() };
+        let size = size_of::<c::umac_event_new_scan_results>();
+        // SAFETY: the event is plain data, every byte pattern of which is valid.
+        let bytes = unsafe { core::slice::from_raw_parts_mut(&mut event as *mut _ as *mut u8, size) };
+        let n = data.len().min(size);
+        bytes[..n].copy_from_slice(&data[..n]);
+        let elements = data.get(size..).unwrap_or(&[]);
+        let Some(bss) = Bss::from_scan_result(&event, elements, b"nrf70") else {
+            return;
+        };
+        #[cfg(feature = "wpa2")]
+        for sae in [false, true] {
+            let _ = bss.rsne.and_then(|rsne| rsne.negotiate(sae));
+        }
+        let mut candidates = Candidates::new();
+        candidates.add(bss);
+        assert!(candidates.take_best().is_some());
+        let mut known = KnownNetwork::new(Ssid::new(b"nrf70").unwrap());
+        known.note(&bss);
+        let _ = known.frequencies();
+    }
+}
+
 #[cfg(test)]
 pub(crate) mod tests {
     extern crate std;

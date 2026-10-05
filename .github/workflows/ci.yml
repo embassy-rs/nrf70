@@ -63,3 +63,17 @@ jobs:
       - name: Build example
         working-directory: example
         run: cargo build --release --all-features
+
+  # Each fuzz target for a minute, on nightly, which cargo-fuzz needs.
+  fuzz:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - run: rustup toolchain install nightly --profile minimal
+      - run: cargo install cargo-fuzz --locked
+      - name: Fuzz
+        working-directory: fuzz
+        run: |
+          for target in $(cargo +nightly fuzz list); do
+            cargo +nightly fuzz run "$target" -- -max_total_time=60
+          done
