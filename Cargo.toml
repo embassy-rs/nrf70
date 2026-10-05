@@ -78,3 +78,7 @@ pbkdf2 = { version = "0.13.0", default-features = false, features = ["hmac"], op
 rand_core = { version = "0.10.1", optional = true }
 sha1 = { version = "0.11.0", default-features = false, optional = true }
 sha2 = { version = "0.11.0", default-features = false, optional = true }
+
+# The host tests run on embassy-time's std time driver, with a timer queue of its own.
+[dev-dependencies]
+embassy-time = { version = "0.5.1", features = ["std", "generic-queue-8"] }

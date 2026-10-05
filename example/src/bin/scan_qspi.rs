@@ -94,10 +94,10 @@ async fn main(spawner: Spawner) {
     );
 
     let mut state = nrf70::State::new();
-    let (_device, mut control, mut runner) =
-        nrf70::new(&mut state, bus, bucken, iovdd_ctl, host_irq, WIFI_CONFIG).await;
+    let (_device, mut control, mut runner) = nrf70::new(&mut state, bus, bucken, iovdd_ctl, host_irq, WIFI_CONFIG);
 
     let scan = async {
+        unwrap!(control.power_on().await);
         loop {
             let mut scanner = control.scan().await;
             while let Some(bss) = scanner.next().await {
@@ -260,52 +260,53 @@ fn anomaly_43_workaround() {
 }
 
 impl nrf70::Bus for QspiBus<'_> {
-    async fn read(&mut self, addr: u32, buf: &mut [u32]) {
+    type Error = qspi::Error;
+
+    async fn read(&mut self, addr: u32, buf: &mut [u32]) -> Result<(), qspi::Error> {
         let bytes = unsafe { slice::from_raw_parts_mut(buf.as_mut_ptr() as *mut u8, buf.len() * 4) };
         if bytes.len() <= BLOCKING_MAX {
-            unwrap!(self.qspi.blocking_read_raw(addr, bytes));
+            self.qspi.blocking_read_raw(addr, bytes)
         } else {
-            unwrap!(self.qspi.read_raw(addr, bytes).await);
+            self.qspi.read_raw(addr, bytes).await
         }
     }
 
-    async fn write(&mut self, addr: u32, buf: &[u32]) {
+    async fn write(&mut self, addr: u32, buf: &[u32]) -> Result<(), qspi::Error> {
         let addr = addr | ADDR_INCREMENT;
         if RAM.contains(&(buf.as_ptr() as usize)) {
             let bytes = unsafe { slice::from_raw_parts(buf.as_ptr() as *const u8, buf.len() * 4) };
             if bytes.len() <= BLOCKING_MAX {
-                unwrap!(self.qspi.blocking_write_raw(addr, bytes));
-            } else {
-                unwrap!(self.qspi.write_raw(addr, bytes).await);
+                return self.qspi.blocking_write_raw(addr, bytes);
             }
-            return;
+            return self.qspi.write_raw(addr, bytes).await;
         }
         for (i, chunk) in buf.chunks(BOUNCE_WORDS).enumerate() {
             self.bounce[..chunk.len()].copy_from_slice(chunk);
             let bytes = unsafe { slice::from_raw_parts(self.bounce.as_ptr() as *const u8, chunk.len() * 4) };
             let chunk_addr = addr + (i * BOUNCE_WORDS * 4) as u32;
-            unwrap!(self.qspi.write_raw(chunk_addr, bytes).await);
+            self.qspi.write_raw(chunk_addr, bytes).await?;
         }
+        Ok(())
     }
 
-    async fn read_sr0(&mut self) -> u8 {
-        self.read_status(RDSR0)
+    async fn read_sr0(&mut self) -> Result<u8, qspi::Error> {
+        Ok(self.read_status(RDSR0))
     }
 
-    async fn read_sr1(&mut self) -> u8 {
+    async fn read_sr1(&mut self) -> Result<u8, qspi::Error> {
         let val = self.read_status(RDSR1);
         if self.waking && val & SR1_RPU_AWAKE != 0 {
             self.waking = false;
             self.set_sckfreq(self.sckfreq);
         }
-        val
+        Ok(val)
     }
 
-    async fn read_sr2(&mut self) -> u8 {
-        self.read_status(RDSR2)
+    async fn read_sr2(&mut self) -> Result<u8, qspi::Error> {
+        Ok(self.read_status(RDSR2))
     }
 
-    async fn write_sr2(&mut self, val: u8) {
+    async fn write_sr2(&mut self, val: u8) -> Result<(), qspi::Error> {
         trace!("write sr2 = {:02x}", val);
         // The RPU wakes reliably only at 8 MHz (the SDK's `qspi_cmd_wakeup_rpu`).
         if !self.waking {
@@ -313,5 +314,6 @@ impl nrf70::Bus for QspiBus<'_> {
             self.set_sckfreq(SCKFREQ_WAKE);
         }
         self.instruction(WRSR2, val);
+        Ok(())
     }
 }

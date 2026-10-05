@@ -152,10 +152,19 @@ Working:
   network sleeps 93 to 96% of the time (read from the chip's status register every 7 ms), and
   the driver does not touch the bus between two interrupts. A wake-up from sleep takes 7 ms, and
   throughput stays within 5% of the normal mode's.
-- Turning the chip off with `Control::power_off` (its shutdown state, after leaving the network)
-  and on again with `Control::power_on`, which loads the firmware and brings the interface up in
-  0.1 to 0.2 s on an nRF7002-DK, and restores the power save setting. The network is then joined
-  again, on the channels remembered from before.
+- Turning the chip on with `Control::power_on`, which loads the firmware and brings the interface
+  up in 0.1 to 0.2 s on an nRF7002-DK (the chip starts off, so an application calls it once the
+  runner runs), and off with `Control::power_off` (its shutdown state, after leaving the network).
+  Turned on again, it gets its power save setting back, and the network is joined again on the
+  channels remembered from before.
+- No panic when the chip or the bus fails: a failed bus transfer, a processor that does not boot
+  its firmware, or a chip that stops answering (no wake-up, no reply to a command, no free command
+  buffer) turns the chip off, and what was under way ends with the `Error`: `Control::power_on`
+  returns it, a join `ConnectError::Fault`, an access point start `ApError::Fault`, and the link
+  goes down. `Control::power_on` then starts the chip again. Checked on an nRF7002-DK with a bus
+  transfer made to fail every 30 s: the chip was off 30 µs after the failure and on again 104 ms
+  later; joined, the DK was back on the network 1.7 s after each failure, and its access point came
+  back up too.
 - Ethernet frames to and from [`embassy-net`](https://embassy.dev) through the `NetDriver`: TCP,
   UDP, DHCP and ICMP work on top of it.
   The data path keeps bus transactions few, each one costing about 16 µs on an nRF5340's SPIM at
@@ -171,7 +180,8 @@ Working:
   task takes 16 KB of RAM on the DK, from 34 KB.
 - SPI bus through any [`embedded-hal-async`](https://crates.io/crates/embedded-hal-async)
   `SpiDevice`.
-- Any other bus through the `Bus` trait. The `scan_qspi` example implements it on the nRF5340's
+- Any other bus through the `Bus` trait, whose transfers return the bus's own error (the driver
+  logs it, and reports `Error::Bus`). The `scan_qspi` example implements it on the nRF5340's
   QSPI peripheral in quad mode, as the nRF Connect SDK drives the nRF7002-DK: it loads the
   firmware in 19 ms, against 103 ms over SPI at 8 MHz.
 - Using the host IRQ for device events, with a slow poll as a fallback (not in low power mode,

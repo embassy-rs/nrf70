@@ -150,8 +150,10 @@ pub enum ApError {
     InvalidPassphrase,
     /// A scan or a join is in progress.
     Busy,
-    /// The chip is off: see [`Control::power_off`].
+    /// The chip is off: see [`Control::power_off`], and [`ApError::Fault`].
     PoweredOff,
+    /// The chip failed while the access point started, and is off: see [`Control::power_on`].
+    Fault(crate::Error),
     /// The chip did not start the access point: a command failed, or it did not answer.
     Refused,
 }

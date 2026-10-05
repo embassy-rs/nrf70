@@ -398,7 +398,7 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
     }
 
     /// Resets the connection state and reports the link down.
-    fn reset_conn(&mut self) {
+    pub(crate) fn reset_conn(&mut self) {
         self.sta.conn = ConnState::Idle;
         self.sta.deadline = None;
         self.sta.peer_known = false;

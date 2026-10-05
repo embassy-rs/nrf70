@@ -9,7 +9,7 @@ use embassy_time::with_timeout;
 #[cfg(feature = "ap")]
 use crate::ap::{self, ApError};
 use crate::station::{Bss, Credentials, Ssid};
-use crate::{c, EVENT_TIMEOUT, SCAN_TIMEOUT};
+use crate::{c, Error, EVENT_TIMEOUT, SCAN_TIMEOUT};
 
 /// Scan results buffered between the runner and a [`Scanner`].
 const SCAN_RESULTS_DEPTH: usize = 32;
@@ -45,7 +45,7 @@ pub(crate) struct Shared {
     pub(crate) connect_result: Channel<NoopRawMutex, Result<(), ConnectError>, 1>,
     pub(crate) link_status: Channel<NoopRawMutex, Option<LinkStatus>, 1>,
     pub(crate) power_save: Channel<NoopRawMutex, Option<PowerSave>, 1>,
-    pub(crate) power_done: Channel<NoopRawMutex, (), 1>,
+    pub(crate) power_done: Channel<NoopRawMutex, Result<(), Error>, 1>,
     #[cfg(feature = "ap")]
     pub(crate) ap_result: Channel<NoopRawMutex, Result<(), ApError>, 1>,
 }
@@ -94,8 +94,10 @@ pub enum ConnectError {
     HandshakeFailed,
     /// The connection was lost before it completed.
     Disconnected,
-    /// The chip is off: see [`Control::power_off`].
+    /// The chip is off: see [`Control::power_off`], and [`ConnectError::Fault`].
     PoweredOff,
+    /// The chip failed during the join, and is off: see [`Control::power_on`].
+    Fault(Error),
 }
 
 /// The application's handle on the driver. Each call hands the runner a request and, but for
@@ -161,16 +163,18 @@ impl<'a> Control<'a> {
     pub async fn power_off(&mut self) {
         self.shared.power_done.clear();
         self.shared.requests.send(Request::PowerOff).await;
-        self.shared.power_done.receive().await;
+        let _ = self.shared.power_done.receive().await;
     }
 
-    /// Turns the chip on again after [`Control::power_off`]: loads its firmware and brings the
-    /// interface up, as [`new`](crate::new) does, and restores the power save setting. The network has to be
-    /// joined again.
-    pub async fn power_on(&mut self) {
+    /// Turns the chip on: loads its firmware, brings the interface up, and restores the power save
+    /// setting. The chip starts off: an application calls this once [`Runner::run`](crate::Runner::run)
+    /// runs, and again after [`Control::power_off`] or a failure; the network then has to be joined
+    /// again. Returns how the chip failed to start, if it did: it is off then, and this may be tried
+    /// again.
+    pub async fn power_on(&mut self) -> Result<(), Error> {
         self.shared.power_done.clear();
         self.shared.requests.send(Request::PowerOn).await;
-        self.shared.power_done.receive().await;
+        self.shared.power_done.receive().await
     }
 
     /// Starts an active scan of every channel. The results arrive through the returned [`Scanner`].

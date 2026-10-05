@@ -4,12 +4,12 @@
 
 use core::mem::{size_of, zeroed};
 
-use defmt::{debug, info, panic, trace, unwrap, warn};
+use defmt::{debug, info, trace, unwrap, warn, Debug2Format};
 use embassy_time::{with_timeout, Duration, Instant, Timer};
 
 use crate::boot::Otp;
 use crate::command::Command;
-use crate::{c, slice8, slice8_mut, sliceit, unsliceit, Bus};
+use crate::{c, slice8, slice8_mut, sliceit, unsliceit, Bus, Error};
 
 // ========= Packet RAM
 
@@ -201,6 +201,10 @@ pub(crate) struct Rpu<BUS> {
     pub(crate) awake: bool,
     /// In low power mode, when the RPU may sleep again: some time after the last bus access.
     pub(crate) idle_at: Instant,
+    /// The first failure since the chip was turned on: a transfer the bus reported failed, or the
+    /// RPU not answering. From then on the bus is left alone and reads give zeros, so that what
+    /// was under way ends without waiting for the RPU, and the runner turns the chip off.
+    fault: Option<Error>,
 }
 
 impl<BUS: Bus> Rpu<BUS> {
@@ -214,7 +218,8 @@ impl<BUS: Bus> Rpu<BUS> {
             bulk_pktram_reads: false,
             low_power,
             awake: true,
-            idle_at: Instant::now(),
+            idle_at: Instant::MIN,
+            fault: None,
         }
     }
 
@@ -231,11 +236,98 @@ impl<BUS: Bus> Rpu<BUS> {
         self.irq_pending_ack = false;
         self.bulk_pktram_reads = false;
         self.awake = true;
+        self.fault = None;
+    }
+
+    /// Notes that the chip failed with `error`, unless it had already.
+    pub(crate) fn fail(&mut self, error: Error) {
+        if self.fault.is_none() {
+            warn!("the chip failed: {}", error);
+            self.fault = Some(error);
+        }
+    }
+
+    /// How the chip failed since it was turned on, if it did.
+    #[cfg_attr(not(feature = "ap"), allow(dead_code))]
+    pub(crate) fn fault(&self) -> Option<Error> {
+        self.fault
+    }
+
+    /// Whether the chip failed since it was turned on.
+    pub(crate) fn failed(&self) -> bool {
+        self.fault.is_some()
+    }
+
+    /// How the chip failed since it was turned on, if it did: `Err` once, then `Ok` until the next
+    /// failure.
+    pub(crate) fn check(&mut self) -> Result<(), Error> {
+        self.fault.take().map_or(Ok(()), Err)
+    }
+
+    /// Notes a failed transfer.
+    fn bus_failed(&mut self, error: BUS::Error) {
+        warn!("bus transfer failed: {}", Debug2Format(&error));
+        self.fail(Error::Bus);
+    }
+
+    /// Reads from the bus, zeros once the chip failed.
+    async fn bus_read(&mut self, addr: u32, buf: &mut [u32]) {
+        if self.fault.is_none() {
+            if let Err(error) = self.bus.read(addr, buf).await {
+                self.bus_failed(error);
+            }
+        }
+        if self.fault.is_some() {
+            buf.fill(0);
+        }
+    }
+
+    /// Writes to the bus, unless the chip failed.
+    async fn bus_write(&mut self, addr: u32, buf: &[u32]) {
+        if self.fault.is_none() {
+            if let Err(error) = self.bus.write(addr, buf).await {
+                self.bus_failed(error);
+            }
+        }
+    }
+
+    /// Reads status register 1, 0 once the chip failed.
+    async fn read_sr1(&mut self) -> u8 {
+        if self.fault.is_some() {
+            return 0;
+        }
+        self.bus.read_sr1().await.unwrap_or_else(|error| {
+            self.bus_failed(error);
+            0
+        })
+    }
+
+    /// Reads status register 2, 0 once the chip failed.
+    async fn read_sr2(&mut self) -> u8 {
+        if self.fault.is_some() {
+            return 0;
+        }
+        self.bus.read_sr2().await.unwrap_or_else(|error| {
+            self.bus_failed(error);
+            0
+        })
+    }
+
+    /// Writes status register 2, unless the chip failed.
+    async fn write_sr2(&mut self, val: u8) {
+        if self.fault.is_none() {
+            if let Err(error) = self.bus.write_sr2(val).await {
+                self.bus_failed(error);
+            }
+        }
     }
 
     /// Reads the next queued event into `buf`. Returns its length, 0 if it was dropped, or `None`
     /// if the queue is empty.
     pub(crate) async fn event_next(&mut self, buf: &mut [u32]) -> Option<usize> {
+        if self.fault.is_some() {
+            return None;
+        }
         let event_address = self.hpq_dequeue(self.info().hpqm_info.event_busy_queue).await;
 
         match event_address {
@@ -375,6 +467,9 @@ impl<BUS: Bus> Rpu<BUS> {
         // Wait until we get an address to write to
         // This queue might already be full with other messages, so we'll just have to wait a bit
         let message_address = loop {
+            if self.fault.is_some() {
+                return;
+            }
             if let Some(message_address) = self.hpq_dequeue(self.info().hpqm_info.cmd_avl_queue).await {
                 break message_address;
             }
@@ -433,7 +528,7 @@ impl<BUS: Bus> Rpu<BUS> {
         for (i, val) in by_word.iter_mut().enumerate() {
             *val = self.raw_read32(mem, offs + i as u32 * 4).await;
         }
-        self.bus.read((mem.start + offs) | ADDR_INCREMENT, &mut bulk).await;
+        self.bus_read((mem.start + offs) | ADDR_INCREMENT, &mut bulk).await;
         let ok = by_word == bulk;
         if ok {
             info!("packet RAM: bulk reads work");
@@ -475,7 +570,7 @@ impl<BUS: Bus> Rpu<BUS> {
         header.type_ = message_type as _;
         let mut rest = body;
         let mut first = true;
-        while first || !rest.is_empty() {
+        while (first || !rest.is_empty()) && self.fault.is_none() {
             let mut buf = [0u32; MAX_CMD_SIZE / 4];
             let bytes = slice8_mut(&mut buf);
             let mut len = 0;
@@ -492,7 +587,8 @@ impl<BUS: Bus> Rpu<BUS> {
                 .await
                 .is_err()
             {
-                panic!("timed out waiting for a free command buffer");
+                warn!("timed out waiting for a free command buffer");
+                self.fail(Error::Timeout);
             }
         }
     }
@@ -584,8 +680,17 @@ impl<BUS: Bus> Rpu<BUS> {
             Processor::Umac => (c::RPU_REG_MIPS_MCU2_CONTROL, 0xA4000118),
         };
         self.write32(control, None, 0x1).await;
-        while self.read32(control, None).await & 0x1 != 0 {}
-        while self.read32(status, None).await & 0x1 != 1 {}
+        let deadline = Instant::now() + FW_BOOT_TIMEOUT;
+        while self.read32(control, None).await & 0x1 != 0 || self.read32(status, None).await & 0x1 != 1 {
+            if self.fault.is_some() {
+                return;
+            }
+            if Instant::now() >= deadline {
+                warn!("{} did not reset", processor);
+                self.fail(Error::Boot);
+                return;
+            }
+        }
     }
 
     /// Starts a processor on its loaded patches and waits for its boot signature (NCS
@@ -629,41 +734,44 @@ impl<BUS: Bus> Rpu<BUS> {
         self.write32(control, None, 0x1).await;
 
         let booted = with_timeout(FW_BOOT_TIMEOUT, async {
-            while self.read32(boot_sig_addr, None).await != boot_sig {
+            while self.read32(boot_sig_addr, None).await != boot_sig && self.fault.is_none() {
                 Timer::after(Duration::from_millis(10)).await;
             }
         })
         .await;
         if booted.is_err() {
-            panic!("{} did not boot", processor);
+            warn!("{} did not boot", processor);
+            self.fail(Error::Boot);
         }
     }
 
     /// Waits up to 10 ms for the RPU to report itself awake.
     async fn wait_until_awake(&mut self) {
         for _ in 0..10 {
-            if self.bus.read_sr1().await & SR1_RPU_AWAKE != 0 {
+            if self.read_sr1().await & SR1_RPU_AWAKE != 0 || self.fault.is_some() {
                 return;
             }
             Timer::after(Duration::from_millis(1)).await;
         }
-        panic!("awakening never came")
+        warn!("the RPU did not report itself awake");
+        self.fail(Error::Timeout);
     }
 
     /// Waits up to 10 ms for the wake-up request to show.
     async fn wait_until_wakeup_req(&mut self) {
         for _ in 0..10 {
-            if self.bus.read_sr2().await == SR2_RPU_WAKEUP_REQ {
+            if self.read_sr2().await == SR2_RPU_WAKEUP_REQ || self.fault.is_some() {
                 return;
             }
             Timer::after(Duration::from_millis(1)).await;
         }
-        panic!("wakeup_req never came")
+        warn!("the RPU did not show the wake-up request");
+        self.fail(Error::Timeout);
     }
 
     /// Wakes the RPU up, at power on.
     pub(crate) async fn wakeup(&mut self) {
-        self.bus.write_sr2(SR2_RPU_WAKEUP_REQ).await;
+        self.write_sr2(SR2_RPU_WAKEUP_REQ).await;
         self.wait_until_wakeup_req().await;
         self.wait_until_awake().await;
     }
@@ -671,18 +779,23 @@ impl<BUS: Bus> Rpu<BUS> {
     /// Makes sure the RPU is awake before a bus access, in low power mode (NCS
     /// `hal_rpu_ps_wake`). Without it the wake-up request of the boot stays for good.
     async fn ps_wake(&mut self) {
-        if !self.low_power {
+        if !self.low_power || self.fault.is_some() {
             return;
         }
         if !self.awake {
             const AWAKE: u8 = SR1_RPU_AWAKE | SR1_RPU_READY;
-            self.bus.write_sr2(SR2_RPU_WAKEUP_REQ).await;
+            self.write_sr2(SR2_RPU_WAKEUP_REQ).await;
             // NCS waits before it reads the state, "to avoid a race condition in the RPU".
             Timer::after(Duration::from_millis(1)).await;
             let deadline = Instant::now() + RPU_WAKE_TIMEOUT;
-            while self.bus.read_sr1().await & AWAKE != AWAKE {
+            while self.read_sr1().await & AWAKE != AWAKE {
+                if self.fault.is_some() {
+                    return;
+                }
                 if Instant::now() >= deadline {
-                    panic!("the RPU did not wake up");
+                    warn!("the RPU did not wake up");
+                    self.fail(Error::Timeout);
+                    return;
                 }
                 Timer::after(Duration::from_millis(1)).await;
             }
@@ -695,7 +808,7 @@ impl<BUS: Bus> Rpu<BUS> {
     /// `hal_rpu_ps_sleep`).
     pub(crate) async fn ps_sleep(&mut self) {
         if self.low_power && self.awake && Instant::now() >= self.idle_at {
-            self.bus.write_sr2(0).await;
+            self.write_sr2(0).await;
             self.awake = false;
         }
     }
@@ -707,7 +820,7 @@ impl<BUS: Bus> Rpu<BUS> {
 
         self.ps_wake().await;
         let mut buf = [0u32; 3];
-        self.bus.read(mem.start + offs, &mut buf[..lat + 1]).await;
+        self.bus_read(mem.start + offs, &mut buf[..lat + 1]).await;
         trace!("read32 {:08x} {:08x}", mem.start + offs, buf[lat]);
         buf[lat]
     }
@@ -720,7 +833,7 @@ impl<BUS: Bus> Rpu<BUS> {
         if mem.latency == 0 && self.bulk_pktram_reads {
             // One transaction with the address incrementing, as NCS reads packet RAM.
             self.ps_wake().await;
-            self.bus.read((mem.start + offs) | ADDR_INCREMENT, buf).await;
+            self.bus_read((mem.start + offs) | ADDR_INCREMENT, buf).await;
         } else {
             for (i, val) in buf.iter_mut().enumerate() {
                 *val = self.raw_read32(mem, offs + i as u32 * 4).await;
@@ -749,7 +862,7 @@ impl<BUS: Bus> Rpu<BUS> {
             slice8(buf)
         );
         self.ps_wake().await;
-        self.bus.write(mem.start + offs, buf).await;
+        self.bus_write(mem.start + offs, buf).await;
     }
 
     /// Reads a word at `rpu_addr`, as `processor` sees it (`None`: an address every processor
@@ -808,6 +921,8 @@ impl<BUS: Bus> Rpu<BUS> {
 mod tests {
     use core::assert_eq;
 
+    use embassy_futures::block_on;
+
     use super::*;
     use regions::GRAM;
 
@@ -815,5 +930,51 @@ mod tests {
     fn gram_is_read_with_two_dummy_words() {
         let (mem, offs) = regions::remap_global_addr_to_region_and_offset(c::RPU_MEM_LMAC_BOOT_SIG, None);
         assert_eq!((mem.start, mem.latency, offs), (GRAM.start, 2, 0xD50));
+    }
+
+    /// A bus whose every transfer fails, after filling what it reads with ones.
+    struct BrokenBus;
+
+    impl Bus for BrokenBus {
+        type Error = ();
+
+        async fn read(&mut self, _addr: u32, buf: &mut [u32]) -> Result<(), ()> {
+            buf.fill(u32::MAX);
+            Err(())
+        }
+
+        async fn write(&mut self, _addr: u32, _buf: &[u32]) -> Result<(), ()> {
+            Err(())
+        }
+
+        async fn read_sr0(&mut self) -> Result<u8, ()> {
+            Err(())
+        }
+
+        async fn read_sr1(&mut self) -> Result<u8, ()> {
+            Err(())
+        }
+
+        async fn read_sr2(&mut self) -> Result<u8, ()> {
+            Err(())
+        }
+
+        async fn write_sr2(&mut self, _val: u8) -> Result<(), ()> {
+            Err(())
+        }
+    }
+
+    #[test]
+    fn a_failed_transfer_leaves_the_bus_alone_and_reads_give_zeros() {
+        let mut rpu = Rpu::new(BrokenBus, false);
+        assert_eq!(block_on(rpu.read32(c::RPU_MEM_UMAC_BOOT_SIG, None)), 0);
+        assert!(rpu.failed());
+        // Nothing is queued, and no command goes out.
+        let mut buf = [0u32; 16];
+        assert_eq!(block_on(rpu.event_next(&mut buf)), None);
+        block_on(rpu.cmd_ctrl_send(&[0; 4]));
+        // The failure is reported once.
+        assert_eq!(rpu.check(), Err(Error::Bus));
+        assert_eq!(rpu.check(), Ok(()));
     }
 }

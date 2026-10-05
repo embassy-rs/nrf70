@@ -4,7 +4,7 @@
 use core::mem::{size_of, zeroed};
 
 use align_data::{include_aligned, Align16};
-use defmt::{assert, info, panic, unwrap, warn};
+use defmt::{assert, info, unwrap, warn};
 use embassy_time::{Duration, Timer};
 use embedded_hal::digital::{InputPin, OutputPin};
 use embedded_hal_async::digital::Wait;
@@ -13,7 +13,7 @@ use crate::control::ScanEvent;
 use crate::rpu::regions::*;
 use crate::rpu::{Processor, MAX_TX_AGGREGATION, RX_BUFS, RX_BUFS_PER_QUEUE, RX_MAX_DATA_SIZE};
 use crate::station::ConnState;
-use crate::{c, ch, sliceit, Bus, ConnectError, Runner, TxPowerCeiling, EVENT_TIMEOUT};
+use crate::{c, ch, sliceit, Bus, ConnectError, Error, Runner, TxPowerCeiling, EVENT_TIMEOUT};
 
 /// How long a deauthentication frame gets to leave before the chip is turned off.
 const POWER_OFF_DELAY: Duration = Duration::from_millis(20);
@@ -259,16 +259,30 @@ const FALLBACK_MAC_ADDRESS: [u8; 6] = [0x02, 0x70, 0x02, 0x00, 0x00, 0x01];
 
 impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT> {
     /// Turns the chip on, loads its firmware and brings the interface up.
-    pub(crate) async fn init(&mut self) {
+    /// `Err` if it failed, the chip being off then.
+    pub(crate) async fn init(&mut self) -> Result<(), Error> {
+        let started = self.start().await;
+        if let Err(error) = started {
+            warn!("the chip did not start: {}", error);
+            self.cut_power();
+        }
+        started
+    }
+
+    /// The steps of [`Self::init`].
+    async fn start(&mut self) -> Result<(), Error> {
         self.rpu.reset();
         self.tx_tokens_busy = 0;
-        self.power_on().await;
+        self.power_on().await?;
         self.boot_firmware().await;
+        self.rpu.check()?;
         let mac_addr = self.init_umac().await;
         self.init_done = false;
-        if !self.wait_until(EVENT_TIMEOUT, |r| r.init_done).await {
-            panic!("timed out waiting for INIT_DONE");
+        if !self.wait_until(EVENT_TIMEOUT, |r| r.init_done).await && !self.rpu.failed() {
+            warn!("timed out waiting for INIT_DONE");
+            self.rpu.fail(Error::Timeout);
         }
+        self.rpu.check()?;
         info!("======== INIT DONE!! ==========");
 
         info!("Bringing the interface up...");
@@ -278,20 +292,22 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
         self.state_ch
             .set_hardware_address(ch::driver::HardwareAddress::Ethernet(mac_addr));
         self.set_interface_state(true).await;
-        self.powered = true;
         if self.power_save {
             self.set_power_save(true).await;
         }
+        self.rpu.check()?;
+        self.powered = true;
+        Ok(())
     }
 
     /// Powers the chip up (BUCKEN, then the power to its I/O interface), wakes the RPU up and
     /// enables its clocks and its interrupt.
-    async fn power_on(&mut self) {
+    async fn power_on(&mut self) -> Result<(), Error> {
         info!("power on...");
         Timer::after(Duration::from_millis(10)).await;
-        self.bucken.set_high().unwrap();
+        self.bucken.set_high().map_err(|_| Error::Pin)?;
         Timer::after(Duration::from_millis(10)).await;
-        self.iovdd_ctl.set_high().unwrap();
+        self.iovdd_ctl.set_high().map_err(|_| Error::Pin)?;
         Timer::after(Duration::from_millis(10)).await;
 
         info!("wakeup...");
@@ -302,6 +318,7 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
 
         info!("enable interrupt...");
         self.rpu.irq_enable().await;
+        self.rpu.check()
     }
 
     /// Loads the firmware patches into both processors and boots them (NCS
@@ -385,14 +402,21 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
         }
         // Time for the deauthentication frame to leave.
         Timer::after(POWER_OFF_DELAY).await;
-        self.iovdd_ctl.set_low().unwrap();
-        self.bucken.set_low().unwrap();
+        self.cut_power();
+        info!("powered off");
+    }
+
+    /// Turns the chip's power off, and forgets what it had: the access point, the TX tokens. A
+    /// pin that cannot be set is logged: the chip may stay powered, but the driver takes it as off.
+    pub(crate) fn cut_power(&mut self) {
+        if self.iovdd_ctl.set_low().is_err() | self.bucken.set_low().is_err() {
+            warn!("a power pin could not be cleared");
+        }
         self.powered = false;
         self.rpu.awake = false;
         self.rpu.irq_pending_ack = false;
         self.forget_ap();
         self.tx_tokens_busy = 0;
-        info!("powered off");
     }
 
     /// Sends the system init command (NCS `umac_cmd_sys_init`), with the SDK's defaults for a
@@ -497,8 +521,9 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
         cmd.info.if_index = 0;
         self.interface_state_set = false;
         self.rpu.send_cmd(&mut cmd).await;
-        if !self.wait_until(EVENT_TIMEOUT, |r| r.interface_state_set).await {
-            panic!("timed out waiting for IFFLAGS_STATUS");
+        if !self.wait_until(EVENT_TIMEOUT, |r| r.interface_state_set).await && !self.rpu.failed() {
+            warn!("timed out waiting for IFFLAGS_STATUS");
+            self.rpu.fail(Error::Timeout);
         }
     }
 }

@@ -1,8 +1,11 @@
 //! Driver for the Nordic nRF7002 Wi-Fi 6 companion chip, on embassy.
 //!
-//! [`new`] turns the chip on and returns its three parts: the [`NetDriver`] for embassy-net, the
-//! [`Control`] the application drives it with, and the [`Runner`], which owns the chip and runs in
-//! a task of its own.
+//! [`new`] returns the driver's three parts: the [`NetDriver`] for embassy-net, the [`Control`]
+//! the application drives it with, and the [`Runner`], which owns the chip and runs in a task of
+//! its own. [`Control::power_on`] then turns the chip on.
+//!
+//! A failure of the bus or the chip does not panic: the runner turns the chip off and reports the
+//! [`Error`] to what was under way, and [`Control::power_on`] starts it again.
 //!
 //! The runner's code is split by concern. `rpu.rs` is the host interface to the chip (its memory,
 //! queues, interrupt and sleep) and `command.rs` the commands it takes; `boot.rs` turns the chip
@@ -184,6 +187,22 @@ impl Config {
     }
 }
 
+/// Why the chip failed: to start, or while it ran. It is off afterwards, until
+/// [`Control::power_on`] starts it again.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, defmt::Format)]
+#[non_exhaustive]
+pub enum Error {
+    /// The bus reported a failed transfer.
+    Bus,
+    /// A power pin (BUCKEN or the I/O power) could not be set.
+    Pin,
+    /// A processor of the chip did not boot its firmware.
+    Boot,
+    /// The chip stopped answering: it did not wake up, answer a command, or free a command
+    /// buffer in time.
+    Timeout,
+}
+
 /// Highest TX power per band and modulation, in dBm (the devicetree's `wifi-max-tx-pwr-*`). Its
 /// fields are the ceilings the chip's RF parameters have room for, so that it does not grow.
 #[derive(Clone, Copy, Debug, defmt::Format)]
@@ -208,14 +227,15 @@ pub struct TxPowerCeiling {
     pub mcs7_5g_high: u8,
 }
 
-/// Turns the nRF70 on and brings its station interface up, then returns the [`NetDriver`] for
-/// embassy-net, the [`Control`] for the application and the [`Runner`], whose [`Runner::run`] has
-/// to run in a task of its own.
+/// Returns the driver's parts: the [`NetDriver`] for embassy-net, the [`Control`] for the
+/// application and the [`Runner`], whose [`Runner::run`] has to run in a task of its own. The chip
+/// stays off until [`Control::power_on`], which the runner carries out: turned on before the
+/// embassy-net stack is made, it gives the stack its MAC address from the start.
 ///
 /// `bus` reaches the chip; `bucken` drives its BUCKEN input and `iovdd_ctl` the power to its I/O
 /// interface (P0.31 on the nRF7002-DK), which the driver turns on in that order; `host_irq` is its
 /// HOST_IRQ output.
-pub async fn new<'a, BUS, IN, OUT>(
+pub fn new<'a, BUS, IN, OUT>(
     state: &'a mut State,
     bus: BUS,
     bucken: OUT,
@@ -231,7 +251,7 @@ where
     let (ch_runner, device) = ch::new(&mut state.ch, ch::driver::HardwareAddress::Ethernet([0; 6]));
     let state_ch = ch_runner.state_runner();
 
-    let mut runner = Runner {
+    let runner = Runner {
         ch: ch_runner,
         state_ch,
         shared: &state.shared,
@@ -257,8 +277,6 @@ where
         #[cfg(feature = "ap")]
         ap: ap::State::new(&mut state.ap_storage),
     };
-    runner.init().await;
-
     let control = Control { shared: &state.shared };
 
     (device, control, runner)
@@ -457,6 +475,8 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
         let mut poll_at = Instant::now();
 
         loop {
+            // A request or a frame of the last turn may have failed.
+            self.turn_off_if_failed();
             // HOST_IRQ is high while the RPU has events that were not acknowledged. In low power
             // mode the queue is read then only: a poll would wake the RPU up each time.
             let irq = self.powered && self.host_irq.is_high().unwrap_or(true);
@@ -472,6 +492,8 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
             self.ap_deliver().await;
             self.ap_check_timeouts().await;
             self.rpu.ps_sleep().await;
+            // Off before the wait, not after it.
+            self.turn_off_if_failed();
 
             let shared = self.shared;
             // With WPA2, one token stays free for the supplicant.
@@ -576,11 +598,11 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
                 let _ = self.shared.power_save.try_send(None);
             }
             Request::PowerOff => {
-                let _ = self.shared.power_done.try_send(());
+                let _ = self.shared.power_done.try_send(Ok(()));
             }
             Request::PowerOn => {
-                self.init().await;
-                let _ = self.shared.power_done.try_send(());
+                let started = self.init().await;
+                let _ = self.shared.power_done.try_send(started);
             }
             #[cfg(feature = "ap")]
             Request::StartAp(_) => {
@@ -615,10 +637,10 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
             }
             Request::PowerOff => {
                 self.power_off().await;
-                let _ = self.shared.power_done.try_send(());
+                let _ = self.shared.power_done.try_send(Ok(()));
             }
             Request::PowerOn => {
-                let _ = self.shared.power_done.try_send(());
+                let _ = self.shared.power_done.try_send(Ok(()));
             }
             Request::PowerSave => {
                 let mut cmd: c::umac_cmd_get_power_save_info = unsafe { zeroed() };
@@ -627,6 +649,11 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
             #[cfg(feature = "ap")]
             Request::StartAp(settings) => {
                 let result = self.start_ap(settings).await;
+                // A chip that failed meanwhile is turned off at the next turn of the loop.
+                let result = match self.rpu.fault() {
+                    Some(error) => Err(ApError::Fault(error)),
+                    None => result,
+                };
                 let _ = self.shared.ap_result.try_send(result);
             }
             #[cfg(feature = "ap")]
@@ -839,17 +866,38 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
         }
     }
 
-    /// Handles events until `done` holds, or `timeout` passes. Returns whether `done` held.
+    /// If the chip failed, ends what was under way with the error and turns the chip off. It stays
+    /// off until [`Control::power_on`].
+    fn turn_off_if_failed(&mut self) {
+        let Err(error) = self.rpu.check() else {
+            return;
+        };
+        warn!("the chip failed ({}): turning it off", error);
+        if !matches!(self.sta.conn, ConnState::Idle | ConnState::Connected) {
+            let _ = self.shared.connect_result.try_send(Err(ConnectError::Fault(error)));
+        }
+        self.reset_conn();
+        if self.scan_deadline.take().is_some() {
+            self.push_scan_event(ScanEvent::Aborted);
+        }
+        self.cut_power();
+    }
+
+    /// Handles events until `done` holds, or `timeout` passes. Returns whether `done` held: not
+    /// if the chip failed.
     async fn wait_until(&mut self, timeout: Duration, done: impl Fn(&Self) -> bool) -> bool {
         let buf = self.take_event_buffer();
         let held = with_timeout(timeout, async {
             while !done(self) {
-                let len = self.next_event(buf).await;
+                let Some(len) = self.next_event(buf).await else {
+                    return false;
+                };
                 self.handle_event(slice8(buf), len).await;
             }
+            true
         })
         .await
-        .is_ok();
+        .unwrap_or(false);
         self.events = buf;
         held
     }
@@ -864,11 +912,14 @@ impl<'a, BUS: Bus, IN: InputPin + Wait, OUT: OutputPin> Runner<'a, BUS, IN, OUT>
     }
 
     /// Reads the next event into `buf` and returns its length, waiting for HOST_IRQ while the
-    /// queue is empty.
-    async fn next_event(&mut self, buf: &mut [u32]) -> usize {
+    /// queue is empty. `None` once the chip failed.
+    async fn next_event(&mut self, buf: &mut [u32]) -> Option<usize> {
         loop {
+            if self.rpu.failed() {
+                return None;
+            }
             match self.rpu.event_next(buf).await {
-                Some(len) if len > 0 => return len,
+                Some(len) if len > 0 => return Some(len),
                 Some(_) => {}
                 None => {
                     self.rpu.irq_service_end().await;

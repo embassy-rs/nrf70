@@ -9,19 +9,25 @@ use embedded_hal_async::spi::SpiDevice;
 use crate::{slice8, slice8_mut};
 
 /// Access to the nRF70's memory and status registers, over SPI or QSPI.
+///
+/// A transfer that fails turns the chip off: the runner reports [`Error::Bus`](crate::Error::Bus)
+/// to what was under way, and [`Control::power_on`](crate::Control::power_on) starts it again.
 pub trait Bus {
+    /// What a failed transfer reports. The driver logs it.
+    type Error: core::fmt::Debug;
+
     /// Reads `buf.len()` words from `addr`.
-    async fn read(&mut self, addr: u32, buf: &mut [u32]);
+    async fn read(&mut self, addr: u32, buf: &mut [u32]) -> Result<(), Self::Error>;
     /// Writes `buf` to `addr`.
-    async fn write(&mut self, addr: u32, buf: &[u32]);
+    async fn write(&mut self, addr: u32, buf: &[u32]) -> Result<(), Self::Error>;
     /// Reads status register 0 (RDSR, 0x05).
-    async fn read_sr0(&mut self) -> u8;
+    async fn read_sr0(&mut self) -> Result<u8, Self::Error>;
     /// Reads status register 1 (RDSR1, 0x1F): whether the RPU is awake and ready.
-    async fn read_sr1(&mut self) -> u8;
+    async fn read_sr1(&mut self) -> Result<u8, Self::Error>;
     /// Reads status register 2 (RDSR2, 0x2F): the wake-up request as the chip holds it.
-    async fn read_sr2(&mut self) -> u8;
+    async fn read_sr2(&mut self) -> Result<u8, Self::Error>;
     /// Writes status register 2 (WRSR2, 0x3F): bit 0 asks the RPU to wake up and stay awake.
-    async fn write_sr2(&mut self, val: u8);
+    async fn write_sr2(&mut self, val: u8) -> Result<(), Self::Error>;
 }
 
 /// A [`Bus`] on an SPI device.
@@ -37,50 +43,50 @@ impl<T> SpiBus<T> {
 }
 
 impl<T: SpiDevice> SpiBus<T> {
-    async fn read_sr(&mut self, cmd: u8) -> u8 {
+    async fn read_sr(&mut self, cmd: u8) -> Result<u8, T::Error> {
         let mut buf = [0; 2];
-        self.spi.transfer(&mut buf, &[cmd]).await.unwrap();
+        self.spi.transfer(&mut buf, &[cmd]).await?;
         defmt::trace!("read sr {:02x} = {:02x}", cmd, buf[1]);
-        buf[1]
+        Ok(buf[1])
     }
 }
 
 impl<T: SpiDevice> Bus for SpiBus<T> {
-    async fn read(&mut self, addr: u32, buf: &mut [u32]) {
+    type Error = T::Error;
+
+    async fn read(&mut self, addr: u32, buf: &mut [u32]) -> Result<(), T::Error> {
         self.spi
             .transaction(&mut [
                 Operation::Write(&[0x0B, (addr >> 16) as u8, (addr >> 8) as u8, addr as u8, 0x00]),
                 Operation::Read(slice8_mut(buf)),
             ])
             .await
-            .unwrap()
     }
 
-    async fn write(&mut self, addr: u32, buf: &[u32]) {
+    async fn write(&mut self, addr: u32, buf: &[u32]) -> Result<(), T::Error> {
         self.spi
             .transaction(&mut [
                 Operation::Write(&[0x02, (addr >> 16) as u8 | 0x80, (addr >> 8) as u8, addr as u8]),
                 Operation::Write(slice8(buf)),
             ])
             .await
-            .unwrap()
     }
 
-    async fn read_sr0(&mut self) -> u8 {
+    async fn read_sr0(&mut self) -> Result<u8, T::Error> {
         self.read_sr(0x05).await
     }
 
-    async fn read_sr1(&mut self) -> u8 {
+    async fn read_sr1(&mut self) -> Result<u8, T::Error> {
         self.read_sr(0x1f).await
     }
 
-    async fn read_sr2(&mut self) -> u8 {
+    async fn read_sr2(&mut self) -> Result<u8, T::Error> {
         self.read_sr(0x2f).await
     }
 
-    async fn write_sr2(&mut self, val: u8) {
+    async fn write_sr2(&mut self, val: u8) -> Result<(), T::Error> {
         defmt::trace!("write sr2 = {:02x}", val);
-        self.spi.write(&[0x3f, val]).await.unwrap();
+        self.spi.write(&[0x3f, val]).await
     }
 }
 
@@ -158,7 +164,7 @@ mod tests {
             ..Default::default()
         });
         let mut buf = [0u32; 2];
-        block_on(bus.read(0x0C_1234, &mut buf));
+        block_on(bus.read(0x0C_1234, &mut buf)).unwrap();
         assert_eq!(buf, [0x1122_3344, 0x5566_7788]);
         assert_eq!(
             bus.spi.ops,
@@ -169,7 +175,7 @@ mod tests {
     #[test]
     fn bus_write_sets_the_address_top_bit() {
         let mut bus = SpiBus::new(MockSpi::default());
-        block_on(bus.write(0x0C_1234, &[0x1122_3344]));
+        block_on(bus.write(0x0C_1234, &[0x1122_3344])).unwrap();
         assert_eq!(
             bus.spi.ops,
             [
@@ -185,8 +191,8 @@ mod tests {
             read_data: vec![0xFF, SR1_RPU_AWAKE | SR1_RPU_READY],
             ..Default::default()
         });
-        assert_eq!(block_on(bus.read_sr1()), SR1_RPU_AWAKE | SR1_RPU_READY);
-        block_on(bus.write_sr2(SR2_RPU_WAKEUP_REQ));
+        assert_eq!(block_on(bus.read_sr1()), Ok(SR1_RPU_AWAKE | SR1_RPU_READY));
+        block_on(bus.write_sr2(SR2_RPU_WAKEUP_REQ)).unwrap();
         assert_eq!(
             bus.spi.ops,
             [Op::Transfer(vec![0x1f], 2), Op::Write(vec![0x3f, SR2_RPU_WAKEUP_REQ])]

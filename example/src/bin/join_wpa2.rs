@@ -103,9 +103,11 @@ async fn main(spawner: Spawner) {
         iovdd_ctl,
         host_irq,
         WIFI_CONFIG,
-    )
-    .await;
+    );
     spawner.spawn(unwrap!(wifi_task(runner)));
+    // The chip starts off. Turned on before the network stack is made, it gives the stack its MAC
+    // address from the start.
+    unwrap!(control.power_on().await);
 
     let mut rng = CcRng::new_blocking(p.CC_RNG);
     let mut seed = [0; 8];
@@ -130,6 +132,12 @@ async fn main(spawner: Spawner) {
         // CryptoCell, but any `rand_core::CryptoRng` does.
         if let Err(error) = control.join_wpa2_psk(WIFI_SSID.as_bytes(), &psk, &mut rng).await {
             warn!("joining failed: {}", error);
+            if let nrf70::ConnectError::PoweredOff | nrf70::ConnectError::Fault(_) = error {
+                // The chip failed, and is off: start it again.
+                if let Err(error) = control.power_on().await {
+                    warn!("the chip did not start: {}", error);
+                }
+            }
             Timer::after(Duration::from_secs(5)).await;
             continue;
         }

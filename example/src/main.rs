@@ -75,10 +75,10 @@ async fn main(spawner: Spawner) {
     let bus = SpiBus::new(spi);
 
     let mut state = nrf70::State::new();
-    let (_device, mut control, mut runner) =
-        nrf70::new(&mut state, bus, bucken, iovdd_ctl, host_irq, WIFI_CONFIG).await;
+    let (_device, mut control, mut runner) = nrf70::new(&mut state, bus, bucken, iovdd_ctl, host_irq, WIFI_CONFIG);
 
     let scan = async {
+        unwrap!(control.power_on().await);
         loop {
             let mut scanner = control.scan().await;
             while let Some(bss) = scanner.next().await {
